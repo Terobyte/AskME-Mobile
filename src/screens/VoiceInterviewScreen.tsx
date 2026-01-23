@@ -174,9 +174,7 @@ export default function VoiceInterviewScreen() {
                 
                 // Speak & Update UI
                 if (reply) {
-                    TTSService.speak(reply);
-                    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                    setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: reply, sender: 'ai' }]);
+                    await playSynchronizedResponse(reply);
                 }
             } catch (error) {
                 console.error("Agent Error:", error);
@@ -231,8 +229,7 @@ export default function VoiceInterviewScreen() {
           
           // 3. Start Agent (Hidden Greeting)
           const introMsg = await agentRef.current.startInterview(generatedPlan.queue, resumeText, "Candidate");
-          
-          setMessages([{ id: 'system_start', text: introMsg, sender: 'ai' }]);
+          await playSynchronizedResponse(introMsg);
           setShowSettings(false); // Close Modal
           
       } catch (error) {
@@ -427,7 +424,44 @@ export default function VoiceInterviewScreen() {
           </View>
       );
   };
+// --- НОВАЯ ФУНКЦИЯ СИНХРОНИЗАЦИИ ---
+   const playSynchronizedResponse = async (text: string) => {
+      // 1. Блокируем UI (Виктория думает)
+      setIsAgentThinking(true); 
+      
+      try {
+          console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
+          
+          // 2. Грузим аудио (ЖДЕМ ЗДЕСЬ)
+          // ВАЖНО: Убедись, что в TTSService есть метод prepareAudio, который мы делали
+          const sound = await TTSService.prepareAudio(text);
 
+          // 3. БОМБА! (Звук готов)
+          console.log("💥 Sync: BOOM! Playing.");
+          
+          // А. Добавляем сообщение (запустится Typewriter)
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+
+          // Б. Играем звук
+          if (sound) {
+              // Если нужно отслеживать окончание:
+              sound.setOnPlaybackStatusUpdate((status) => {
+                  if (status.isLoaded && status.didJustFinish) {
+                      sound.unloadAsync();
+                  }
+              });
+              await sound.playAsync();
+          }
+          
+      } catch (e) {
+          console.error("Sync Error:", e);
+          // Фолбэк: если звук не загрузился, просто показываем текст
+          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+      } finally {
+          setIsAgentThinking(false); // Разблокируем
+      }
+  };
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" />

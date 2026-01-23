@@ -1,5 +1,5 @@
 import { InterviewTopic } from "../types";
-const MODEL_ID = "gemini-2.5-flash-lite";// ⛔️ DO NOT CHANGE THIS MODEL! 
+const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
 export class GeminiAgentService {

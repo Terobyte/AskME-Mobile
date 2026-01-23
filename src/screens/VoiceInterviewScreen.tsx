@@ -80,7 +80,7 @@ export default function VoiceInterviewScreen() {
   const recording = useRef<Audio.Recording | null>(null);
   const lastPosition = useRef(0); 
   const streamInterval = useRef<NodeJS.Timeout | null>(null);
-  const silenceTimer = useRef<NodeJS.Timeout | null>(null);
+  // const silenceTimer = useRef<NodeJS.Timeout | null>(null); // Removed for Manual PTT
 
   const VOLUME_THRESHOLD = -65; 
 
@@ -117,10 +117,7 @@ export default function VoiceInterviewScreen() {
           clearInterval(streamInterval.current);
           streamInterval.current = null;
       }
-      if (silenceTimer.current) {
-          clearTimeout(silenceTimer.current);
-          silenceTimer.current = null;
-      }
+      // silenceTimer cleanup removed
       if (ws.current) {
           ws.current.close();
           ws.current = null;
@@ -261,18 +258,20 @@ export default function VoiceInterviewScreen() {
                 const msg = JSON.parse(event.data);
                 if (msg.channel?.alternatives?.[0]?.transcript) {
                     const text = msg.channel.alternatives[0].transcript;
-                    if (silenceTimer.current) clearTimeout(silenceTimer.current);
+                    
                     if (text.trim().length > 0) {
                         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                        // Just accumulate transcript. No auto-finalize.
                         if (msg.is_final) {
                             setLiveTranscript(prev => {
                                 const spacer = prev.length > 0 ? " " : "";
                                 return prev + spacer + text.trim();
                             });
                             setIsFinalChunk(true);
-                            silenceTimer.current = setTimeout(() => { finalizeMessage(); }, 4000); 
                         } else {
-                            silenceTimer.current = setTimeout(() => { finalizeMessage(); }, 4000); 
+                            // Optional: Update live bubble for interim results if desired, 
+                            // but current logic only updates on final. 
+                            // We keep it strict to existing visual flow.
                         }
                     }
                 }
@@ -370,7 +369,7 @@ export default function VoiceInterviewScreen() {
 
   const stopRecording = async () => {
     try {
-        if (silenceTimer.current) clearTimeout(silenceTimer.current);
+        // silenceTimer removed
         if (streamInterval.current) {
             clearInterval(streamInterval.current);
             streamInterval.current = null;
@@ -395,8 +394,10 @@ export default function VoiceInterviewScreen() {
   };
 
   const toggleRecording = () => {
+      if (isAgentThinking) return; // Locked
+
       if (isRecording) {
-          stopRecording();
+          stopRecording(); // This calls finalizeMessage() internally at the end
       } else {
           startRecording();
       }
@@ -601,13 +602,22 @@ export default function VoiceInterviewScreen() {
 
       {/* Controls */}
       <View style={styles.controls}>
-          <TouchableOpacity onPress={toggleRecording}>
+          <TouchableOpacity 
+            onPress={toggleRecording}
+            disabled={isAgentThinking}
+            activeOpacity={0.7}
+          >
             <Animated.View style={[
                 styles.micButton, 
                 isRecording ? styles.recording : null,
+                isAgentThinking ? styles.micButtonDisabled : null,
                 { transform: [{ scale: micScale }] } 
             ]}>
-                <Ionicons name={isRecording ? "stop" : "mic"} size={32} color="#FFF" />
+                {isAgentThinking ? (
+                    <ActivityIndicator color="#FFF" />
+                ) : (
+                    <Ionicons name={isRecording ? "stop" : "mic"} size={32} color="#FFF" />
+                )}
             </Animated.View>
           </TouchableOpacity>
           
@@ -741,6 +751,10 @@ const styles = StyleSheet.create({
   recording: {
       backgroundColor: '#EF4444',
       transform: [{ scale: 1.1 }],
+  },
+  micButtonDisabled: {
+      backgroundColor: '#6B7280', // Grey
+      opacity: 0.8,
   },
   // Modal Styles
   blurContainer: {

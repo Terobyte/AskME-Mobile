@@ -1,13 +1,13 @@
-import { InterviewTopic, AiResponse } from "../types";
+import { InterviewTopic, AiResponse, InterviewContext } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
 export class GeminiAgentService {
   private apiKey: string;
   private history: any[] = [];
-  private systemInstruction: string = "";
-  private agenda: InterviewTopic[] = []; // Store agenda in class
-  private currentTopicIndex: number = 0; // Track progress
+  private resume: string = "";
+  private role: string = "";
+  
   private baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
   constructor() {
     // Prefer environment variable
@@ -15,18 +15,40 @@ export class GeminiAgentService {
     if (!this.apiKey) console.error("API Key missing! Check .env file.");
   }
 
-  async startInterview(agenda: InterviewTopic[], resume: string, role: string): Promise<AiResponse | string> {
-    this.agenda = agenda;
-    this.currentTopicIndex = 0; // Reset index
+  async startInterview(resume: string, role: string, initialContext: InterviewContext): Promise<AiResponse | string> {
+    this.resume = resume;
+    this.role = role;
+    this.history = []; // Reset History
 
-    // 1. Build System Context with RAW JSON
-    this.systemInstruction = `
+    // Send First Trigger with Initial Context
+    return await this.sendUserResponse("Start the interview. Introduce yourself as AskME and ask me to introduce myself.", initialContext);
+  }
+
+  private buildSystemInstruction(context: InterviewContext): string {
+      return `
     You are Victoria, a Principal Software Engineer at a FAANG company. You are conducting a high-stakes technical interview.
             
     CONTEXT:
-    - Candidate Resume Summary: "${resume.substring(0, 500)}..."
-    - Position: ${role}
-    - Agenda: ${JSON.stringify(agenda.map(p => p.topic))}
+    - Candidate Resume Summary: "${this.resume.substring(0, 500)}..."
+    - Position: ${this.role}
+    
+    >>> CAMPAIGN MODE <<<
+    You are conducting the interview ONE TOPIC at a time.
+    - **CURRENT TOPIC:** ${context.currentTopic.topic}
+    - **DESCRIPTION:** ${context.currentTopic.context || "General Technical Question"}
+    - **PREVIOUS RESULT:** ${context.previousResult || "N/A (Start of Interview)"}
+    - **YOUR ANNOYANCE LEVEL:** ${context.angerLevel}/100
+    - **IS LAST TOPIC:** ${context.isLastTopic ? "YES - Say goodbye after this." : "NO"}
+    
+    BEHAVIOR:
+    You are moving to a NEW topic. Check 'PREVIOUS RESULT':
+    - IF 'PASSED_SUCCESS': Start with: "Good job on the last topic." Then ask the first question for [CURRENT TOPIC].
+    - IF 'FAILED_PATIENCE': Start with: "Okay, clearly you are struggling with that. Let's move on." Then ask the first question for [CURRENT TOPIC].
+    - IF 'INTRO_COMPLETE': Start with: "Alright, let's begin the technical part." Then ask the first question for [CURRENT TOPIC].
+    - IF 'null' (First message): Start with the Introduction.
+       
+    **Rule:** Do NOT ask the old question again. Ask a FRESH question about [CURRENT TOPIC].
+    - If 'angerLevel' is high (>70), be short, curt, and aggressive.
     
     SCORING RUBRIC (BE BRUTAL):
     You must evaluate the candidate's LAST answer against Senior-level expectations.
@@ -39,31 +61,28 @@ export class GeminiAgentService {
     1. **Short Answers:** If the user answers in 1-2 short sentences, the 'Depth' score MUST be under 4.
     2. **Vague Answers:** If the user says "It depends" without explaining *what* it depends on, penalize heavily.
     3. **Accuracy:** Do not overlook small technical errors. Mention them in 'reasoning'.
-    4. **Reasoning Field:** Be blunt and direct in the JSON 'reasoning' field (e.g., "Answer was too generic," "Failed to explain the lifecycle").
+    4. **Reasoning Field:** Be blunt and direct in the JSON 'reasoning' field.
     
     PROTOCOL:
-    - Continue moving through the Agenda sequentially.
-    - Your spoken 'message' should remain professional and polite, but the 'metrics' in the JSON must be harsh and honest.
+    - Your spoken 'message' should remain professional but reflect your current mood (Anger Level).
+    - If the user has finished the interview (you will be told if it's the last topic, but for now assume continuous), continue.
     `;
-
-    // 2. Reset History
-    this.history = [];
-
-    // 3. Send First Trigger
-    return await this.sendUserResponse("Start the interview. Introduce yourself as AskME and ask me to introduce myself.");
   }
 
-  async sendUserResponse(userText: string): Promise<AiResponse | string> {
+  async sendUserResponse(userText: string, context: InterviewContext): Promise<AiResponse | string> {
     if (!userText) return "Error: No text";
 
     // Add User Message to History
     this.history.push({ role: "user", parts: [{ text: userText }] });
 
+    // Dynamic System Instruction
+    const dynamicSystemInstruction = this.buildSystemInstruction(context);
+
     // Construct Payload
     // Note: Gemini REST API expects 'contents' array with history
     const payload = {
       contents: this.history,
-      systemInstruction: { parts: [{ text: this.systemInstruction }] },
+      systemInstruction: { parts: [{ text: dynamicSystemInstruction }] },
       generationConfig: {
         temperature: 0.2,
         maxOutputTokens: 2048,
@@ -98,7 +117,8 @@ export class GeminiAgentService {
             // Log payload only on first attempt to avoid clutter
             if (retryCount === 0) {
                 console.log("\n🔵 ================= GEMINI REQUEST START ================= 🔵"); 
-                console.log(JSON.stringify(payload, null, 2)); 
+                // console.log(JSON.stringify(payload, null, 2)); // Reduced noise
+                console.log(`📌 Topic: ${context.currentTopic.topic} | Prev: ${context.previousResult} | Anger: ${context.angerLevel}`);
                 console.log("🔵 ================= GEMINI REQUEST END =================== 🔵\n");
             }
 
@@ -141,11 +161,6 @@ export class GeminiAgentService {
                 // NOTE: We must store the RAW JSON string in history for the model to maintain context correctly
                 this.history.push({ role: "model", parts: [{ text: rawText }] });
                 
-                // Increment Topic Index
-                if (this.currentTopicIndex < this.agenda.length) {
-                    this.currentTopicIndex++;
-                }
-
                 // Parse JSON for the App
                 let parsedResponse: AiResponse;
                 try {
@@ -167,34 +182,6 @@ export class GeminiAgentService {
                         }
                     };
                 }
-
-                // --- 📊 HUMAN READABLE DASHBOARD 📊 --- 
-                console.log("\n" + "=".repeat(60)); 
-                console.log("📊 INTERVIEW PROGRESS DASHBOARD"); 
-                console.log("=".repeat(60)); 
-                
-                console.log("\n📋 PLAN (Agenda):"); 
-                if (this.agenda && this.agenda.length > 0) { 
-                    this.agenda.forEach((item, index) => { 
-                    let statusIcon = "[⏳ Pending]"; 
-                    if (index < this.currentTopicIndex) statusIcon = "[✅ Passed]"; 
-                    if (index === this.currentTopicIndex) statusIcon = "[🔄 IN PROCESS]"; 
-                    
-                    console.log(`   ${statusIcon} ${item.topic} (${item.category || 'General'})`); 
-                    }); 
-                } else { 
-                    console.log("   (No Agenda Loaded)"); 
-                } 
-                
-                console.log("\n✅ HISTORY (Last 3 Turns):"); 
-                const recentHistory = this.history.slice(-3); 
-                recentHistory.forEach((msg, idx) => { 
-                    const roleIcon = msg.role === 'user' ? '👤' : '🤖'; 
-                    const textSnippet = msg.parts[0].text.replace(/\n/g, " ").substring(0, 50); 
-                    console.log(`   ${roleIcon} ${textSnippet}...`); 
-                }); 
-                console.log("=".repeat(60) + "\n"); 
-                // ----------------------------------------
 
                 return parsedResponse;
             }

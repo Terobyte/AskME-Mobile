@@ -6,11 +6,20 @@ interface MetricsHudProps {
     metrics: EvaluationMetrics | null;
     success?: number;
     patience?: number;
+    topicTitle?: string; // New Prop
+    anger?: number;      // New Prop
 }
 
-export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics, success = 0, patience = 0 }) => {
-    // If no data at all, render nothing
-    if (!metrics && success === 0 && patience === 0) return null;
+export const MetricsHud: React.FC<MetricsHudProps> = ({ 
+    metrics, 
+    success = 0, 
+    patience = 0,
+    topicTitle = "Interview",
+    anger = -10
+}) => {
+    // If no metrics and we are at the very start (intro), we might still want to show the Topic Title
+    // But if everything is empty/null, return null.
+    if (!metrics && success === 0 && patience === 0 && topicTitle === "Interview") return null;
 
     const calculateOverall = (m: EvaluationMetrics) => {
         return ((m.accuracy + m.depth + m.structure) / 3).toFixed(1);
@@ -20,6 +29,13 @@ export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics, success = 0, pa
         if (score >= 7) return '#10B981'; // Green
         if (score >= 5) return '#F59E0B'; // Yellow
         return '#EF4444'; // Red
+    };
+
+    // Determine Anger Color
+    const getAngerColor = (val: number) => {
+        if (val < 0) return '#10B981';   // Green (Chill)
+        if (val < 10) return '#F59E0B';  // Orange (Annoyed)
+        return '#EF4444';                // Red (Angry)
     };
 
     const ProgressBar = ({ label, value, color }: { label: string, value: number, color: string }) => (
@@ -43,6 +59,16 @@ export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics, success = 0, pa
 
     return (
         <View style={styles.container}>
+            {/* Header: Topic Title & Anger */}
+            <View style={styles.headerRow}>
+                <Text style={styles.topicTitle} numberOfLines={1}>
+                    {topicTitle}
+                </Text>
+                <Text style={[styles.angerText, { color: getAngerColor(anger) }]}>
+                    {anger > 10 ? "🤬" : (anger > 0 ? "😠" : "😌")} Anger: {anger.toFixed(1)}
+                </Text>
+            </View>
+
             {/* RPG Stats Panel (Success & Patience) */}
             <View style={styles.statsPanel}>
                 <ProgressBar label="SUCCESS" value={success} color="#10B981" />
@@ -96,10 +122,30 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: 'rgba(0,0,0,0.05)',
     },
+    // Header Styles
+    headerRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 12,
+        paddingBottom: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: '#F3F4F6',
+    },
+    topicTitle: {
+        fontSize: 14,
+        fontWeight: 'bold',
+        color: '#1F2937',
+        maxWidth: '65%',
+    },
+    angerText: {
+        fontSize: 12,
+        fontWeight: '700',
+    },
     // RPG Stats Styles
     statsPanel: {
         flexDirection: 'row',
-        marginBottom: 4, // tight spacing if metrics exist
+        marginBottom: 4, 
     },
     progressWrapper: {
         flex: 1,
@@ -134,7 +180,7 @@ const styles = StyleSheet.create({
         backgroundColor: '#F3F4F6',
         marginVertical: 12,
     },
-    // Existing Styles
+    // Detailed Metrics
     row: {
         flexDirection: 'row',
         justifyContent: 'space-between',

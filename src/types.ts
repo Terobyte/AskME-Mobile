@@ -44,3 +44,10 @@ export interface AiResponse {
     message: string;
     metrics: EvaluationMetrics;
 }
+
+export interface InterviewContext {
+    currentTopic: InterviewTopic;
+    previousResult: string | null;
+    angerLevel: number;
+    isLastTopic: boolean;
+}

@@ -31,7 +31,7 @@ const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 export default function VoiceInterviewScreen() {
   const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
   const [isRecording, setIsRecording] = useState(false);
-  const [showSettings, setShowSettings] = useState(true); // Start with Settings OPEN
+  const [showSettings, setShowSettings] = useState(true); 
   const [isGenerating, setIsGenerating] = useState(false);
   
   // Gemini Agent
@@ -50,6 +50,13 @@ export default function VoiceInterviewScreen() {
   // RPG Scoring State
   const [topicSuccess, setTopicSuccess] = useState(0);
   const [topicPatience, setTopicPatience] = useState(0);
+  const [anger, setAnger] = useState(0); // Start at 0
+
+  
+  // Campaign State
+  const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
+  const [isInterviewFinished, setIsInterviewFinished] = useState(false);
+  const [previousTopicResult, setPreviousTopicResult] = useState<string | null>(null);
 
   // Slider Logic
   const getModeFromSlider = (val: number): InterviewMode => {
@@ -66,7 +73,6 @@ export default function VoiceInterviewScreen() {
   // Chat History
   const [messages, setMessages] = useState<{id: string, text: string, sender: 'user' | 'ai'}[]>([]);
   
-  // Get latest AI message text for Typewriter
   const latestAiMessage = messages.length > 0 && messages[messages.length - 1].sender === 'ai' 
     ? messages[messages.length - 1].text 
     : "";
@@ -86,7 +92,6 @@ export default function VoiceInterviewScreen() {
   const recording = useRef<Audio.Recording | null>(null);
   const lastPosition = useRef(0); 
   const streamInterval = useRef<NodeJS.Timeout | null>(null);
-  // const silenceTimer = useRef<NodeJS.Timeout | null>(null); // Removed for Manual PTT
 
   const VOLUME_THRESHOLD = -65; 
 
@@ -111,7 +116,6 @@ export default function VoiceInterviewScreen() {
       if (status !== 'granted') {
         alert('Permission to access microphone was denied');
       }
-      // Force Speaker Output on Mount
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
@@ -122,7 +126,7 @@ export default function VoiceInterviewScreen() {
     })();
 
     return () => {
-      TTSService.stop(); // Stop audio on unmount
+      TTSService.stop(); 
       if (recording.current) {
           recording.current.stopAndUnloadAsync().catch(err => console.log("Cleanup Error", err));
           recording.current = null;
@@ -131,7 +135,6 @@ export default function VoiceInterviewScreen() {
           clearInterval(streamInterval.current);
           streamInterval.current = null;
       }
-      // silenceTimer cleanup removed
       if (ws.current) {
           ws.current.close();
           ws.current = null;
@@ -159,7 +162,6 @@ export default function VoiceInterviewScreen() {
   const finalizeMessage = async () => {
       const textToFinalize = latestTranscriptRef.current; 
       
-      // Strict Guard: Prevent duplicate calls if already thinking
       if (isAgentThinking) {
           console.log("⚠️ BLOCKED DUPLICATE API CALL: Agent is already thinking.");
           return;
@@ -177,66 +179,103 @@ export default function VoiceInterviewScreen() {
           setDisplayTranscript("");
           setIsFinalChunk(false);
 
-          // Trigger AI Response
-          if (agentRef.current) {
+          if (agentRef.current && plan) {
             setIsAgentThinking(true); // LOCK
             try {
-                const response = await agentRef.current.sendUserResponse(textToFinalize.trim());
+                const safeIndex = Math.min(currentTopicIndex, plan.queue.length - 1);
+                const currentTopic = plan.queue[safeIndex];
+                const isLast = currentTopicIndex >= plan.queue.length - 1;
+                
+                const context = {
+                    currentTopic: currentTopic,
+                    previousResult: previousTopicResult,
+                    angerLevel: anger, // Use state 'anger'
+                    isLastTopic: isLast
+                };
+
+                const response = await agentRef.current.sendUserResponse(textToFinalize.trim(), context);
                 
                 let messageToSpeak = "";
 
                 if (typeof response === 'string') {
-                    // Fallback for string response
                     messageToSpeak = response;
                 } else {
-                    // JSON Response
                     messageToSpeak = response.message;
                     setCurrentMetrics(response.metrics);
 
-                    // --- RPG LOGIC (DEBUGGED) ---
+                    // --- RPG & CAMPAIGN LOGIC ---
                     if (response.metrics) { 
                         const { accuracy, depth, structure } = response.metrics; 
                         const overall = (accuracy + depth + structure) / 3; 
                         
-                        console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`); // Debug Log 
+                        console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`); 
                 
-                        setTopicSuccess(prevS => { 
-                            setTopicPatience(prevP => { 
-                                let s = prevS; 
-                                let p = prevP; 
-                                
-                                // RE-APPLY MATH HERE INSIDE SETTERS 
-                                if (overall < 5) { 
-                                    // BAD
-                                    p += ((10 - overall) * 7); 
-                                    console.log(`🔻 Bad Answer. Patience +${((10 - overall) * 7).toFixed(1)}`); 
-                                } else if (overall >= 5 && overall < 7) { 
-                                    // MEDIOCRE
-                                    s += (overall * 7); 
-                                    p += 10; 
-                                    console.log(`🔸 Mediocre. Success +${(overall * 7).toFixed(1)}, Patience +10`); 
-                                } else { 
-                                    // GOOD
-                                    s += (overall * 13); 
-                                    p -= (overall * 3); 
-                                    console.log(`✅ Good! Success +${(overall * 13).toFixed(1)}, Patience Healed`); 
-                                } 
-                                
-                                // Clamp and Return P 
-                                return Math.min(Math.max(p, 0), 100); 
-                            }); 
+                        let newSuccess = topicSuccess;
+                        let newPatience = topicPatience;
+                        
+                        // INTRO SPECIAL CASE (Index 0)
+                        if (currentTopicIndex === 0) {
+                             setTopicSuccess(0);
+                             setTopicPatience(0);
+                             setAnger(-10); // Reset Anger
+                             setPreviousTopicResult("INTRO_COMPLETE");
+                             setCurrentTopicIndex(1);
+                             console.log("🏁 Intro Complete. Moving to Topic 1.");
+                        } 
+                        // NORMAL TOPICS
+                        else {
+                            if (overall < 5) { 
+                                // BAD
+                                newPatience += ((10 - overall) * 7); 
+                            } else if (overall >= 5 && overall < 7) { 
+                                // MEDIOCRE
+                                newSuccess += (overall * 7); 
+                                newPatience += 10; 
+                            } else { 
+                                // GOOD
+                                newSuccess += (overall * 13); 
+                                newPatience -= (overall * 3); 
+                            } 
                             
-                            // Re-calculate S (redundant but needed for the setter structure) 
-                            let s = prevS; 
-                            if (overall >= 5 && overall < 7) s += (overall * 7); 
-                            else if (overall >= 7) s += (overall * 13); 
+                            // Clamp
+                            newSuccess = Math.min(Math.max(newSuccess, 0), 100);
+                            newPatience = Math.min(Math.max(newPatience, 0), 100);
                             
-                            return Math.min(Math.max(s, 0), 100); 
-                        }); 
+                            // Update UI (Local Stats Only)
+                            setTopicSuccess(newSuccess);
+                            setTopicPatience(newPatience);
+                            
+                            // CHECK TRANSITIONS (Only Update Anger HERE)
+                            if (newSuccess >= 100 || newPatience >= 100) {
+                                // 1. Calculate Anger Delta based on the patience used to finish this topic
+                                const angerChange = (newPatience * 0.3) - 10;
+                                
+                                // 2. Update Global Anger (Cumulative)
+                                setAnger(prev => {
+                                    const newLevel = prev + angerChange;
+                                    // Optional: Clamp anger between -20 (Zen) and 100 (Rage)
+                                    return Math.min(Math.max(newLevel, -20), 100);
+                                });
+
+                                // 3. Reset Local Stats
+                                setTopicSuccess(0);
+                                setTopicPatience(0);
+                                
+                                // 4. Move Next
+                                if (newSuccess >= 100) {
+                                    setPreviousTopicResult("PASSED_SUCCESS");
+                                    console.log("🎉 Topic Passed! Moving to next.");
+                                } else {
+                                    setPreviousTopicResult("FAILED_PATIENCE");
+                                    console.log("💀 Topic Failed! Moving to next.");
+                                }
+                                
+                                setCurrentTopicIndex(prev => prev + 1);
+                            }
+                        }
                     }
                 }
                 
-                // Speak & Update UI
                 if (messageToSpeak) {
                     await playSynchronizedResponse(messageToSpeak);
                 }
@@ -249,7 +288,6 @@ export default function VoiceInterviewScreen() {
       }
   };
 
-  // --- Document Picker ---
   const pickResume = async () => {
       try {
           const result = await DocumentPicker.getDocumentAsync({
@@ -280,31 +318,41 @@ export default function VoiceInterviewScreen() {
       }
   };
 
-  // --- Main Logic: Save & Restart ---
   const handleSaveAndRestart = async () => {
       setIsGenerating(true);
       try {
-          // 1. Generate Plan
           const generatedPlan = await generateInterviewPlan(resumeText, jdText, mode);
           setPlan(generatedPlan);
           
-          // 2. Initialize Agent
           agentRef.current = new GeminiAgentService();
           
-          // 3. Start Agent (Hidden Greeting)
-          const introResponse = await agentRef.current.startInterview(generatedPlan.queue, resumeText, "Candidate");
+          // Reset Campaign State
+          setCurrentTopicIndex(0);
+          setPreviousTopicResult(null);
+          setTopicSuccess(0);
+          setTopicPatience(0);
+          setAnger(-10);
+          setIsInterviewFinished(false);
+          
+          const initialContext = {
+              currentTopic: generatedPlan.queue[0],
+              previousResult: null,
+              angerLevel: 0,
+              isLastTopic: false
+          };
+          
+          const introResponse = await agentRef.current.startInterview(resumeText, "Candidate", initialContext);
           
           let introMsg = "";
           if (typeof introResponse === 'string') {
               introMsg = introResponse;
           } else {
               introMsg = introResponse.message;
-              // Metrics might be empty for intro, or we can reset
               setCurrentMetrics(null); 
           }
 
           await playSynchronizedResponse(introMsg);
-          setShowSettings(false); // Close Modal
+          setShowSettings(false); 
           
       } catch (error) {
           Alert.alert("Error", "Failed to initialize interview.");
@@ -318,7 +366,6 @@ export default function VoiceInterviewScreen() {
     const API_KEY = process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY || ""; 
     const cleanKey = API_KEY.trim();
     if (!cleanKey) {
-        console.error("Deepgram API Key missing in .env");
         Alert.alert("Configuration Error", "Deepgram API Key is missing.");
         return;
     }
@@ -335,20 +382,14 @@ export default function VoiceInterviewScreen() {
                 const msg = JSON.parse(event.data);
                 if (msg.channel?.alternatives?.[0]?.transcript) {
                     const text = msg.channel.alternatives[0].transcript;
-                    
                     if (text.trim().length > 0) {
                         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                        // Just accumulate transcript. No auto-finalize.
                         if (msg.is_final) {
                             setLiveTranscript(prev => {
                                 const spacer = prev.length > 0 ? " " : "";
                                 return prev + spacer + text.trim();
                             });
                             setIsFinalChunk(true);
-                        } else {
-                            // Optional: Update live bubble for interim results if desired, 
-                            // but current logic only updates on final. 
-                            // We keep it strict to existing visual flow.
                         }
                     }
                 }
@@ -446,7 +487,6 @@ export default function VoiceInterviewScreen() {
 
   const stopRecording = async () => {
     try {
-        // silenceTimer removed
         if (streamInterval.current) {
             clearInterval(streamInterval.current);
             streamInterval.current = null;
@@ -471,12 +511,50 @@ export default function VoiceInterviewScreen() {
   };
 
   const toggleRecording = () => {
-      if (isAgentThinking) return; // Locked
+      if (isAgentThinking) return; 
 
       if (isRecording) {
-          stopRecording(); // This calls finalizeMessage() internally at the end
+          stopRecording(); 
       } else {
           startRecording();
+      }
+  };
+
+  const playSynchronizedResponse = async (text: string) => {
+      setIsAgentThinking(true); 
+      
+      try {
+          console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
+
+          await Audio.setAudioModeAsync({
+              allowsRecordingIOS: false,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: true,
+              shouldDuckAndroid: true,
+              playThroughEarpieceAndroid: false,
+          });
+          
+          const sound = await TTSService.prepareAudio(text);
+
+          console.log("💥 Sync: BOOM! Playing.");
+          
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+
+          if (sound) {
+              sound.setOnPlaybackStatusUpdate((status) => {
+                  if (status.isLoaded && status.didJustFinish) {
+                      sound.unloadAsync();
+                  }
+              });
+              await sound.playAsync();
+          }
+          
+      } catch (e) {
+          console.error("Sync Error:", e);
+          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+      } finally {
+          setIsAgentThinking(false);
       }
   };
 
@@ -502,58 +580,11 @@ export default function VoiceInterviewScreen() {
           </View>
       );
   };
-// --- НОВАЯ ФУНКЦИЯ СИНХРОНИЗАЦИИ ---
-   const playSynchronizedResponse = async (text: string) => {
-      // 1. Блокируем UI (Виктория думает)
-      setIsAgentThinking(true); 
-      
-      try {
-          console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
 
-          // FORCE SPEAKER (Switch off recording mode for iOS)
-          await Audio.setAudioModeAsync({
-              allowsRecordingIOS: false,
-              playsInSilentModeIOS: true,
-              staysActiveInBackground: true,
-              shouldDuckAndroid: true,
-              playThroughEarpieceAndroid: false,
-          });
-          
-          // 2. Грузим аудио (ЖДЕМ ЗДЕСЬ)
-          // ВАЖНО: Убедись, что в TTSService есть метод prepareAudio, который мы делали
-          const sound = await TTSService.prepareAudio(text);
-
-          // 3. БОМБА! (Звук готов)
-          console.log("💥 Sync: BOOM! Playing.");
-          
-          // А. Добавляем сообщение (запустится Typewriter)
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
-
-          // Б. Играем звук
-          if (sound) {
-              // Если нужно отслеживать окончание:
-              sound.setOnPlaybackStatusUpdate((status) => {
-                  if (status.isLoaded && status.didJustFinish) {
-                      sound.unloadAsync();
-                  }
-              });
-              await sound.playAsync();
-          }
-          
-      } catch (e) {
-          console.error("Sync Error:", e);
-          // Фолбэк: если звук не загрузился, просто показываем текст
-          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
-      } finally {
-          setIsAgentThinking(false); // Разблокируем
-      }
-  };
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
       
-      {/* Minimalist Header */}
       <View style={styles.header}>
           <Text style={{fontWeight:'bold', fontSize:18}}>AskME AI</Text>
           <TouchableOpacity onPress={() => setShowSettings(true)} style={styles.iconButton}>
@@ -561,20 +592,23 @@ export default function VoiceInterviewScreen() {
           </TouchableOpacity>
       </View>
 
-      {/* Metrics HUD */}
+      {/* Metrics HUD - Updated Props */}
       <MetricsHud 
           metrics={currentMetrics} 
           success={topicSuccess} 
-          patience={topicPatience} 
+          patience={topicPatience}
+          anger={anger} // Pass Anger
+          topicTitle={plan && plan.queue[Math.min(currentTopicIndex, plan.queue.length-1)] 
+            ? `${Math.min(currentTopicIndex, plan.queue.length-1)}. ${plan.queue[Math.min(currentTopicIndex, plan.queue.length-1)].topic}` 
+            : "Introduction"}
       />
 
-      {/* Control Center Modal (Glass) */}
+      {/* ... Rest of your UI (Modals, Chat, Buttons) remains the same ... */}
       <Modal visible={showSettings} animationType="fade" transparent>
           <BlurView intensity={20} style={styles.blurContainer} tint="light">
               <View style={styles.modalContainer}>
                   <View style={styles.modalHeader}>
                       <Text style={styles.modalTitle}>Control Center</Text>
-                      {/* Allow closing only if plan exists */}
                       {plan && (
                           <TouchableOpacity onPress={() => setShowSettings(false)}>
                               <Ionicons name="close" size={28} color="#333" />
@@ -583,7 +617,6 @@ export default function VoiceInterviewScreen() {
                   </View>
 
                   <ScrollView style={styles.modalContent}>
-                      {/* 1. Context */}
                       <Text style={styles.sectionTitle}>1. Setup</Text>
                       <TouchableOpacity style={styles.glassButton} onPress={pickResume}>
                           <Ionicons name="document-text-outline" size={24} color="#333" />
@@ -601,25 +634,22 @@ export default function VoiceInterviewScreen() {
                           {jdText !== MOCK_JOB_DESCRIPTION && <Ionicons name="checkmark-circle" size={20} color="#4CAF50" style={{marginLeft: 10}} />}
                       </TouchableOpacity>
 
-                      {/* 2. Duration */}
                       <Text style={styles.sectionTitle}>2. Duration</Text>
                       {renderSlider()}
                       
-                      {/* 3. The Plan (If generated) */}
                       {plan && (
                           <View style={{marginTop: 20}}>
                               <Text style={styles.sectionTitle}>3. Agenda Preview</Text>
                               <View style={styles.planPreview}>
                                   {plan.queue.map((item, i) => (
                                       <Text key={item.id} style={{fontSize: 14, color: '#333', marginBottom: 5}}>
-                                          {i+1}. {item.topic} {item.score ? `(${item.score}/10)` : ''}
+                                          {i}. {item.topic}
                                       </Text>
                                   ))}
                               </View>
                           </View>
                       )}
 
-                      {/* Action Button */}
                       <TouchableOpacity 
                           style={styles.modalGenerateButton}
                           onPress={handleSaveAndRestart}
@@ -638,7 +668,6 @@ export default function VoiceInterviewScreen() {
           </BlurView>
       </Modal>
 
-      {/* Chat Area */}
       <View style={styles.chatContainer}>
         <ScrollView 
             style={styles.chatList}
@@ -651,7 +680,6 @@ export default function VoiceInterviewScreen() {
                     styles.messageRow, 
                     msg.sender === 'user' ? styles.rowRight : styles.rowLeft
                 ]}>
-                    {/* Avatar for AI */}
                     {msg.sender === 'ai' && (
                         <View style={{alignItems: 'center', marginRight: 8}}>
                              <Text style={{fontSize: 10, color: '#999', marginBottom: 2}}>Victoria</Text>
@@ -667,7 +695,6 @@ export default function VoiceInterviewScreen() {
                             styles.bubbleText,
                             msg.sender === 'ai' ? styles.aiText : null
                         ]}>
-                            {/* Typewriter Effect only for the latest AI message */}
                             {msg.sender === 'ai' && index === messages.length - 1 
                                 ? displayedAiText 
                                 : msg.text}
@@ -676,7 +703,6 @@ export default function VoiceInterviewScreen() {
                 </View>
             ))}
             
-            {/* Live Bubble */}
             {displayTranscript.length > 0 && (
                 <View style={[styles.messageRow, styles.rowRight]}>
                     <View style={[styles.bubble, styles.liveBubble]}>
@@ -693,7 +719,6 @@ export default function VoiceInterviewScreen() {
         </ScrollView>
       </View>
 
-      {/* Controls */}
       <View style={styles.controls}>
           <TouchableOpacity 
             onPress={toggleRecording}
@@ -714,7 +739,6 @@ export default function VoiceInterviewScreen() {
             </Animated.View>
           </TouchableOpacity>
           
-          {/* VAD Pixel */}
           {isRecording && (
               <View style={[
                   styles.vadPixel, 
@@ -782,7 +806,7 @@ const styles = StyleSheet.create({
       borderBottomRightRadius: 4,
   },
   aiBubble: {
-      backgroundColor: '#007AFF', // Blue
+      backgroundColor: '#007AFF',
       borderBottomLeftRadius: 4,
   },
   liveBubble: {
@@ -846,17 +870,16 @@ const styles = StyleSheet.create({
       transform: [{ scale: 1.1 }],
   },
   micButtonDisabled: {
-      backgroundColor: '#6B7280', // Grey
+      backgroundColor: '#6B7280',
       opacity: 0.8,
   },
-  // Modal Styles
   blurContainer: {
       flex: 1,
       justifyContent: 'center',
       alignItems: 'center',
   },
   modalContainer: {
-      backgroundColor: 'rgba(30,30,30,0.3)', // Dark "Tech Glass"
+      backgroundColor: 'rgba(30,30,30,0.3)',
       width: '90%',
       borderRadius: 25,
       maxHeight: '85%',
@@ -926,35 +949,6 @@ const styles = StyleSheet.create({
   },
   sliderLabelActive: {
       color: '#000',
-      fontWeight: 'bold',
-  },
-  modalButtons: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      width: '100%',
-  },
-  cancelBtn: {
-      padding: 15,
-      borderRadius: 10,
-      backgroundColor: '#F3F4F6',
-      flex: 1,
-      marginRight: 10,
-      alignItems: 'center',
-  },
-  saveBtn: {
-      padding: 15,
-      borderRadius: 10,
-      backgroundColor: '#4CAF50',
-      flex: 1,
-      marginLeft: 10,
-      alignItems: 'center',
-  },
-  cancelBtnText: {
-      color: '#333',
-      fontWeight: 'bold',
-  },
-  saveBtnText: {
-      color: '#FFF',
       fontWeight: 'bold',
   },
   modalGenerateButton: {

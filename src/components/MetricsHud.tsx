@@ -4,10 +4,13 @@ import { EvaluationMetrics } from '../types';
 
 interface MetricsHudProps {
     metrics: EvaluationMetrics | null;
+    success?: number;
+    patience?: number;
 }
 
-export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics }) => {
-    if (!metrics) return null;
+export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics, success = 0, patience = 0 }) => {
+    // If no data at all, render nothing
+    if (!metrics && success === 0 && patience === 0) return null;
 
     const calculateOverall = (m: EvaluationMetrics) => {
         return ((m.accuracy + m.depth + m.structure) / 3).toFixed(1);
@@ -19,6 +22,18 @@ export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics }) => {
         return '#EF4444'; // Red
     };
 
+    const ProgressBar = ({ label, value, color }: { label: string, value: number, color: string }) => (
+        <View style={styles.progressWrapper}>
+             <View style={styles.progressLabelRow}>
+                <Text style={styles.progressLabel}>{label}</Text>
+                <Text style={[styles.progressValueText, { color }]}>{Math.round(value)}%</Text>
+            </View>
+            <View style={styles.track}>
+                <View style={[styles.bar, { width: `${value}%`, backgroundColor: color }]} />
+            </View>
+        </View>
+    );
+
     const ScoreItem = ({ label, score }: { label: string, score: number }) => (
         <View style={styles.scoreItem}>
             <Text style={styles.scoreLabel}>{label}</Text>
@@ -28,24 +43,39 @@ export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics }) => {
 
     return (
         <View style={styles.container}>
-            <View style={styles.row}>
-                <ScoreItem label="Accuracy" score={metrics.accuracy} />
-                <ScoreItem label="Depth" score={metrics.depth} />
-                <ScoreItem label="Structure" score={metrics.structure} />
-                
-                <View style={[styles.scoreItem, styles.overallItem]}>
-                    <Text style={styles.overallLabel}>OVERALL</Text>
-                    <Text style={[styles.overallValue, { color: getColor(parseFloat(calculateOverall(metrics))) }]}>
-                        {calculateOverall(metrics)}
-                    </Text>
-                </View>
+            {/* RPG Stats Panel (Success & Patience) */}
+            <View style={styles.statsPanel}>
+                <ProgressBar label="SUCCESS" value={success} color="#10B981" />
+                <View style={{ width: 15 }} />
+                <ProgressBar label="PATIENCE" value={patience} color="#EF4444" />
             </View>
-            {metrics.reasoning && (
-                <View style={styles.reasoningContainer}>
-                    <Text style={styles.reasoningText} numberOfLines={2}>
-                        💡 {metrics.reasoning}
-                    </Text>
-                </View>
+
+            {/* Detailed Metrics (Only if available) */}
+            {metrics && (
+                <>
+                    <View style={styles.divider} />
+                    
+                    <View style={styles.row}>
+                        <ScoreItem label="Accuracy" score={metrics.accuracy} />
+                        <ScoreItem label="Depth" score={metrics.depth} />
+                        <ScoreItem label="Structure" score={metrics.structure} />
+                        
+                        <View style={[styles.scoreItem, styles.overallItem]}>
+                            <Text style={styles.overallLabel}>OVERALL</Text>
+                            <Text style={[styles.overallValue, { color: getColor(parseFloat(calculateOverall(metrics))) }]}>
+                                {calculateOverall(metrics)}
+                            </Text>
+                        </View>
+                    </View>
+
+                    {metrics.reasoning && (
+                        <View style={styles.reasoningContainer}>
+                            <Text style={styles.reasoningText} numberOfLines={2}>
+                                💡 {metrics.reasoning}
+                            </Text>
+                        </View>
+                    )}
+                </>
             )}
         </View>
     );
@@ -53,19 +83,58 @@ export const MetricsHud: React.FC<MetricsHudProps> = ({ metrics }) => {
 
 const styles = StyleSheet.create({
     container: {
-        backgroundColor: 'rgba(255,255,255,0.9)',
+        backgroundColor: 'rgba(255,255,255,0.95)',
         marginHorizontal: 20,
         marginTop: 10,
         borderRadius: 16,
-        padding: 12,
+        padding: 16,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
+        shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        shadowRadius: 8,
+        elevation: 5,
         borderWidth: 1,
         borderColor: 'rgba(0,0,0,0.05)',
     },
+    // RPG Stats Styles
+    statsPanel: {
+        flexDirection: 'row',
+        marginBottom: 4, // tight spacing if metrics exist
+    },
+    progressWrapper: {
+        flex: 1,
+    },
+    progressLabelRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        marginBottom: 5,
+    },
+    progressLabel: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#6B7280',
+        letterSpacing: 0.5,
+    },
+    progressValueText: {
+        fontSize: 10,
+        fontWeight: '800',
+    },
+    track: {
+        height: 6,
+        backgroundColor: '#F3F4F6',
+        borderRadius: 3,
+        overflow: 'hidden',
+    },
+    bar: {
+        height: '100%',
+        borderRadius: 3,
+    },
+    divider: {
+        height: 1,
+        backgroundColor: '#F3F4F6',
+        marginVertical: 12,
+    },
+    // Existing Styles
     row: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -102,8 +171,8 @@ const styles = StyleSheet.create({
         fontWeight: '900',
     },
     reasoningContainer: {
-        marginTop: 8,
-        paddingTop: 8,
+        marginTop: 12,
+        paddingTop: 10,
         borderTopWidth: 1,
         borderTopColor: '#F3F4F6',
     },

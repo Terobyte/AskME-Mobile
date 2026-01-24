@@ -46,6 +46,10 @@ export default function VoiceInterviewScreen() {
   const [resumeFile, setResumeFile] = useState<any>(null);
   const [plan, setPlan] = useState<InterviewPlan | null>(null);
   const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
+  
+  // RPG Scoring State
+  const [topicSuccess, setTopicSuccess] = useState(0);
+  const [topicPatience, setTopicPatience] = useState(0);
 
   // Slider Logic
   const getModeFromSlider = (val: number): InterviewMode => {
@@ -188,6 +192,48 @@ export default function VoiceInterviewScreen() {
                     // JSON Response
                     messageToSpeak = response.message;
                     setCurrentMetrics(response.metrics);
+
+                    // --- RPG LOGIC (DEBUGGED) ---
+                    if (response.metrics) { 
+                        const { accuracy, depth, structure } = response.metrics; 
+                        const overall = (accuracy + depth + structure) / 3; 
+                        
+                        console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`); // Debug Log 
+                
+                        setTopicSuccess(prevS => { 
+                            setTopicPatience(prevP => { 
+                                let s = prevS; 
+                                let p = prevP; 
+                                
+                                // RE-APPLY MATH HERE INSIDE SETTERS 
+                                if (overall < 5) { 
+                                    // BAD
+                                    p += ((10 - overall) * 7); 
+                                    console.log(`🔻 Bad Answer. Patience +${((10 - overall) * 7).toFixed(1)}`); 
+                                } else if (overall >= 5 && overall < 7) { 
+                                    // MEDIOCRE
+                                    s += (overall * 7); 
+                                    p += 10; 
+                                    console.log(`🔸 Mediocre. Success +${(overall * 7).toFixed(1)}, Patience +10`); 
+                                } else { 
+                                    // GOOD
+                                    s += (overall * 13); 
+                                    p -= (overall * 3); 
+                                    console.log(`✅ Good! Success +${(overall * 13).toFixed(1)}, Patience Healed`); 
+                                } 
+                                
+                                // Clamp and Return P 
+                                return Math.min(Math.max(p, 0), 100); 
+                            }); 
+                            
+                            // Re-calculate S (redundant but needed for the setter structure) 
+                            let s = prevS; 
+                            if (overall >= 5 && overall < 7) s += (overall * 7); 
+                            else if (overall >= 7) s += (overall * 13); 
+                            
+                            return Math.min(Math.max(s, 0), 100); 
+                        }); 
+                    }
                 }
                 
                 // Speak & Update UI
@@ -516,7 +562,11 @@ export default function VoiceInterviewScreen() {
       </View>
 
       {/* Metrics HUD */}
-      <MetricsHud metrics={currentMetrics} />
+      <MetricsHud 
+          metrics={currentMetrics} 
+          success={topicSuccess} 
+          patience={topicPatience} 
+      />
 
       {/* Control Center Modal (Glass) */}
       <Modal visible={showSettings} animationType="fade" transparent>

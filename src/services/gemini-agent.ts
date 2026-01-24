@@ -1,4 +1,4 @@
-import { InterviewTopic } from "../types";
+import { InterviewTopic, AiResponse } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -15,25 +15,36 @@ export class GeminiAgentService {
     if (!this.apiKey) console.error("API Key missing! Check .env file.");
   }
 
-  async startInterview(agenda: InterviewTopic[], resume: string, role: string) {
+  async startInterview(agenda: InterviewTopic[], resume: string, role: string): Promise<AiResponse | string> {
     this.agenda = agenda;
     this.currentTopicIndex = 0; // Reset index
 
     // 1. Build System Context with RAW JSON
-    this.systemInstruction = `You are AskME, a professional AI Interviewer.
+    this.systemInstruction = `
+    You are Victoria, a Principal Software Engineer at a FAANG company. You are conducting a high-stakes technical interview.
+            
+    CONTEXT:
+    - Candidate Resume Summary: "${resume.substring(0, 500)}..."
+    - Position: ${role}
+    - Agenda: ${JSON.stringify(agenda.map(p => p.topic))}
     
-    CONTEXT DATA:
-    - Candidate Resume: "${resume.substring(0, 1500)}..."
-    - Interview Agenda (JSON): ${JSON.stringify(agenda)}
+    SCORING RUBRIC (BE BRUTAL):
+    You must evaluate the candidate's LAST answer against Senior-level expectations.
+    - **10 (Perfect):** Deep internal knowledge, mentions trade-offs, edge cases, and modern alternatives. Rare.
+    - **8-9 (Strong):** Correct, structured, good depth. What we expect from a Senior.
+    - **5-7 (Mid/Junior):** Correct textbook definition, but shallow. Lacks "under the hood" details.
+    - **1-4 (Fail):** Vague, wrong, short (1 sentence), or buzzword-heavy without substance.
+    
+    CRITICAL RULES:
+    1. **Short Answers:** If the user answers in 1-2 short sentences, the 'Depth' score MUST be under 4.
+    2. **Vague Answers:** If the user says "It depends" without explaining *what* it depends on, penalize heavily.
+    3. **Accuracy:** Do not overlook small technical errors. Mention them in 'reasoning'.
+    4. **Reasoning Field:** Be blunt and direct in the JSON 'reasoning' field (e.g., "Answer was too generic," "Failed to explain the lifecycle").
     
     PROTOCOL:
-    1. ANALYZE HISTORY: Look at the conversation history to see which topics from the Agenda have already been covered.
-    2. TRACK PROGRESS: Move strictly sequentially through the Agenda JSON list.
-    3. NEXT TOPIC: Select the first topic that has NOT been discussed yet.
-    4. INTERACTION:
-       - Evaluate the previous answer (1 sentence feedback).
-       - Ask a deep technical question about the Current Topic.
-    5. STYLE: Warm, professional, concise. NO placeholders like "[Your Name]".`;
+    - Continue moving through the Agenda sequentially.
+    - Your spoken 'message' should remain professional and polite, but the 'metrics' in the JSON must be harsh and honest.
+    `;
 
     // 2. Reset History
     this.history = [];
@@ -42,8 +53,8 @@ export class GeminiAgentService {
     return await this.sendUserResponse("Start the interview. Introduce yourself as AskME and ask me to introduce myself.");
   }
 
-  async sendUserResponse(userText: string) {
-    if (!userText) return null;
+  async sendUserResponse(userText: string): Promise<AiResponse | string> {
+    if (!userText) return "Error: No text";
 
     // Add User Message to History
     this.history.push({ role: "user", parts: [{ text: userText }] });
@@ -54,8 +65,26 @@ export class GeminiAgentService {
       contents: this.history,
       systemInstruction: { parts: [{ text: this.systemInstruction }] },
       generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 1000,
+        temperature: 0.2,
+        maxOutputTokens: 2048,
+        responseMimeType: "application/json",
+        responseSchema: {
+            type: "OBJECT",
+            properties: {
+                message: { type: "STRING" },
+                metrics: {
+                    type: "OBJECT",
+                    properties: {
+                        accuracy: { type: "NUMBER" },
+                        depth: { type: "NUMBER" },
+                        structure: { type: "NUMBER" },
+                        reasoning: { type: "STRING" }
+                    },
+                    required: ["accuracy", "depth", "structure", "reasoning"]
+                }
+            },
+            required: ["message", "metrics"]
+        }
       }
     };
 
@@ -101,16 +130,42 @@ export class GeminiAgentService {
                 return "AI Error: " + (data.error.message || "Unknown error");
             }
 
-            // Extract Text
-            const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            // Extract Text (which is now JSON string)
+            const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
             
-            if (aiText) {
+            if (rawText) {
+                // DEBUG LOGGING
+                console.log("🟢 [GEMINI RAW RESPONSE]:", rawText);
+
                 // Add AI Response to History so it remembers context
-                this.history.push({ role: "model", parts: [{ text: aiText }] });
+                // NOTE: We must store the RAW JSON string in history for the model to maintain context correctly
+                this.history.push({ role: "model", parts: [{ text: rawText }] });
                 
                 // Increment Topic Index
                 if (this.currentTopicIndex < this.agenda.length) {
                     this.currentTopicIndex++;
+                }
+
+                // Parse JSON for the App
+                let parsedResponse: AiResponse;
+                try {
+                    // CLEAN JSON (Ironclad Parsing)
+                    const cleanedJson = this.cleanJson(rawText);
+                    parsedResponse = JSON.parse(cleanedJson);
+                } catch (e) {
+                    console.error("JSON Parse Error:", e);
+                    
+                    // FALLBACK: Graceful degradation instead of crashing
+                    console.warn("⚠️ Returning FALLBACK object due to parse error.");
+                    parsedResponse = {
+                        message: "I encountered a processing error, but let's continue. Could you repeat that?",
+                        metrics: {
+                            accuracy: 5,
+                            depth: 5,
+                            structure: 5,
+                            reasoning: "System error: Response truncation."
+                        }
+                    };
                 }
 
                 // --- 📊 HUMAN READABLE DASHBOARD 📊 --- 
@@ -141,7 +196,7 @@ export class GeminiAgentService {
                 console.log("=".repeat(60) + "\n"); 
                 // ----------------------------------------
 
-                return aiText;
+                return parsedResponse;
             }
             
             return "No response from AI.";
@@ -152,5 +207,24 @@ export class GeminiAgentService {
         }
     }
     return "AI Error: Request timed out after retries.";
+  }
+
+  private cleanJson(text: string): string {
+    // 1. Remove Markdown Code Blocks (```json ... ```)
+    let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+    
+    // 2. Trim whitespace
+    cleaned = cleaned.trim();
+    
+    // 3. (Optional) Remove any text before the first '{' or after the last '}'
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+        // Ensure we are slicing correctly even if there is trailing garbage
+        cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+    }
+    
+    return cleaned;
   }
 }

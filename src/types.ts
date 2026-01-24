@@ -32,3 +32,15 @@ export interface InterviewPlan {
   };
   queue: InterviewTopic[];
 }
+
+export interface EvaluationMetrics {
+    accuracy: number;
+    depth: number;
+    structure: number;
+    reasoning: string;
+}
+
+export interface AiResponse {
+    message: string;
+    metrics: EvaluationMetrics;
+}

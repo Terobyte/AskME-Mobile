@@ -8,12 +8,13 @@ import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
 import * as FileSystem from 'expo-file-system';
-import { InterviewMode, InterviewPlan } from '../types';
+import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse } from '../types';
 
 import { GeminiAgentService } from '../services/gemini-agent';
 import { generateInterviewPlan } from '../interview-planner';
 import { TTSService } from '../services/tts-service';
 import { useTypewriter } from '../hooks/useTypewriter';
+import { MetricsHud } from '../components/MetricsHud';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -44,6 +45,7 @@ export default function VoiceInterviewScreen() {
   const [sliderValue, setSliderValue] = useState(0);
   const [resumeFile, setResumeFile] = useState<any>(null);
   const [plan, setPlan] = useState<InterviewPlan | null>(null);
+  const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
 
   // Slider Logic
   const getModeFromSlider = (val: number): InterviewMode => {
@@ -105,6 +107,14 @@ export default function VoiceInterviewScreen() {
       if (status !== 'granted') {
         alert('Permission to access microphone was denied');
       }
+      // Force Speaker Output on Mount
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
     })();
 
     return () => {
@@ -167,11 +177,22 @@ export default function VoiceInterviewScreen() {
           if (agentRef.current) {
             setIsAgentThinking(true); // LOCK
             try {
-                const reply = await agentRef.current.sendUserResponse(textToFinalize.trim());
+                const response = await agentRef.current.sendUserResponse(textToFinalize.trim());
+                
+                let messageToSpeak = "";
+
+                if (typeof response === 'string') {
+                    // Fallback for string response
+                    messageToSpeak = response;
+                } else {
+                    // JSON Response
+                    messageToSpeak = response.message;
+                    setCurrentMetrics(response.metrics);
+                }
                 
                 // Speak & Update UI
-                if (reply) {
-                    await playSynchronizedResponse(reply);
+                if (messageToSpeak) {
+                    await playSynchronizedResponse(messageToSpeak);
                 }
             } catch (error) {
                 console.error("Agent Error:", error);
@@ -225,7 +246,17 @@ export default function VoiceInterviewScreen() {
           agentRef.current = new GeminiAgentService();
           
           // 3. Start Agent (Hidden Greeting)
-          const introMsg = await agentRef.current.startInterview(generatedPlan.queue, resumeText, "Candidate");
+          const introResponse = await agentRef.current.startInterview(generatedPlan.queue, resumeText, "Candidate");
+          
+          let introMsg = "";
+          if (typeof introResponse === 'string') {
+              introMsg = introResponse;
+          } else {
+              introMsg = introResponse.message;
+              // Metrics might be empty for intro, or we can reset
+              setCurrentMetrics(null); 
+          }
+
           await playSynchronizedResponse(introMsg);
           setShowSettings(false); // Close Modal
           
@@ -245,7 +276,7 @@ export default function VoiceInterviewScreen() {
         Alert.alert("Configuration Error", "Deepgram API Key is missing.");
         return;
     }
-    const socketUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&encoding=linear16&sample_rate=16000&container=wav`;
+    const socketUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&filler_words=true&encoding=linear16&sample_rate=16000&container=wav&interim_results=true`;
     const socket = new WebSocket(socketUrl, ['token', cleanKey]);
     ws.current = socket;
     socket.onopen = () => {
@@ -432,6 +463,15 @@ export default function VoiceInterviewScreen() {
       
       try {
           console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
+
+          // FORCE SPEAKER (Switch off recording mode for iOS)
+          await Audio.setAudioModeAsync({
+              allowsRecordingIOS: false,
+              playsInSilentModeIOS: true,
+              staysActiveInBackground: true,
+              shouldDuckAndroid: true,
+              playThroughEarpieceAndroid: false,
+          });
           
           // 2. Грузим аудио (ЖДЕМ ЗДЕСЬ)
           // ВАЖНО: Убедись, что в TTSService есть метод prepareAudio, который мы делали
@@ -474,6 +514,9 @@ export default function VoiceInterviewScreen() {
               <Ionicons name="settings-outline" size={24} color="#333" />
           </TouchableOpacity>
       </View>
+
+      {/* Metrics HUD */}
+      <MetricsHud metrics={currentMetrics} />
 
       {/* Control Center Modal (Glass) */}
       <Modal visible={showSettings} animationType="fade" transparent>

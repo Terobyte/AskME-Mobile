@@ -162,14 +162,9 @@ export default function VoiceInterviewScreen() {
   const finalizeMessage = async () => {
       const textToFinalize = latestTranscriptRef.current; 
       
-      if (isAgentThinking) {
-          console.log("⚠️ BLOCKED DUPLICATE API CALL: Agent is already thinking.");
-          return;
-      }
+      if (isAgentThinking) return;
       
       if (textToFinalize.trim().length > 0) {
-          console.log('🔥 TRIGGERING GEMINI API CALL for:', textToFinalize.substring(0, 20) + "...");
-          
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           setMessages(prev => [...prev, { id: Date.now().toString(), text: textToFinalize.trim(), sender: 'user' }]);
           
@@ -180,114 +175,125 @@ export default function VoiceInterviewScreen() {
           setIsFinalChunk(false);
 
           if (agentRef.current && plan) {
-            setIsAgentThinking(true); // LOCK
+            setIsAgentThinking(true);
             try {
-                const safeIndex = Math.min(currentTopicIndex, plan.queue.length - 1);
+                // --- ЛОГИКА "ЗАГЛЯДЫВАНИЯ В БУДУЩЕЕ" (LOOK AHEAD) ---
+                
+                let effectiveTopicIndex = currentTopicIndex;
+                let effectivePrevResult = previousTopicResult;
+
+                // ЕСЛИ ЭТО ИНТРО (0) -> МЫ ФОРСИРУЕМ ПЕРЕХОД СРАЗУ
+                if (currentTopicIndex === 0 && plan.queue.length > 1) {
+                    console.log("🚀 [FORCE TRANSITION] Intro Detect -> Switching context to Topic 1 immediately.");
+                    effectiveTopicIndex = 1; // Подсовываем ИИ следующую тему
+                    effectivePrevResult = "INTRO_COMPLETE"; // Говорим ИИ, что интро всё
+                }
+
+                const safeIndex = Math.min(effectiveTopicIndex, plan.queue.length - 1);
                 const currentTopic = plan.queue[safeIndex];
-                const isLast = currentTopicIndex >= plan.queue.length - 1;
                 
-                const context = {
-                    currentTopic: currentTopic,
-                    previousResult: previousTopicResult,
-                    angerLevel: anger, // Use state 'anger'
-                    isLastTopic: isLast
-                };
-
-                const response = await agentRef.current.sendUserResponse(textToFinalize.trim(), context);
+                // --- 1. ANALYSIS PHASE (JUDGE) ---
+                console.log("� [1] Analyzing User Intent...");
+                const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), currentTopic);
+                console.log("� [1] Result:", JSON.stringify(analysis));
                 
-                let messageToSpeak = "";
-
-                if (typeof response === 'string') {
-                    messageToSpeak = response;
-                } else {
-                    messageToSpeak = response.message;
-                    setCurrentMetrics(response.metrics);
-
-                    // --- RPG & CAMPAIGN LOGIC ---
-                    if (response.metrics) { 
-                        const { accuracy, depth, structure } = response.metrics; 
-                        const overall = (accuracy + depth + structure) / 3; 
-                        
-                        console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`); 
+                setCurrentMetrics(analysis.metrics); // Show HUD immediately
                 
-                        let newSuccess = topicSuccess;
-                        let newPatience = topicPatience;
-                        
-                        // INTRO SPECIAL CASE (Index 0)
-                        if (currentTopicIndex === 0) {
-                             setTopicSuccess(0);
-                             setTopicPatience(0);
-                             setAnger(-10); // Reset Anger
-                             setPreviousTopicResult("INTRO_COMPLETE");
-                             setCurrentTopicIndex(1);
-                             console.log("🏁 Intro Complete. Moving to Topic 1.");
-                        } 
-                        // NORMAL TOPICS
-                        else {
-                            if (overall < 5) { 
-                                // BAD
-                                newPatience += ((10 - overall) * 7); 
-                            } else if (overall >= 5 && overall < 7) { 
-                                // MEDIOCRE
-                                newSuccess += (overall * 7); 
-                                newPatience += 10; 
-                            } else { 
-                                // GOOD
-                                newSuccess += (overall * 13); 
-                                newPatience -= (overall * 3); 
-                            } 
-                            
-                            // Clamp
-                            newSuccess = Math.min(Math.max(newSuccess, 0), 100);
-                            newPatience = Math.min(Math.max(newPatience, 0), 100);
-                            
-                            // Update UI (Local Stats Only)
-                            setTopicSuccess(newSuccess);
-                            setTopicPatience(newPatience);
-                            
-                            // CHECK TRANSITIONS (Only Update Anger HERE)
-                            if (newSuccess >= 100 || newPatience >= 100) {
-                                // 1. Calculate Anger Delta based on the patience used to finish this topic
-                                const angerChange = (newPatience * 0.3) - 10;
-                                
-                                // 2. Update Global Anger (Cumulative)
-                                setAnger(prev => {
-                                    const newLevel = prev + angerChange;
-                                    // Optional: Clamp anger between -20 (Zen) and 100 (Rage)
-                                    return Math.min(Math.max(newLevel, -20), 100);
-                                });
-
-                                // 3. Reset Local Stats
-                                setTopicSuccess(0);
-                                setTopicPatience(0);
-                                
-                                // 4. Move Next
-                                if (newSuccess >= 100) {
-                                    setPreviousTopicResult("PASSED_SUCCESS");
-                                    console.log("🎉 Topic Passed! Moving to next.");
-                                } else {
-                                    setPreviousTopicResult("FAILED_PATIENCE");
-                                    console.log("💀 Topic Failed! Moving to next.");
-                                }
-                                
-                                setCurrentTopicIndex(prev => prev + 1);
-                            }
-                        }
-                    }
+                // --- 2. GAME LOGIC PHASE ---
+                let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' = 'STAY';
+                let shouldPenalizeAnger = true;
+                
+                // Local Math Vars
+                let newSuccess = topicSuccess;
+                let newPatience = topicPatience;
+                
+                if (analysis.intent === 'GIVE_UP') {
+                    console.log("🏳️ User GAVE UP.");
+                    newPatience = 110; // Instant Fail
+                }
+                else if (analysis.intent === 'SHOW_ANSWER') {
+                    console.log("💡 User asked for ANSWER.");
+                    newPatience = 110; // Instant Fail (Progress-wise)
+                    shouldPenalizeAnger = false; // MERCY
+                    transitionMode = 'NEXT_EXPLAIN';
+                }
+                else if (analysis.intent === 'CLARIFICATION') {
+                     console.log("🤔 User asked for CLARIFICATION.");
+                     // No metric changes, stay on topic
+                }
+                else {
+                    // ATTEMPT -> Normal Scoring
+                    const { accuracy, depth, structure } = analysis.metrics; 
+                    const overall = (accuracy + depth + structure) / 3; 
+                    
+                    console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`);
+                    
+                    if (overall < 5) newPatience += ((10 - overall) * 7); 
+                    else if (overall < 7) { newSuccess += (overall * 7); newPatience += 10; } 
+                    else { newSuccess += (overall * 13); newPatience -= (overall * 3); }
                 }
                 
-                // CRITICAL: Reset Previous Result after it's been used
-                if (previousTopicResult) {
-                    setPreviousTopicResult(null);
+                // Clamp
+                newSuccess = Math.min(Math.max(newSuccess, 0), 100);
+                newPatience = Math.min(Math.max(newPatience, 0), 100);
+                
+                // Update UI State
+                setTopicSuccess(newSuccess);
+                setTopicPatience(newPatience);
+                
+                // --- 3. TRANSITION CHECK ---
+                let nextIndex = effectiveTopicIndex;
+                
+                if (newSuccess >= 100) {
+                     transitionMode = 'NEXT_PASS';
+                     nextIndex++;
+                     setPreviousTopicResult("PASSED_SUCCESS");
+                     // Reset Stats
+                     setTopicSuccess(0);
+                     setTopicPatience(0);
+                     // Anger Relief
+                     setAnger(prev => Math.max(0, prev - 5));
+                }
+                else if (newPatience >= 100) {
+                     // If we didn't already set EXPLAIN, set FAIL
+                     if (transitionMode !== 'NEXT_EXPLAIN') transitionMode = 'NEXT_FAIL';
+                     
+                     nextIndex++;
+                     setPreviousTopicResult("FAILED_PATIENCE");
+                     // Reset Stats
+                     setTopicSuccess(0);
+                     setTopicPatience(0);
+                     
+                     // Anger Penalty (unless Mercy)
+                     if (shouldPenalizeAnger) {
+                         setAnger(prev => Math.min(100, prev + 15));
+                     } else {
+                         console.log("😇 Mercy Rule: Anger saved.");
+                     }
                 }
                 
-                if (messageToSpeak) {
-                    await playSynchronizedResponse(messageToSpeak);
+                // UPDATE TOPIC INDEX NOW (Before Speech)
+                if (nextIndex !== currentTopicIndex) {
+                    console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
+                    setCurrentTopicIndex(nextIndex);
                 }
+
+                // --- 4. ACTING PHASE (VOICE) ---
+                console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
+                
+                const nextTopic = plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
+                
+                const speech = await agentRef.current.generateVoiceResponse({
+                    currentTopic: currentTopic, // Context of what we just talked about
+                    nextTopic: nextTopic,       // Context of where we are going
+                    transitionMode: transitionMode
+                });
+                
+                await playSynchronizedResponse(speech);
             } catch (error) {
                 console.error("Agent Error:", error);
             } finally {
-                setIsAgentThinking(false); // UNLOCK
+                setIsAgentThinking(false);
             }
           }
       }

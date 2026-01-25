@@ -1,4 +1,4 @@
-import { InterviewTopic, AiResponse, InterviewContext } from "../types";
+import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -20,181 +20,132 @@ export class GeminiAgentService {
     this.role = role;
     this.history = []; // Reset History
 
-    // Send First Trigger with Initial Context
-    return await this.sendUserResponse("Start the interview. Introduce yourself as AskME and ask me to introduce myself.", initialContext);
-  }
-
-  private buildSystemInstruction(context: InterviewContext): string {
-      return `
-    You are Victoria, a Principal Software Engineer at a FAANG company. You are conducting a high-stakes technical interview.
-            
-    CONTEXT:
-    - Candidate Resume Summary: "${this.resume.substring(0, 500)}..."
-    - Position: ${this.role}
-    
-    >>> CAMPAIGN MODE <<<
-    You are conducting the interview ONE TOPIC at a time.
-    - **CURRENT TOPIC:** ${context.currentTopic.topic}
-    - **DESCRIPTION:** ${context.currentTopic.context || "General Technical Question"}
-    - **PREVIOUS RESULT:** ${context.previousResult || "N/A (Start of Interview)"}
-    - **YOUR ANNOYANCE LEVEL:** ${context.angerLevel}/100
-    - **IS LAST TOPIC:** ${context.isLastTopic ? "YES - Say goodbye after this." : "NO"}
-    
-    BEHAVIOR:
-    You are moving to a NEW topic. Check 'PREVIOUS RESULT':
-    - IF 'PASSED_SUCCESS': Look at history. Provide 1 sentence of **specific praise** on the last topic. Then ask the opening question for [CURRENT TOPIC].
-    - IF 'FAILED_PATIENCE': Look at history. Provide 1 sentence of **constructive feedback** on why they failed the last topic. Then say "Let's move on" and ask the opening question for [CURRENT TOPIC].
-    - IF 'INTRO_COMPLETE': Acknowledge intro briefly. Ask opening question for [CURRENT TOPIC].
-    - IF 'null' (First message): Start with the Introduction.
-    - IF 'NONE' (null): Continue the current topic normally (dig deeper / follow up).
-       
-    **Rule:** Do NOT ask the old question again. Ask a FRESH question about [CURRENT TOPIC].
-    - If 'angerLevel' is high (>70), be short, curt, and aggressive.
-    
-    SCORING RUBRIC (BE BRUTAL):
-    You must evaluate the candidate's LAST answer against Senior-level expectations.
-    - **10 (Perfect):** Deep internal knowledge, mentions trade-offs, edge cases, and modern alternatives. Rare.
-    - **8-9 (Strong):** Correct, structured, good depth. What we expect from a Senior.
-    - **5-7 (Mid/Junior):** Correct textbook definition, but shallow. Lacks "under the hood" details.
-    - **1-4 (Fail):** Vague, wrong, short (1 sentence), or buzzword-heavy without substance.
-    
-    CRITICAL RULES:
-    1. **Short Answers:** If the user answers in 1-2 short sentences, the 'Depth' score MUST be under 4.
-    2. **Vague Answers:** If the user says "It depends" without explaining *what* it depends on, penalize heavily.
-    3. **Accuracy:** Do not overlook small technical errors. Mention them in 'reasoning'.
-    4. **Reasoning Field:** Be blunt and direct in the JSON 'reasoning' field.
-    
-    PROTOCOL:
-    - Your spoken 'message' should remain professional but reflect your current mood (Anger Level).
-    - If the user has finished the interview (you will be told if it's the last topic, but for now assume continuous), continue.
-    `;
-  }
-
-  async sendUserResponse(userText: string, context: InterviewContext): Promise<AiResponse | string> {
-    if (!userText) return "Error: No text";
-
-    // Add User Message to History
-    this.history.push({ role: "user", parts: [{ text: userText }] });
-
-    // Dynamic System Instruction
-    const dynamicSystemInstruction = this.buildSystemInstruction(context);
-
-    // Construct Payload
-    // Note: Gemini REST API expects 'contents' array with history
-    const payload = {
-      contents: this.history,
-      systemInstruction: { parts: [{ text: dynamicSystemInstruction }] },
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 2048,
-        responseMimeType: "application/json",
-        responseSchema: {
-            type: "OBJECT",
-            properties: {
-                message: { type: "STRING" },
-                metrics: {
-                    type: "OBJECT",
-                    properties: {
-                        accuracy: { type: "NUMBER" },
-                        depth: { type: "NUMBER" },
-                        structure: { type: "NUMBER" },
-                        reasoning: { type: "STRING" }
-                    },
-                    required: ["accuracy", "depth", "structure", "reasoning"]
-                }
-            },
-            required: ["message", "metrics"]
-        }
-      }
+    // Send First Trigger (Uses Voice Generation logic for Intro)
+    const introContext: VoiceGenerationContext = {
+        currentTopic: initialContext.currentTopic,
+        nextTopic: null,
+        transitionMode: 'STAY' // Normal flow for intro
     };
-
-    const MAX_RETRIES = 3;
-    let retryCount = 0;
     
-    while (retryCount <= MAX_RETRIES) {
-        try {
-            console.log(`DEBUG: Sending Fetch Request to Gemini (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})...`);
-            
-            // Log payload only on first attempt to avoid clutter
-            if (retryCount === 0) {
-                console.log("\n🔵 ================= GEMINI REQUEST START ================= 🔵"); 
-                // console.log(JSON.stringify(payload, null, 2)); // Reduced noise
-                console.log(`📌 Topic: ${context.currentTopic.topic} | Prev: ${context.previousResult} | Anger: ${context.angerLevel}`);
-                console.log("🔵 ================= GEMINI REQUEST END =================== 🔵\n");
-            }
+    // Hack: We simulate the "Intro" prompt as a voice generation task
+    return await this.generateVoiceResponse(introContext, "Start the interview. Introduce yourself as AskME and ask me to introduce myself.");
+  }
 
-            const response = await fetch(`${this.baseUrl}?key=${this.apiKey}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-
-            const data = await response.json();
-
-            // Handle Rate Limits (429)
-            if (data.error && data.error.code === 429) {
-                console.warn(`⚠️ Rate Limit Hit (429). Retrying...`);
-                retryCount++;
-                if (retryCount > MAX_RETRIES) {
-                    return "AI is currently overloaded. Please wait a moment and try again.";
-                }
-                
-                // Exponential Backoff: 2s, 4s, 8s...
-                const waitTime = Math.pow(2, retryCount) * 1000;
-                console.log(`⏳ Waiting ${waitTime}ms before retry...`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
-                continue; // Retry loop
-            }
-
-            if (data.error) {
-                console.error("Gemini API Error:", data.error);
-                return "AI Error: " + (data.error.message || "Unknown error");
-            }
-
-            // Extract Text (which is now JSON string)
-            const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            
-            if (rawText) {
-                // DEBUG LOGGING
-                console.log("🟢 [GEMINI RAW RESPONSE]:", rawText);
-
-                // Add AI Response to History so it remembers context
-                // NOTE: We must store the RAW JSON string in history for the model to maintain context correctly
-                this.history.push({ role: "model", parts: [{ text: rawText }] });
-                
-                // Parse JSON for the App
-                let parsedResponse: AiResponse;
-                try {
-                    // CLEAN JSON (Ironclad Parsing)
-                    const cleanedJson = this.cleanJson(rawText);
-                    parsedResponse = JSON.parse(cleanedJson);
-                } catch (e) {
-                    console.error("JSON Parse Error:", e);
-                    
-                    // FALLBACK: Graceful degradation instead of crashing
-                    console.warn("⚠️ Returning FALLBACK object due to parse error.");
-                    parsedResponse = {
-                        message: "I encountered a processing error, but let's continue. Could you repeat that?",
-                        metrics: {
-                            accuracy: 5,
-                            depth: 5,
-                            structure: 5,
-                            reasoning: "System error: Response truncation."
-                        }
-                    };
-                }
-
-                return parsedResponse;
-            }
-            
-            return "No response from AI.";
-
-        } catch (e) {
-            console.error("Network Error:", e);
-            return "Connection failed. Please check your internet.";
+  // --- 1. ANALYSIS JUDGE ---
+  async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic): Promise<AnalysisResponse | string> {
+      const prompt = `
+      ROLE: Analytical Judge (JSON ONLY)
+      TASK: Evaluate the candidate's answer.
+      
+      CONTEXT:
+      - Topic: "${currentTopic.topic}"
+      - Description: "${currentTopic.context || 'General'}"
+      - User Input: "${userText}"
+      
+      INTENT CLASSIFICATION RULES:
+      - "GIVE_UP": User says "I don't know", "Skip", "Next", "Pass".
+      - "SHOW_ANSWER": User asks "Tell me the answer", "What is it?", "How would you answer?".
+      - "CLARIFICATION": User asks "Can you repeat?", "Rephrase please?".
+      - "ATTEMPT": User tries to answer (even if wrong).
+      
+      SCORING (0-10):
+      - 10: Perfect, deep, expert.
+      - 1-4: Vague, wrong, or short.
+      
+      OUTPUT JSON SCHEMA:
+      {
+        "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" },
+        "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER"
+      }
+      `;
+      
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+            temperature: 0.1, // Strict logic
+            responseMimeType: "application/json"
         }
-    }
-    return "AI Error: Request timed out after retries.";
+      };
+      
+      try {
+          const raw = await this.callGemini(payload);
+          const clean = this.cleanJson(raw);
+          return JSON.parse(clean) as AnalysisResponse;
+      } catch (e) {
+          console.error("Analysis Error:", e);
+          // Fallback
+          return {
+              metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" },
+              intent: "ATTEMPT"
+          };
+      }
+  }
+
+  // --- 2. VOICE ACTOR ---
+  async generateVoiceResponse(context: VoiceGenerationContext, overridePrompt?: string): Promise<string> {
+      // Build Prompt based on Transition Mode
+      let behaviorInstruction = "";
+      
+      if (overridePrompt) {
+          behaviorInstruction = `INSTRUCTION: ${overridePrompt}`;
+      } else {
+          switch (context.transitionMode) {
+              case 'STAY':
+                  behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
+                  break;
+              case 'NEXT_FAIL':
+                  behaviorInstruction = `User FAILED "${context.currentTopic.topic}". Say "Let's move on." or "Okay, clearly you are struggling." THEN ask the opening question for NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  break;
+              case 'NEXT_PASS':
+                  behaviorInstruction = `User PASSED "${context.currentTopic.topic}". Give brief praise. THEN ask the opening question for NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  break;
+              case 'NEXT_EXPLAIN':
+                  behaviorInstruction = `User asked for the answer to "${context.currentTopic.topic}". Briefly EXPLAIN the correct answer (teaching mode). THEN, say "Now for the next topic..." and ask the opening question for "${context.nextTopic?.topic}".`;
+                  break;
+          }
+      }
+      
+      const prompt = `
+      You are Victoria, a Principal Software Engineer.
+      Tone: Professional, slightly strict but fair.
+      
+      ${behaviorInstruction}
+      
+      Constraint: Keep it spoken-word friendly. No markdown. Short and clear.
+      `;
+      
+      // Update History only for Voice (so context is maintained)
+      this.history.push({ role: "model", parts: [{ text: "..." }] }); // Placeholder if needed, or better:
+      // Actually, we should push the PREVIOUS user text before this. 
+      // But 'evaluate' is separate. 
+      // Simplified: We assume 'history' is managed outside or we just append the result.
+      
+      const payload = {
+        contents: [
+            ...this.history, 
+            { role: "user", parts: [{ text: prompt }] }
+        ],
+        generationConfig: { temperature: 0.7 } // Creative for voice
+      };
+      
+      try {
+          const text = await this.callGemini(payload);
+          this.history.push({ role: "model", parts: [{ text: text }] });
+          return text;
+      } catch (e) {
+          return "I'm having trouble speaking right now. Let's move on.";
+      }
+  }
+
+  private async callGemini(payload: any): Promise<string> {
+      const response = await fetch(`${this.baseUrl}?key=${this.apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
   }
 
   private cleanJson(text: string): string {

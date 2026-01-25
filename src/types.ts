@@ -40,6 +40,17 @@ export interface EvaluationMetrics {
     reasoning: string;
 }
 
+export interface AnalysisResponse {
+    metrics: EvaluationMetrics;
+    intent: 'ATTEMPT' | 'GIVE_UP' | 'CLARIFICATION' | 'SHOW_ANSWER';
+}
+
+export interface VoiceGenerationContext {
+    currentTopic: InterviewTopic;
+    nextTopic: InterviewTopic | null;
+    transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN';
+}
+
 export interface AiResponse {
     message: string;
     metrics: EvaluationMetrics;

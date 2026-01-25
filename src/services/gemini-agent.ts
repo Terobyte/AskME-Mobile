@@ -46,6 +46,7 @@ export class GeminiAgentService {
       - "GIVE_UP": User says "I don't know", "Skip", "Next", "Pass".
       - "SHOW_ANSWER": User asks "Tell me the answer", "What is it?", "How would you answer?".
       - "CLARIFICATION": User asks "Can you repeat?", "Rephrase please?".
+      - "READY_CONFIRM": User says "I'm ready", "Let's start", "Go ahead", "I am prepared".
       - "ATTEMPT": User tries to answer (even if wrong).
       
       SCORING (0-10):
@@ -55,7 +56,7 @@ export class GeminiAgentService {
       OUTPUT JSON SCHEMA:
       {
         "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" },
-        "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER"
+        "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER" | "READY_CONFIRM"
       }
       `;
       
@@ -105,6 +106,9 @@ export class GeminiAgentService {
               case 'FINISH_INTERVIEW':
                   const mood = (context.angerLevel || 0) > 50 ? "cold and brief" : "warm and encouraging";
                   behaviorInstruction = `The interview is over. You are ${mood}. Briefly thank the candidate. Give a very short, 1-sentence overall feedback based on the final Anger level (${context.angerLevel}). Say goodbye.`;
+                  break;
+              case 'TERMINATE_ANGER':
+                  behaviorInstruction = `You are furious. The candidate has wasted your time with poor answers. Harshly terminate the interview immediately. Say something like "That's enough. We are done here." and hang up.`;
                   break;
           }
       }

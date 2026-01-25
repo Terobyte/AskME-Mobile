@@ -28,6 +28,11 @@ const MOCK_RESUME = `Senior React Native Developer with 5 years of experience. E
 const MOCK_JOB_DESCRIPTION = `We are looking for a Senior Mobile Engineer to build our flagship iOS and Android app.`;
 const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 
+const INITIAL_PLAN: InterviewPlan = {
+    meta: { mode: 'short', total_estimated_time: '5m' },
+    queue: [{ id: 'intro', topic: 'Introduction', type: 'Intro', estimated_time: '5m' }]
+};
+
 export default function VoiceInterviewScreen() {
   const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
   const [isRecording, setIsRecording] = useState(false);
@@ -52,6 +57,9 @@ export default function VoiceInterviewScreen() {
   const [topicPatience, setTopicPatience] = useState(0);
   const [anger, setAnger] = useState(0); // Start at 0
 
+  
+  const [isPlanReady, setIsPlanReady] = useState(false);
+  const [isLobbyPhase, setIsLobbyPhase] = useState(true);
   
   // Campaign State
   const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
@@ -174,45 +182,103 @@ export default function VoiceInterviewScreen() {
           setDisplayTranscript("");
           setIsFinalChunk(false);
 
-          if (agentRef.current && plan) {
+          if (agentRef.current) {
             setIsAgentThinking(true);
             try {
+                // --- LOBBY PHASE LOGIC ---
+                if (isLobbyPhase) {
+                    console.log("🏨 [LOBBY] Analyzing Lobby Input...");
+                    
+                    // Use a dummy topic for analysis context
+                    const lobbyTopic: any = { topic: "Lobby Check", context: "User is in the waiting lobby." };
+                    const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), lobbyTopic);
+                    
+                    if (analysis.intent === 'READY_CONFIRM') {
+                        // OPTIMISTIC START: We don't care if plan is fully ready, because we have Intro.
+                        console.log("✅ [LOBBY] User Ready -> STARTING INTRO (Optimistic)");
+                        
+                        // Fallback to INITIAL_PLAN if plan is null (though it shouldn't be due to setPlan in handleStartInterview)
+                        const currentPlan = plan || INITIAL_PLAN;
+
+                        // Initialize Agent Context properly
+                        const initialContext = {
+                            currentTopic: currentPlan.queue[0], // This is Intro
+                            previousResult: null,
+                            angerLevel: 0,
+                            isLastTopic: false
+                        };
+                        
+                        // Call Start Interview Logic
+                        const introResponse = await agentRef.current.startInterview(resumeText, "Candidate", initialContext);
+                         let introMsg = "";
+                         if (typeof introResponse === 'string') {
+                             introMsg = introResponse;
+                         } else {
+                             introMsg = introResponse.message;
+                         }
+
+                        setIsLobbyPhase(false);
+                        setCurrentTopicIndex(0); // Actually we are AT intro now.
+                        
+                        await playSynchronizedResponse(introMsg);
+                        
+                    } else {
+                         console.log("🗣️ [LOBBY] Small Talk");
+                         // Just chat or acknowledge
+                         const chatMsg = await agentRef.current.generateVoiceResponse({
+                             currentTopic: lobbyTopic,
+                             nextTopic: null,
+                             transitionMode: 'STAY'
+                         }, "User is not ready yet. Just chat politely or say 'Take your time'.");
+                         await playSynchronizedResponse(chatMsg);
+                    }
+                    
+                    setIsAgentThinking(false);
+                    return; // EXIT LOBBY LOGIC
+                }
+
+                // --- REGULAR INTERVIEW LOGIC ---
+                if (!plan) return;
+
                 let effectiveTopicIndex = currentTopicIndex;
                 let effectivePrevResult = previousTopicResult;
 
                 const safeIndex = Math.min(effectiveTopicIndex, plan.queue.length - 1);
                 const currentTopic = plan.queue[safeIndex];
                 
+                // --- 1. ANALYSIS PHASE (JUDGE) ---
+                // We analyze EVERY answer, including Intro, to log intent/metrics.
+                console.log("🔍 [1] Analyzing User Intent...");
+                const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), currentTopic);
+                console.log("📊 [1] Result:", JSON.stringify(analysis));
+
                 // --- SPECIAL CASE: INTRO (Index 0) ---
                 if (currentTopicIndex === 0) {
-                     console.log("🚀 [INTRO DETECTED] Skipping Analysis. Forcing Transition.");
+                     console.log("🚀 [INTRO DETECTED] Ignoring Stats. Forcing Transition.");
+                     
                      // Force Transition to Topic 1
                      setCurrentTopicIndex(1);
-                     
                      const nextTopic = plan.queue[1];
                      
                      // Direct Voice Call (Skip Math)
                      const speech = await agentRef.current.generateVoiceResponse({
                         currentTopic: currentTopic,
-                        nextTopic: nextTopic,
-                        transitionMode: 'NEXT_PASS', // "Alright, let's start."
+                        nextTopic: plan.queue[1],
+                        transitionMode: 'NEXT_PASS',
                         angerLevel: 0
                     });
                     
                     await playSynchronizedResponse(speech);
-                    return; // EXIT EARLY
+                    return; // EXIT EARLY (No Stats Update)
                 }
                 
-                // --- 1. ANALYSIS PHASE (JUDGE) ---
-                console.log("� [1] Analyzing User Intent...");
-                const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), currentTopic);
-                console.log("� [1] Result:", JSON.stringify(analysis));
                 
                 setCurrentMetrics(analysis.metrics); // Show HUD immediately
                 
                 // --- 2. GAME LOGIC PHASE ---
-                let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' = 'STAY';
+                let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER' = 'STAY';
                 let shouldPenalizeAnger = true;
+                let shouldFinishInterview = false;
                 
                 // Local Math Vars
                 let newSuccess = topicSuccess;
@@ -277,17 +343,24 @@ export default function VoiceInterviewScreen() {
                      
                      // Anger Penalty (unless Mercy)
                      if (shouldPenalizeAnger) {
-                         setAnger(prev => Math.min(100, prev + 15));
+                         setAnger(prev => Math.min(100, prev + 35));
                      } else {
                          console.log("😇 Mercy Rule: Anger saved.");
                      }
                 }
                 
+                // RAGE QUIT CHECK (Hardcore Mode)
+                if (anger >= 100) {
+                     console.log("🤬 RAGE QUIT TRIGGERED!");
+                     transitionMode = 'TERMINATE_ANGER';
+                     shouldFinishInterview = true;
+                }
+                
                 // CHECK FOR END OF INTERVIEW
-                if (plan && nextIndex >= plan.queue.length) {
+                else if (plan && nextIndex >= plan.queue.length) {
                     console.log("🏁 End of Interview Detected.");
                     transitionMode = 'FINISH_INTERVIEW';
-                    setIsInterviewFinished(true); // Show Modal
+                    shouldFinishInterview = true;
                     // DO NOT increment currentTopicIndex (keep at last valid index for safety)
                 } else {
                      // Normal Transition
@@ -301,7 +374,7 @@ export default function VoiceInterviewScreen() {
                 console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
                 
                 // Safety check for nextTopic (if finished, it's null)
-                const nextTopic = (transitionMode === 'FINISH_INTERVIEW') 
+                const nextTopic = (transitionMode === 'FINISH_INTERVIEW' || transitionMode === 'TERMINATE_ANGER') 
                     ? null 
                     : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
                 
@@ -313,6 +386,11 @@ export default function VoiceInterviewScreen() {
                 });
                 
                 await playSynchronizedResponse(speech);
+                
+                // SHOW MODAL AFTER AUDIO
+                if (shouldFinishInterview) {
+                    setIsInterviewFinished(true);
+                }
             } catch (error) {
                 console.error("Agent Error:", error);
             } finally {
@@ -354,13 +432,13 @@ export default function VoiceInterviewScreen() {
 
   const handleSaveAndRestart = async () => {
       setIsGenerating(true);
+      setShowSettings(false); // Hide settings immediately
+      
       try {
-          const generatedPlan = await generateInterviewPlan(resumeText, jdText, mode);
-          setPlan(generatedPlan);
-          
+          // 1. Initialize Agent
           agentRef.current = new GeminiAgentService();
           
-          // Reset Campaign State
+          // 2. Reset State
           setCurrentTopicIndex(0);
           setPreviousTopicResult(null);
           setTopicSuccess(0);
@@ -368,25 +446,32 @@ export default function VoiceInterviewScreen() {
           setAnger(0);
           setIsInterviewFinished(false);
           
-          const initialContext = {
-              currentTopic: generatedPlan.queue[0],
-              previousResult: null,
-              angerLevel: 0,
-              isLastTopic: false
-          };
+          // OPTIMISTIC START: Set Plan to Intro Only immediately
+          setPlan(INITIAL_PLAN);
+          setIsPlanReady(false); // Indicates full plan is loading
+          setIsLobbyPhase(true);
+          setMessages([]);
           
-          const introResponse = await agentRef.current.startInterview(resumeText, "Candidate", initialContext);
+          // 3. Play Immediate Greeting
+          const greeting = "Hello, I'm Victoria. I'll be conducting your technical interview today. I have your details in front of me. Whenever you're ready to begin, just let me know.";
+          await playSynchronizedResponse(greeting);
           
-          let introMsg = "";
-          if (typeof introResponse === 'string') {
-              introMsg = introResponse;
-          } else {
-              introMsg = introResponse.message;
-              setCurrentMetrics(null); 
-          }
-
-          await playSynchronizedResponse(introMsg);
-          setShowSettings(false); 
+          // 4. Async Plan Generation
+          generateInterviewPlan(resumeText, jdText, mode).then(generatedPlan => {
+              setPlan(prev => {
+                  if (!prev) return generatedPlan;
+                  // Merge new questions into existing plan (keeping Intro at 0)
+                  return {
+                      ...generatedPlan,
+                      queue: [prev.queue[0], ...generatedPlan.queue.slice(1)]
+                  };
+              });
+              setIsPlanReady(true);
+              console.log("✅ Plan Ready:", generatedPlan.queue.length, "topics");
+          }).catch(err => {
+              console.error("Plan Gen Error:", err);
+              Alert.alert("Error", "Failed to generate interview plan.");
+          });
           
       } catch (error) {
           Alert.alert("Error", "Failed to initialize interview.");
@@ -562,6 +647,12 @@ export default function VoiceInterviewScreen() {
   };
 
   const playSynchronizedResponse = async (text: string) => {
+      // 🛑 STOP ECHO LOOP: Ensure Mic is OFF before AI speaks
+      if (isRecording) {
+          console.log("🛑 Preventing Self-Listening: Stopping Mic before TTS.");
+          await stopRecording();
+      }
+
       setIsAgentThinking(true); 
       
       try {
@@ -583,12 +674,15 @@ export default function VoiceInterviewScreen() {
           setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
 
           if (sound) {
-              sound.setOnPlaybackStatusUpdate((status) => {
-                  if (status.isLoaded && status.didJustFinish) {
-                      sound.unloadAsync();
-                  }
+              await new Promise<void>((resolve) => {
+                  sound.setOnPlaybackStatusUpdate((status) => {
+                      if (status.isLoaded && status.didJustFinish) {
+                          sound.unloadAsync();
+                          resolve();
+                      }
+                  });
+                  sound.playAsync();
               });
-              await sound.playAsync();
           }
           
       } catch (e) {
@@ -650,11 +744,12 @@ export default function VoiceInterviewScreen() {
               <View style={styles.modalContainer}>
                   <View style={styles.modalHeader}>
                       <Text style={styles.modalTitle}>Control Center</Text>
-                      {plan && (
-                          <TouchableOpacity onPress={() => setShowSettings(false)}>
-                              <Ionicons name="close" size={28} color="#333" />
-                          </TouchableOpacity>
-                      )}
+                      <TouchableOpacity 
+                          onPress={() => setShowSettings(false)}
+                          hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+                      >
+                          <Ionicons name="close" size={28} color="#333" />
+                      </TouchableOpacity>
                   </View>
 
                   <ScrollView style={styles.modalContent}>

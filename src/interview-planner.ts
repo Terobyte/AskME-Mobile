@@ -1,15 +1,15 @@
-import Groq from "groq-sdk";
+import { GoogleGenAI } from "@google/genai";
 import { softSkillsDB } from "./soft-skills-db";
 import { InterviewMode, InterviewPlan, InterviewTopic, GeminiAnalysisResult } from "./types";
 
 // USE ENV VAR
-const GROQ_API_KEY = process.env.EXPO_PUBLIC_GROQ_API_KEY || ""; 
-if (!GROQ_API_KEY) console.warn("Groq API Key missing in .env");
+const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || ""; 
+if (!GEMINI_API_KEY) console.warn("Gemini API Key missing in .env");
 
-const groq = new Groq({ apiKey: GROQ_API_KEY, dangerouslyAllowBrowser: true });
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 export async function generateInterviewPlan(resume: string, jd: string, mode: InterviewMode, previousQuestionIds: string[] = []): Promise<InterviewPlan> {
-  // Logic Step 1: Groq Prompt Update - DYNAMIC CATEGORIZATION & ROLE EXTRACTION
+  // Logic Step 1: Gemini Prompt Update - DYNAMIC CATEGORIZATION & ROLE EXTRACTION
   const prompt = `Analyze this Resume vs JD. 
   
   First, extract the "Job Role" from the JD (e.g. "Senior React Developer", "System Administrator").
@@ -30,8 +30,8 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
   Each skill array must contain objects: { "skill": "Skill Name", "category": "Specific Domain", "score": number }.
   Do not use Markdown formatting.`;
 
-  // Helper: Call Groq with Retry Logic
-  async function callGroqWithRetry(promptText: string): Promise<string> {
+  // Helper: Call Gemini with Retry Logic
+  async function callGeminiWithRetry(promptText: string): Promise<string> {
     const maxRetries = 3;
     const delays = [2000, 4000]; // 2s, 4s
 
@@ -39,43 +39,43 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const response = await groq.chat.completions.create({
-          messages: [{ role: "user", content: promptText }],
-          model: "llama-3.3-70b-versatile",
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-pro",  //dont touch this model! it is only working dont change to 1.5
+            contents: [{ role: "user", parts: [{ text: promptText }] }],
         });
-        return response.choices[0]?.message?.content || "";
-      } catch (error: any) {
-        console.warn(`Groq API Attempt ${attempt + 1} failed:`, error.message);
         
-        // If it's the last attempt, rethrow to trigger fallback
+        // Google GenAI SDK (v0.1.0+) structure check
+        if (response && response.candidates && response.candidates.length > 0) {
+            const candidate = response.candidates[0];
+            if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+                 return candidate.content.parts[0].text || "";
+            }
+        }
+        return "";
+      } catch (error: any) {
+        console.warn(`Gemini API Attempt ${attempt + 1} failed:`, error.message);
+        
         if (attempt === maxRetries - 1) throw error;
 
-        // Check for specific error codes if available, or just general retry
-        const isRetryable = error.status === 503 || error.status === 429 || error.message?.includes('Overloaded');
-        
-        if (isRetryable || true) { // Retry on most errors for robustness
-           const waitTime = delays[attempt] || 4000;
-           console.log(`Waiting ${waitTime}ms before retry...`);
-           await delay(waitTime);
-        } else {
-            throw error; // Non-retryable
-        }
+        const waitTime = delays[attempt] || 4000;
+        console.log(`Waiting ${waitTime}ms before retry...`);
+        await delay(waitTime);
       }
     }
-    return ""; // Should not reach here
+    return ""; 
   }
 
   let analysis: GeminiAnalysisResult = { matches: [], gaps: [], cool_skills: [], transferable_skills: [], soft_skills: [] };
-  let jobRole = "Senior Technical Lead"; // Default
+  let jobRole = "Senior Technical Lead"; 
 
   try {
-    const text = await callGroqWithRetry(prompt);
+    const text = await callGeminiWithRetry(prompt);
     const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
     const result = JSON.parse(jsonStr);
     analysis = result;
     if (result.job_role) jobRole = result.job_role;
   } catch (error) {
-    console.error("Error analyzing with Groq:", error);
+    console.error("Error analyzing with Gemini:", error);
   }
 
   // --- PHASE 1: BUILD RAW POOL ---
@@ -144,9 +144,16 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
   poolItems.sort((a, b) => (b.score || 0) - (a.score || 0));
 
   // Determine Limit based on Mode
-  let maxQuestions = 100; // Freestyle
-  if (mode === 'short') maxQuestions = 5;
-  if (mode === 'medium') maxQuestions = 10;
+  let technicalLimit = 3;
+  let softLimit = 2;
+  
+  if (mode === 'medium') {
+      technicalLimit = 6;
+      softLimit = 4;
+  } else if (mode === 'freestyle') {
+      technicalLimit = 10;
+      softLimit = 5;
+  }
 
   // Build Final Agenda (Topics Only)
   let finalQueue: InterviewTopic[] = [];
@@ -160,19 +167,43 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
       estimated_time: '5m'
   });
 
-  // 2. Add Top Scored Topics
-  let index = 0;
-  for (const item of poolItems) {
-      if (finalQueue.length >= maxQuestions) break;
+  // 2. Add Technical Topics (Matches + Gaps + Cool)
+  const technicalPool = [
+      ...matches.slice(0, 10).map(m => ({ type: 'Match', ...m })),
+      ...gaps.slice(0, 5).map(g => ({ type: 'Gap', ...g })),
+      ...coolSkills.slice(0, 2).map(c => ({ type: 'CoolSkill', ...c }))
+  ];
+  // Sort by score
+  technicalPool.sort((a, b) => (b.score || 0) - (a.score || 0));
+  
+  // Take top N technical
+  let techCount = 0;
+  for (const item of technicalPool) {
+      if (techCount >= technicalLimit) break;
       finalQueue.push({
-          id: `${item.type.toLowerCase()}_${index}`, // Use simple index to ensure uniqueness
+          id: `${item.type.toLowerCase()}_${techCount}`,
           type: item.type as any,
-          topic: item.skill, // Just the Topic Name!
+          topic: item.skill,
           category: item.category,
           estimated_time: '5m',
           score: item.score
       });
-      index++;
+      techCount++;
+  }
+
+  // 3. Add Soft Skills
+  let softCount = 0;
+  for (const item of poolSoftSkills) {
+      if (softCount >= softLimit) break;
+      finalQueue.push({
+          id: `soft_${softCount}`,
+          type: 'SoftSkill',
+          topic: item.skill,
+          category: item.category,
+          estimated_time: '5m',
+          score: item.score
+      });
+      softCount++;
   }
 
   return {

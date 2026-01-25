@@ -48,7 +48,8 @@ export interface AnalysisResponse {
 export interface VoiceGenerationContext {
     currentTopic: InterviewTopic;
     nextTopic: InterviewTopic | null;
-    transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN';
+    transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW';
+    angerLevel?: number; // Added for final feedback
 }
 
 export interface AiResponse {

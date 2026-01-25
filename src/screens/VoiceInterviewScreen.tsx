@@ -177,20 +177,31 @@ export default function VoiceInterviewScreen() {
           if (agentRef.current && plan) {
             setIsAgentThinking(true);
             try {
-                // --- ЛОГИКА "ЗАГЛЯДЫВАНИЯ В БУДУЩЕЕ" (LOOK AHEAD) ---
-                
                 let effectiveTopicIndex = currentTopicIndex;
                 let effectivePrevResult = previousTopicResult;
 
-                // ЕСЛИ ЭТО ИНТРО (0) -> МЫ ФОРСИРУЕМ ПЕРЕХОД СРАЗУ
-                if (currentTopicIndex === 0 && plan.queue.length > 1) {
-                    console.log("🚀 [FORCE TRANSITION] Intro Detect -> Switching context to Topic 1 immediately.");
-                    effectiveTopicIndex = 1; // Подсовываем ИИ следующую тему
-                    effectivePrevResult = "INTRO_COMPLETE"; // Говорим ИИ, что интро всё
-                }
-
                 const safeIndex = Math.min(effectiveTopicIndex, plan.queue.length - 1);
                 const currentTopic = plan.queue[safeIndex];
+                
+                // --- SPECIAL CASE: INTRO (Index 0) ---
+                if (currentTopicIndex === 0) {
+                     console.log("🚀 [INTRO DETECTED] Skipping Analysis. Forcing Transition.");
+                     // Force Transition to Topic 1
+                     setCurrentTopicIndex(1);
+                     
+                     const nextTopic = plan.queue[1];
+                     
+                     // Direct Voice Call (Skip Math)
+                     const speech = await agentRef.current.generateVoiceResponse({
+                        currentTopic: currentTopic,
+                        nextTopic: nextTopic,
+                        transitionMode: 'NEXT_PASS', // "Alright, let's start."
+                        angerLevel: 0
+                    });
+                    
+                    await playSynchronizedResponse(speech);
+                    return; // EXIT EARLY
+                }
                 
                 // --- 1. ANALYSIS PHASE (JUDGE) ---
                 console.log("� [1] Analyzing User Intent...");
@@ -200,7 +211,7 @@ export default function VoiceInterviewScreen() {
                 setCurrentMetrics(analysis.metrics); // Show HUD immediately
                 
                 // --- 2. GAME LOGIC PHASE ---
-                let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' = 'STAY';
+                let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' = 'STAY';
                 let shouldPenalizeAnger = true;
                 
                 // Local Math Vars
@@ -272,21 +283,33 @@ export default function VoiceInterviewScreen() {
                      }
                 }
                 
-                // UPDATE TOPIC INDEX NOW (Before Speech)
-                if (nextIndex !== currentTopicIndex) {
-                    console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
-                    setCurrentTopicIndex(nextIndex);
+                // CHECK FOR END OF INTERVIEW
+                if (plan && nextIndex >= plan.queue.length) {
+                    console.log("🏁 End of Interview Detected.");
+                    transitionMode = 'FINISH_INTERVIEW';
+                    setIsInterviewFinished(true); // Show Modal
+                    // DO NOT increment currentTopicIndex (keep at last valid index for safety)
+                } else {
+                     // Normal Transition
+                     if (nextIndex !== currentTopicIndex) {
+                         console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
+                         setCurrentTopicIndex(nextIndex);
+                     }
                 }
 
                 // --- 4. ACTING PHASE (VOICE) ---
                 console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
                 
-                const nextTopic = plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
+                // Safety check for nextTopic (if finished, it's null)
+                const nextTopic = (transitionMode === 'FINISH_INTERVIEW') 
+                    ? null 
+                    : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
                 
                 const speech = await agentRef.current.generateVoiceResponse({
                     currentTopic: currentTopic, // Context of what we just talked about
-                    nextTopic: nextTopic,       // Context of where we are going
-                    transitionMode: transitionMode
+                    nextTopic: nextTopic,       // Context of where we are going (or null)
+                    transitionMode: transitionMode,
+                    angerLevel: anger // Pass final anger for feedback
                 });
                 
                 await playSynchronizedResponse(speech);
@@ -342,7 +365,7 @@ export default function VoiceInterviewScreen() {
           setPreviousTopicResult(null);
           setTopicSuccess(0);
           setTopicPatience(0);
-          setAnger(-10);
+          setAnger(0);
           setIsInterviewFinished(false);
           
           const initialContext = {
@@ -371,6 +394,13 @@ export default function VoiceInterviewScreen() {
       } finally {
           setIsGenerating(false);
       }
+  };
+
+  const handleReturnToSettings = () => {
+      setIsInterviewFinished(false);
+      setShowSettings(true);
+      setMessages([]); // Clear chat
+      // We keep resumeText/jdText loaded
   };
 
   const connectToDeepgram = async () => {
@@ -675,6 +705,36 @@ export default function VoiceInterviewScreen() {
                           )}
                       </TouchableOpacity>
                   </ScrollView>
+              </View>
+          </BlurView>
+      </Modal>
+
+      <Modal visible={isInterviewFinished} animationType="slide" transparent>
+          <BlurView intensity={40} style={styles.blurContainer} tint="dark">
+              <View style={[styles.modalContainer, { backgroundColor: '#FFF', alignItems: 'center', padding: 30 }]}>
+                  <Text style={{ fontSize: 60, marginBottom: 20 }}>🏁</Text>
+                  <Text style={{ fontSize: 24, fontWeight: 'bold', marginBottom: 10 }}>
+                      {isInterviewFinished ? "Interview Finished" : "Interview Paused"}
+                  </Text>
+                  
+                  <View style={{ marginVertical: 20, alignItems: 'center' }}>
+                      <Text style={{ fontSize: 16, color: '#666' }}>Final Anger Level</Text>
+                      <Text style={{ fontSize: 32, fontWeight: 'bold', color: anger > 50 ? '#EF4444' : '#10B981' }}>
+                          {anger.toFixed(0)}%
+                      </Text>
+                      <Text style={{ fontSize: 14, color: '#999', marginTop: 5, textAlign: 'center' }}>
+                          {anger > 50 
+                            ? "Victoria is disappointed. You need to improve your skills." 
+                            : "Interview complete. Check your results below."}
+                      </Text>
+                  </View>
+
+                  <TouchableOpacity 
+                      style={[styles.modalGenerateButton, { width: '100%', marginTop: 10 }]}
+                      onPress={handleReturnToSettings}
+                  >
+                      <Text style={styles.modalGenerateButtonText}>Back to Menu</Text>
+                  </TouchableOpacity>
               </View>
           </BlurView>
       </Modal>

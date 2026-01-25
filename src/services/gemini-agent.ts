@@ -94,13 +94,17 @@ export class GeminiAgentService {
                   behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
                   break;
               case 'NEXT_FAIL':
-                  behaviorInstruction = `User FAILED "${context.currentTopic.topic}". Say "Let's move on." or "Okay, clearly you are struggling." THEN ask the opening question for NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic}".`;
                   break;
               case 'NEXT_PASS':
-                  behaviorInstruction = `User PASSED "${context.currentTopic.topic}". Give brief praise. THEN ask the opening question for NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic}".`;
                   break;
               case 'NEXT_EXPLAIN':
-                  behaviorInstruction = `User asked for the answer to "${context.currentTopic.topic}". Briefly EXPLAIN the correct answer (teaching mode). THEN, say "Now for the next topic..." and ask the opening question for "${context.nextTopic?.topic}".`;
+                  behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  break;
+              case 'FINISH_INTERVIEW':
+                  const mood = (context.angerLevel || 0) > 50 ? "cold and brief" : "warm and encouraging";
+                  behaviorInstruction = `The interview is over. You are ${mood}. Briefly thank the candidate. Give a very short, 1-sentence overall feedback based on the final Anger level (${context.angerLevel}). Say goodbye.`;
                   break;
           }
       }
@@ -111,7 +115,7 @@ export class GeminiAgentService {
       
       ${behaviorInstruction}
       
-      Constraint: Keep it spoken-word friendly. No markdown. Short and clear.
+      Constraint: Speak naturally as Victoria. Do not repeat robotic phrases. Keep it spoken-word friendly. No markdown. Short and clear.
       `;
       
       // Update History only for Voice (so context is maintained)

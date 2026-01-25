@@ -276,6 +276,11 @@ export default function VoiceInterviewScreen() {
                     }
                 }
                 
+                // CRITICAL: Reset Previous Result after it's been used
+                if (previousTopicResult) {
+                    setPreviousTopicResult(null);
+                }
+                
                 if (messageToSpeak) {
                     await playSynchronizedResponse(messageToSpeak);
                 }

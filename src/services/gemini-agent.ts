@@ -42,10 +42,11 @@ export class GeminiAgentService {
     
     BEHAVIOR:
     You are moving to a NEW topic. Check 'PREVIOUS RESULT':
-    - IF 'PASSED_SUCCESS': Start with: "Good job on the last topic." Then ask the first question for [CURRENT TOPIC].
-    - IF 'FAILED_PATIENCE': Start with: "Okay, clearly you are struggling with that. Let's move on." Then ask the first question for [CURRENT TOPIC].
-    - IF 'INTRO_COMPLETE': Start with: "Alright, let's begin the technical part." Then ask the first question for [CURRENT TOPIC].
+    - IF 'PASSED_SUCCESS': Look at history. Provide 1 sentence of **specific praise** on the last topic. Then ask the opening question for [CURRENT TOPIC].
+    - IF 'FAILED_PATIENCE': Look at history. Provide 1 sentence of **constructive feedback** on why they failed the last topic. Then say "Let's move on" and ask the opening question for [CURRENT TOPIC].
+    - IF 'INTRO_COMPLETE': Acknowledge intro briefly. Ask opening question for [CURRENT TOPIC].
     - IF 'null' (First message): Start with the Introduction.
+    - IF 'NONE' (null): Continue the current topic normally (dig deeper / follow up).
        
     **Rule:** Do NOT ask the old question again. Ask a FRESH question about [CURRENT TOPIC].
     - If 'angerLevel' is high (>70), be short, curt, and aggressive.

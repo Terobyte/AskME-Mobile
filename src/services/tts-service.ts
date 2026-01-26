@@ -1,14 +1,14 @@
-import { Audio } from 'expo-av';
+import { createAudioPlayer, AudioSource, AudioPlayer } from 'expo-audio';
 // Импортируем новый API для файлов
 import { File, Paths } from 'expo-file-system';
 
 const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY || "";
 
 class TTSServiceClass {
-    currentSound: Audio.Sound | null = null;
+    currentPlayer: AudioPlayer | null = null;
 
     // --- ГЛАВНЫЙ МЕТОД ---
-    async prepareAudio(text: string): Promise<Audio.Sound | null> {
+    async prepareAudio(text: string): Promise<AudioPlayer | null> {
         try {
             console.log("🔊 TTS: Requesting audio for:", text.substring(0, 15) + "...");
             
@@ -19,14 +19,13 @@ class TTSServiceClass {
                 return null;
             }
 
-            // 2. Создаем объект звука Expo AV
+            // 2. Создаем объект звука Expo Audio
             console.log("✅ TTS: File ready, loading into memory...");
-            const { sound } = await Audio.Sound.createAsync(
-                { uri },
-                { shouldPlay: false } // Только загружаем, не играем
-            );
-
-            return sound;
+            const source: AudioSource = { uri };
+            const player = createAudioPlayer(source);
+            
+            // Note: The player starts loading immediately.
+            return player;
         } catch (error) {
             console.error("❌ TTS Prepare Error:", error);
             return null;
@@ -35,25 +34,30 @@ class TTSServiceClass {
 
     // Метод для совместимости (играет сразу)
     async speak(text: string) {
-        const sound = await this.prepareAudio(text);
-        if (sound) {
-            this.currentSound = sound;
-            sound.setOnPlaybackStatusUpdate((status) => {
-                if (status.isLoaded && status.didJustFinish) {
-                    sound.unloadAsync();
+        const player = await this.prepareAudio(text);
+        if (player) {
+            this.currentPlayer = player;
+            player.addListener('playbackStatusUpdate', (status) => {
+                if (status.didJustFinish) {
+                    // Cleanup
+                    // @ts-ignore
+                    if (typeof player.release === 'function') player.release();
+                    else player.remove();
                 }
             });
-            await sound.playAsync();
+            player.play();
         }
     }
 
     async stop() {
-        if (this.currentSound) {
+        if (this.currentPlayer) {
             try {
-                await this.currentSound.stopAsync();
-                await this.currentSound.unloadAsync();
+                this.currentPlayer.pause();
+                // @ts-ignore
+                if (typeof this.currentPlayer.release === 'function') this.currentPlayer.release();
+                else this.currentPlayer.remove();
             } catch(e) {}
-            this.currentSound = null;
+            this.currentPlayer = null;
         }
     }
 

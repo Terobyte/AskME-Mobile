@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, TextInput, Animated, ActivityIndicator, Image } from 'react-native';
-import { Audio } from 'expo-av';
+import { useAudioRecorder, RecordingPresets, AudioModule, AudioPlayer, setAudioModeAsync, IOSOutputFormat, AndroidOutputFormat, AndroidAudioEncoder } from 'expo-audio';
 import { Buffer } from 'buffer';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
@@ -8,7 +8,7 @@ import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
 import * as FileSystem from 'expo-file-system';
-import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse } from '../types';
+import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse, QuestionResult, FinalInterviewReport } from '../types';
 
 import { GeminiAgentService } from '../services/gemini-agent';
 import { generateInterviewPlan } from '../interview-planner';
@@ -30,7 +30,7 @@ const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 
 const INITIAL_PLAN: InterviewPlan = {
     meta: { mode: 'short', total_estimated_time: '5m' },
-    queue: [{ id: 'intro', topic: 'Introduction', type: 'Intro', estimated_time: '5m' }]
+    queue: [{ id: 'intro', topic: 'Introduction', type: 'Intro', estimated_time: '5m', context: "The user is introducing themselves. Ask them to describe their background and experience briefly." }]
 };
 
 export default function VoiceInterviewScreen() {
@@ -39,6 +39,9 @@ export default function VoiceInterviewScreen() {
   const [showSettings, setShowSettings] = useState(true); 
   const [isGenerating, setIsGenerating] = useState(false);
   
+  // Audio Recorder (Expo Audio)
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+
   // Gemini Agent
   const agentRef = useRef<GeminiAgentService | null>(null);
   const [isAgentThinking, setIsAgentThinking] = useState(false);
@@ -51,6 +54,8 @@ export default function VoiceInterviewScreen() {
   const [resumeFile, setResumeFile] = useState<any>(null);
   const [plan, setPlan] = useState<InterviewPlan | null>(null);
   const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
+  const [finalReport, setFinalReport] = useState<FinalInterviewReport | null>(null);
+  const bulkEvalPromise = useRef<Promise<QuestionResult[]> | null>(null);
   
   // RPG Scoring State
   const [topicSuccess, setTopicSuccess] = useState(0);
@@ -100,7 +105,7 @@ export default function VoiceInterviewScreen() {
   const micScale = useRef(new Animated.Value(1)).current; 
 
   const ws = useRef<WebSocket | null>(null);
-  const recording = useRef<Audio.Recording | null>(null);
+  // Removed recording ref (replaced by useAudioRecorder hook)
   const lastPosition = useRef(0); 
   const streamInterval = useRef<NodeJS.Timeout | null>(null);
 
@@ -123,24 +128,34 @@ export default function VoiceInterviewScreen() {
   // Permissions & Cleanup
   useEffect(() => {
     (async () => {
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== 'granted') {
-        alert('Permission to access microphone was denied');
+      try {
+        // 1. Request Permissions
+        const status = await AudioModule.requestRecordingPermissionsAsync();
+        if (!status.granted) {
+          Alert.alert('Permission to access microphone was denied');
+          return;
+        }
+
+        // 2. CONFIGURE AUDIO SESSION (Critical Fix)
+        await setAudioModeAsync({
+          allowsRecording: true,      // Fixes "RecordingDisabledException"
+          playsInSilentMode: true,    // Fixes "No Sound" in silent mode
+          shouldPlayInBackground: false,
+          interruptionMode: 'doNotMix', // Stops other music/podcasts
+          shouldRouteThroughEarpiece: false // Force Speaker
+        });
+        
+        console.log("✅ Audio Mode Configured");
+
+      } catch (e) {
+        console.error("Audio Config Error:", e);
       }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
-      });
     })();
 
     return () => {
       TTSService.stop(); 
-      if (recording.current) {
-          recording.current.stopAndUnloadAsync().catch(err => console.log("Cleanup Error", err));
-          recording.current = null;
+      if (recorder.isRecording) {
+          recorder.stop();
       }
       if (streamInterval.current) {
           clearInterval(streamInterval.current);
@@ -197,7 +212,11 @@ export default function VoiceInterviewScreen() {
                     
                     // Use a dummy topic for analysis context
                     const lobbyTopic: any = { topic: "Lobby Check", context: "User is in the waiting lobby." };
-                    const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), lobbyTopic);
+                    const lastAiText = historyBuffer.current.length > 0 
+                        ? historyBuffer.current[historyBuffer.current.length - 1].content 
+                        : "Welcome to the lobby.";
+                        
+                    const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), lobbyTopic, lastAiText);
                     
                     if (analysis.intent === 'READY_CONFIRM') {
                         // OPTIMISTIC START: We don't care if plan is fully ready, because we have Intro.
@@ -255,39 +274,58 @@ export default function VoiceInterviewScreen() {
                 // --- 1. ANALYSIS PHASE (JUDGE) ---
                 // We analyze EVERY answer, including Intro, to log intent/metrics.
                 console.log("🔍 [1] Analyzing User Intent...");
-                const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), currentTopic);
+                
+                const lastAiText = historyBuffer.current.length > 0 
+                        ? historyBuffer.current[historyBuffer.current.length - 1].content 
+                        : "Start of topic";
+
+                const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), currentTopic, lastAiText);
                 console.log("📊 [1] Result:", JSON.stringify(analysis));
 
                 // --- SPECIAL CASE: INTRO (Index 0) ---
                 if (currentTopicIndex === 0) {
-                     // NEW LOGIC: "Confidence Boost"
-                     // We no longer ignore stats. We force a PERFECT score.
-                     
-                     // 1. CLARIFICATION CHECK (Stay if confused)
-                     if (analysis.intent === 'CLARIFICATION') {
-                         console.log("🤔 [INTRO] Clarification requested. Staying.");
+                     // 1. NONSENSE CHECK
+                     if (analysis.intent === 'NONSENSE') {
+                         console.log("🤡 [INTRO] Nonsense detected -> STAY.");
+                         setCurrentMetrics(analysis.metrics);
+                         
+                         // Punishment
+                         setTopicPatience(prev => Math.min(100, prev + 50));
+                         setAnger(prev => Math.min(100, prev + 35));
+
                          const speech = await agentRef.current.generateVoiceResponse({
                              currentTopic: currentTopic,
                              nextTopic: null,
                              transitionMode: 'STAY',
-                             angerLevel: 0
+                             angerLevel: anger + 10
                          }, undefined, historyBuffer.current);
                          await playSynchronizedResponse(speech);
                          return;
                      }
 
-                     // 2. AWARD FREE WIN (100% Success)
-                     console.log("🏆 [INTRO] Awarding Free Win (100%). HUD Updating...");
+                     // 2. CLARIFICATION CHECK (Stay if confused)
+                     if (analysis.intent === 'CLARIFICATION') {
+                         console.log("🤔 [INTRO] Clarification requested -> STAY.");
+                         const speech = await agentRef.current.generateVoiceResponse({
+                             currentTopic: currentTopic,
+                             nextTopic: null,
+                             transitionMode: 'STAY',
+                            
+                         }, undefined, historyBuffer.current);
+                         await playSynchronizedResponse(speech);
+                         return;
+                     }
+
+                     // 3. VALID INPUT (ATTEMPT, GIVE_UP, SHOW_ANSWER, READY_CONFIRM) -> MOVE NEXT
+                     console.log("✅ [INTRO] Valid input -> MOVING NEXT.");
                      
-                     // Force Perfect Stats
-                     setTopicSuccess(100);
+                     // Reset Stats for Topic 1
+                     setTopicSuccess(0);
                      setTopicPatience(0);
-                     setAnger(0); // Reset anger just in case
 
-                     // REALITY: Show actual feedback (even if it's 0/0/0)
-                     setCurrentMetrics(analysis.metrics); // <--- Use REAL metrics, not hardcoded 10s
+                     setCurrentMetrics(analysis.metrics); 
 
-                     // 3. TRANSITION TO TOPIC 1
+                     // Transition to Topic 1
                      const nextIndex = 1;
                      setCurrentTopicIndex(nextIndex);
                      const nextTopic = plan.queue[nextIndex];
@@ -296,13 +334,31 @@ export default function VoiceInterviewScreen() {
                         currentTopic: currentTopic,
                         nextTopic: nextTopic,
                         transitionMode: 'NEXT_PASS',
-                        angerLevel: 0
                     }, undefined, historyBuffer.current);
                     
                     await playSynchronizedResponse(speech);
                     return; // EXIT EARLY
                 }
                 
+                // --- BLOCKING CLARIFICATION CHECK ---
+                if (analysis.intent === 'CLARIFICATION') {
+                    console.log("🛑 [LOGIC] CLARIFICATION DETECTED -> FORCE STAY & RETURN");
+                    
+                    // 1. Generate explanation response (STAY mode)
+                    const speech = await agentRef.current.generateVoiceResponse({
+                        currentTopic: currentTopic,
+                        nextTopic: null,
+                        transitionMode: 'STAY',
+                        angerLevel: anger
+                    }, undefined, historyBuffer.current);
+                    
+                    // 2. Play Audio
+                    await playSynchronizedResponse(speech);
+                    
+                    // 3. CRITICAL: Stop execution here
+                    setIsAgentThinking(false);
+                    return;
+                }
                 
                 setCurrentMetrics(analysis.metrics); // Show HUD immediately
                 
@@ -328,6 +384,19 @@ export default function VoiceInterviewScreen() {
                 else if (analysis.intent === 'CLARIFICATION') {
                      console.log("🤔 User asked for CLARIFICATION.");
                      // No metric changes, stay on topic
+                }
+                else if (analysis.intent === 'NONSENSE') {
+                    console.log("🤡 User is Trolling/Nonsense.");
+                    
+                    // 1. Penalize heavily
+                    newPatience += 50; // Lose patience fast
+                    setAnger(prev => Math.min(100, prev + 35)); // Make her angry
+                    
+                    // 2. Force STAY
+                    transitionMode = 'STAY';
+                    
+                    // 3. Force specific feedback metric to 0
+                    setCurrentMetrics({ accuracy: 0, depth: 0, structure: 0, reasoning: "Response was identified as nonsense/irrelevant." });
                 }
                 else {
                     // ATTEMPT -> Normal Scoring
@@ -413,6 +482,20 @@ export default function VoiceInterviewScreen() {
                      if (nextIndex !== currentTopicIndex) {
                          console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
                          setCurrentTopicIndex(nextIndex);
+                         
+                         // --- OPTIMIZED BATCH EVALUATION TRIGGER ---
+                         // If we are entering the LAST topic (n-1), trigger eval for 0 to n-2 in background
+                         if (plan && nextIndex === plan.queue.length - 1) {
+                             console.log("🚀 Triggering Background Batch Eval for previous topics...");
+                             // Create a snapshot of history excluding the current (last) topic's interaction
+                             // But since we just transitioned, historyBuffer currently contains up to n-2 answers?
+                             // No, historyBuffer contains EVERYTHING so far.
+                             // We want to evaluate everything BEFORE the upcoming final question.
+                             // So we send the current history snapshot.
+                             const historySnapshot = [...historyBuffer.current];
+                             bulkEvalPromise.current = agentRef.current.evaluateBatch(historySnapshot);
+                             // Do NOT await. Let it run.
+                         }
                      }
                 }
 
@@ -433,8 +516,46 @@ export default function VoiceInterviewScreen() {
                 
                 await playSynchronizedResponse(speech);
                 
-                // SHOW MODAL AFTER AUDIO
+                // SHOW MODAL AFTER AUDIO & FINAL REPORT GEN
                 if (shouldFinishInterview) {
+                    // --- FINAL REPORT GENERATION ---
+                    console.log("📊 Generating Final Report...");
+                    setIsAgentThinking(true); // Keep spinner
+                    
+                    try {
+                        // 1. Await the background batch (n-1)
+                        const previousResults = bulkEvalPromise.current 
+                            ? await bulkEvalPromise.current 
+                            : [];
+                        
+                        // 2. Evaluate the FINAL interaction (which is just finishing now)
+                        // We need the user's LAST answer. 
+                        // historyBuffer.current has the full history. The last user msg is the one we just processed.
+                        // Actually, 'textToFinalize' is the last user answer.
+                        const lastInteraction = { role: 'user' as const, content: textToFinalize.trim() };
+                        
+                        const finalResult = await agentRef.current.evaluateFinal(lastInteraction, previousResults);
+                        
+                        // 3. Aggregate
+                        const allResults = [...previousResults, finalResult.finalQuestion];
+                        const avg = allResults.length > 0 
+                            ? allResults.reduce((a,b) => a + b.score, 0) / allResults.length 
+                            : 0;
+                            
+                        const report: FinalInterviewReport = {
+                            questions: allResults,
+                            averageScore: Number(avg.toFixed(1)),
+                            overallSummary: finalResult.overallSummary,
+                            timestamp: Date.now()
+                        };
+                        
+                        console.log("✅ Final Report Ready:", JSON.stringify(report, null, 2));
+                        setFinalReport(report);
+                        
+                    } catch (err) {
+                        console.error("Report Gen Error:", err);
+                    }
+                    
                     setIsInterviewFinished(true);
                 }
             } catch (error) {
@@ -582,79 +703,117 @@ export default function VoiceInterviewScreen() {
 
   const startRecording = async () => {
     try {
-        if (recording.current) await stopRecording();
+        // 1. Reset State
         setLiveTranscript("");
         targetTranscript.current = "";
         setDisplayTranscript("");
-        lastPosition.current = 0; 
-        
-        const perm = await Audio.requestPermissionsAsync();
-        if (perm.status !== 'granted') {
+        lastPosition.current = 0;
+
+        // 2. Check Permissions
+        const perm = await AudioModule.requestRecordingPermissionsAsync();
+        if (!perm.granted) {
             Alert.alert('Permission missing', 'Microphone access is required.');
             return;
         }
-        await Audio.setAudioModeAsync({
-            allowsRecordingIOS: true,
-            playsInSilentModeIOS: true,
-            staysActiveInBackground: true,
-            shouldDuckAndroid: true,
-            playThroughEarpieceAndroid: false,
+
+        // Configure Audio Mode again just in case
+        await setAudioModeAsync({
+            playsInSilentMode: true,
+            allowsRecording: true,
+            shouldPlayInBackground: true,
+            shouldRouteThroughEarpiece: false,
         });
-        await connectToDeepgram();
-        const recordingOptions = {
+
+        // 3. Connect WebSocket (if not open)
+        if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+            await connectToDeepgram();
+        }
+
+        // 4. Start Recording (expo-audio)
+        // FIX: Use string values that match the expected types (even if Enums are types only in TS definition)
+        // Expo Audio types might be defined as string unions or numbers.
+        // We use the raw values that correspond to the desired formats.
+        // 4. Start Recording (expo-audio)
+        // 4. Start Recording (Fixed: Using string literals to avoid "undefined" Enums)
+        // 4. Start Recording
+        console.log("🎙️ Preparing Recorder (Corrected)...");
+
+        await recorder.prepareToRecordAsync({
+            // 👇 ЭТИ ПАРАМЕТРЫ ДОЛЖНЫ БЫТЬ ТУТ (НАВЕРХУ)
+            numberOfChannels: 1,
+            
             android: {
-                extension: '.wav',
-                outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-                audioEncoder: Audio.AndroidAudioEncoder.AAC,
+                extension: '.amr',
+                outputFormat: 'amr_wb',
+                audioEncoder: 'amr_wb',
                 sampleRate: 16000,
-                numberOfChannels: 1,
-                bitRate: 128000,
-                metering: true,
+                bitRate: 23850,
             },
             ios: {
                 extension: '.wav',
-                outputFormat: Audio.IOSOutputFormat.LINEARPCM,
-                audioQuality: Audio.IOSAudioQuality.HIGH,
+                outputFormat: 'lpcm',
+                audioQuality: 96,
                 sampleRate: 16000,
-                numberOfChannels: 1,
-                bitRate: 128000,
+                bitRate: 256000,
                 linearPCMBitDepth: 16,
                 linearPCMIsBigEndian: false,
                 linearPCMIsFloat: false,
-                metering: true,
             },
-            web: { mimeType: 'audio/wav', bitsPerSecond: 128000 },
-        };
-        const { recording: newRecording } = await Audio.Recording.createAsync(recordingOptions);
-        recording.current = newRecording;
-        lastPosition.current = 0; 
+            web: {}
+        });
+
+        console.log("✅ Recorder Prepared. Starting...");
+        recorder.record();
+
+        console.log("✅ Recorder Prepared. Starting...");
+        recorder.record();
+        
+        console.log("✅ Recorder Prepared. Starting...");
+        recorder.record();
+        console.log("🎙️ Recorder Started. URI:", recorder.uri);
+        setIsRecording(true);
+        setStatus('listening');
+
+        // 5. START STREAMING LOOP (The "Hack" to stream from disk)
+        // We poll the file every 150ms, slice the new bytes, and send to Deepgram
+        if (streamInterval.current) clearInterval(streamInterval.current);
+        
         streamInterval.current = setInterval(async () => {
-            if (!recording.current || !ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+            // Safety Checks
+            if (!recorder.isRecording || !recorder.uri) return;
+            // if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return; // Allow logging even if closed
 
             try {
-                const status = await recording.current.getStatusAsync();
-                const metering = status.metering ?? -160;
-                
-                const isSpeaking = metering > VOLUME_THRESHOLD && metering !== -160;
-
-                const uri = recording.current.getURI();
-                if (!uri) return;
-
-                const response = await fetch(uri);
+                // Read the file growing on disk
+                const response = await fetch(recorder.uri);
                 const blob = await response.blob();
                 
+                // DEBUG LOG
+                // console.log(`Stats: Size=${blob.size}, Last=${lastPosition.current}`);
+
+                // If we have new data
                 if (blob.size > lastPosition.current) {
                     const chunk = blob.slice(lastPosition.current);
-                    ws.current.send(chunk);
-                    lastPosition.current = blob.size;
+                    
+                    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+                        ws.current.send(chunk); // Send to Deepgram
+                        setIsSendingData(true); // Trigger UI animation (PURPLE)
+                    } else {
+                        // console.warn("⚠️ WS Not Open during stream");
+                    }
+                    
+                    lastPosition.current = blob.size; // Update cursor
+                } else {
+                    setIsSendingData(false); // Back to ORANGE
                 }
-                
-                setIsSendingData(isSpeaking);
-            } catch (e: any) {}
-        }, 500);
-        newRecording.setOnRecordingStatusUpdate((status) => {});
+            } catch (e) {
+                console.log("Stream Read Error:", e);
+            }
+        }, 150); // Faster polling
+
     } catch (err) {
         Alert.alert("Error", "Could not start microphone.");
+        console.error(err);
     }
   };
 
@@ -664,9 +823,8 @@ export default function VoiceInterviewScreen() {
             clearInterval(streamInterval.current);
             streamInterval.current = null;
         }
-        if (recording.current) {
-            await recording.current.stopAndUnloadAsync();
-            recording.current = null;
+        if (recorder.isRecording) {
+            await recorder.stop();
         }
         if (ws.current) {
             if (ws.current.readyState === WebSocket.OPEN) {
@@ -695,7 +853,7 @@ export default function VoiceInterviewScreen() {
 
   const playSynchronizedResponse = async (text: string) => {
       // 🛑 STOP ECHO LOOP: Ensure Mic is OFF before AI speaks
-      if (isRecording) {
+      if (recorder.isRecording) {
           console.log("🛑 Preventing Self-Listening: Stopping Mic before TTS.");
           await stopRecording();
       }
@@ -705,15 +863,14 @@ export default function VoiceInterviewScreen() {
       try {
           console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
 
-          await Audio.setAudioModeAsync({
-              allowsRecordingIOS: false,
-              playsInSilentModeIOS: true,
-              staysActiveInBackground: true,
-              shouldDuckAndroid: true,
-              playThroughEarpieceAndroid: false,
+          await setAudioModeAsync({
+              allowsRecording: false,
+              playsInSilentMode: true,
+              shouldPlayInBackground: true,
+              shouldRouteThroughEarpiece: false,
           });
           
-          const sound = await TTSService.prepareAudio(text);
+          const player = await TTSService.prepareAudio(text);
 
           console.log("💥 Sync: BOOM! Playing.");
           
@@ -723,21 +880,29 @@ export default function VoiceInterviewScreen() {
           // Append to History Buffer
           historyBuffer.current.push({ role: 'assistant', content: text });
 
-          if (sound) {
+          if (player) {
               await new Promise<void>((resolve) => {
-                  sound.setOnPlaybackStatusUpdate((status) => {
-                      if (status.isLoaded && status.didJustFinish) {
-                          sound.unloadAsync();
+                  const listener = player.addListener('playbackStatusUpdate', (status: any) => {
+                      if (status.didJustFinish) {
+                          listener.remove();
+                          // @ts-ignore
+                          if (typeof player.release === 'function') player.release();
+                          else player.remove();
                           resolve();
                       }
                   });
-                  sound.playAsync();
+                  player.play();
               });
           }
           
       } catch (e) {
           console.error("Sync Error:", e);
-          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+          // Only add message if not already added (though logic above adds it before play)
+          // The catch block in original code added message again? No, setMessages was called.
+          // If error happens before setMessages, we might miss it.
+          // But original code had setMessages in catch block too.
+          // I'll keep the logic consistent: setMessages was called before playback.
+          // If error occurs, we just log.
       } finally {
           setIsAgentThinking(false);
       }

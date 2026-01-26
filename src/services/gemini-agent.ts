@@ -1,4 +1,4 @@
-import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage } from "../types";
+import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage, QuestionResult, FinalInterviewReport } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -32,7 +32,7 @@ export class GeminiAgentService {
   }
 
   // --- 1. ANALYSIS JUDGE ---
-  async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic): Promise<AnalysisResponse | string> {
+  async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic, lastAiQuestion: string): Promise<AnalysisResponse | string> {
       const prompt = `
       ROLE: Analytical Judge (JSON ONLY)
       TASK: Evaluate the candidate's answer.
@@ -40,6 +40,7 @@ export class GeminiAgentService {
       CONTEXT:
       - Topic: "${currentTopic.topic}"
       - Description: "${currentTopic.context || 'General'}"
+      - ACTUAL QUESTION ASKED TO CANDIDATE: "${lastAiQuestion}"
       - User Input: "${userText}"
       
       INTENT CLASSIFICATION RULES:
@@ -47,7 +48,12 @@ export class GeminiAgentService {
       - "SHOW_ANSWER": User asks "Tell me the answer", "What is it?", "How would you answer?".
       - "CLARIFICATION": User asks "Can you repeat?", "Rephrase please?".
       - "READY_CONFIRM": User says "I'm ready", "Let's start", "Go ahead", "I am prepared".
+      - "NONSENSE": The user is trolling, speaking gibberish, repeating words mindlessly (e.g., "blah blah", "yes yes yes"), or referencing pop culture/irrelevant topics (e.g., "I live in Bikini Bottom") that have nothing to do with the interview.
       - "ATTEMPT": User tries to answer (even if wrong).
+
+      TASK:
+      Evaluate the answer based on the ACTUAL QUESTION ASKED.
+      If the question was a follow-up (e.g., about specific metrics), grade based on that, not the generic topic.
       
       SCORING (0-10):
       - 10: Perfect, deep, expert.
@@ -56,7 +62,7 @@ export class GeminiAgentService {
       OUTPUT JSON SCHEMA:
       {
         "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" },
-        "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER" | "READY_CONFIRM"
+        "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER" | "READY_CONFIRM" | "NONSENSE"
       }
       `;
       
@@ -78,6 +84,84 @@ export class GeminiAgentService {
           return {
               metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" },
               intent: "ATTEMPT"
+          };
+      }
+  }
+
+  // --- 3. BATCH EVALUATOR (N-1 Questions) ---
+  async evaluateBatch(history: ChatMessage[]): Promise<QuestionResult[]> {
+      const prompt = `
+      ROLE: Technical Evaluator (JSON ONLY)
+      TASK: Analyze these User Answers from a technical interview.
+      
+      HISTORY TO ANALYZE:
+      ${JSON.stringify(history)}
+      
+      INSTRUCTION:
+      - Identify each Q&A pair.
+      - Ignore "System" or "Intro" messages if they don't have a clear Q&A.
+      - For each valid Q&A pair, assign a score (0-10) and brief feedback.
+      - Return a valid JSON array. Do NOT output trailing commas.
+      
+      OUTPUT JSON SCHEMA:
+      [
+        { "topic": "string", "userAnswer": "string", "score": number, "feedback": "string" },
+        ...
+      ]
+      `;
+      
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
+      };
+      
+      try {
+          const raw = await this.callGemini(payload);
+          const clean = this.cleanJsonArray(raw); // Use specialized cleaner for Arrays
+          return JSON.parse(clean) as QuestionResult[];
+      } catch (e) {
+          console.error("Batch Eval Error:", e);
+          return [];
+      }
+  }
+
+  // --- 4. FINAL EVALUATOR (Last Question + Summary) ---
+  async evaluateFinal(lastHistoryItem: ChatMessage, previousResults: QuestionResult[]): Promise<{ finalQuestion: QuestionResult, overallSummary: string }> {
+      const prompt = `
+      ROLE: Lead Interviewer (JSON ONLY)
+      TASK: Evaluate the FINAL answer and generate an Overall Summary.
+      
+      CONTEXT - PREVIOUS RESULTS:
+      ${JSON.stringify(previousResults)}
+      
+      FINAL INTERACTION:
+      ${JSON.stringify(lastHistoryItem)}
+      
+      INSTRUCTION:
+      1. Evaluate the final interaction (Score 0-10 + Feedback).
+      2. Review ALL results (Previous + Final) to generate a "comprehensive_summary" of the candidate's performance.
+      
+      OUTPUT JSON SCHEMA:
+      {
+        "finalQuestion": { "topic": "Final Topic", "userAnswer": "string", "score": number, "feedback": "string" },
+        "overallSummary": "string (3-4 sentences summarizing strengths/weaknesses)"
+      }
+      `;
+      
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, responseMimeType: "application/json" }
+      };
+      
+      try {
+          const raw = await this.callGemini(payload);
+          const clean = this.cleanJson(raw);
+          return JSON.parse(clean);
+      } catch (e) {
+          console.error("Final Eval Error:", e);
+          return {
+              finalQuestion: { topic: "Final", userAnswer: "", score: 0, feedback: "Error" },
+              overallSummary: "Failed to generate summary."
           };
       }
   }
@@ -199,6 +283,24 @@ export class GeminiAgentService {
     if (firstBrace !== -1 && lastBrace !== -1) {
         // Ensure we are slicing correctly even if there is trailing garbage
         cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+    }
+    
+    return cleaned;
+  }
+
+  private cleanJsonArray(text: string): string {
+    // 1. Remove Markdown Code Blocks
+    let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+    
+    // 2. Trim whitespace
+    cleaned = cleaned.trim();
+    
+    // 3. Find Array bounds (robustness)
+    const firstBracket = cleaned.indexOf('[');
+    const lastBracket = cleaned.lastIndexOf(']');
+    
+    if (firstBracket !== -1 && lastBracket !== -1) {
+        cleaned = cleaned.substring(firstBracket, lastBracket + 1);
     }
     
     return cleaned;

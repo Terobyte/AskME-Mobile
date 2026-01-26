@@ -45,7 +45,7 @@ export interface EvaluationMetrics {
 
 export interface AnalysisResponse {
     metrics: EvaluationMetrics;
-    intent: 'ATTEMPT' | 'GIVE_UP' | 'CLARIFICATION' | 'SHOW_ANSWER';
+    intent: 'ATTEMPT' | 'GIVE_UP' | 'CLARIFICATION' | 'SHOW_ANSWER' | 'NONSENSE';
 }
 
 export interface VoiceGenerationContext {
@@ -70,4 +70,18 @@ export interface InterviewContext {
     previousResult: string | null;
     angerLevel: number;
     isLastTopic: boolean;
+}
+
+export interface QuestionResult {
+  topic: string;
+  userAnswer: string;
+  score: number; // 0-10
+  feedback: string;
+}
+
+export interface FinalInterviewReport {
+  questions: QuestionResult[];
+  averageScore: number;
+  overallSummary: string;
+  timestamp: number;
 }

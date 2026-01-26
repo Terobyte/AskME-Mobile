@@ -1,4 +1,4 @@
-import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext } from "../types";
+import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -83,10 +83,39 @@ export class GeminiAgentService {
   }
 
   // --- 2. VOICE ACTOR ---
-  async generateVoiceResponse(context: VoiceGenerationContext, overridePrompt?: string): Promise<string> {
+  async generateVoiceResponse(context: VoiceGenerationContext, overridePrompt?: string, history?: ChatMessage[]): Promise<string> {
       // Build Prompt based on Transition Mode
       let behaviorInstruction = "";
       
+      // Inject "No Greeting" Constraint for Intro Topic
+      let greetingConstraint = "";
+      if (context.currentTopic?.id === 'intro' || context.currentTopic?.type === 'Intro') {
+          greetingConstraint = `
+          CONTEXT: You have ALREADY introduced yourself in the lobby. The user just said "Ready".
+          CONSTRAINT: Do NOT say "Hello", "Hi", or state your name again. Simply acknowledge the user's readiness and ask them to introduce themselves.
+          `;
+      }
+
+      // Question Logic Injection
+      let questionLogic = "";
+      if (context.nextTopic) {
+          if (context.nextTopic.type === 'SoftSkill') {
+               questionLogic = `
+               NEXT QUESTION STRATEGY (Soft Skill: "${context.nextTopic.topic}"):
+               - Constraint: Do NOT ask generic definition questions (e.g., "What is flexibility?").
+               - Instruction: Generate a Situational Question specifically related to the Candidate's Role.
+               - Example: "As a Senior Engineer, how do you handle disagreements about code quality?"
+               `;
+          } else {
+               questionLogic = `
+               NEXT QUESTION STRATEGY (Technical: "${context.nextTopic.topic}"):
+               - Instruction: Randomly choose (50/50) between:
+                 A) Scenario: "Imagine you face [Problem] in [Topic]. How do you solve it?"
+                 B) Experience: "Tell me about a time you used [Topic] in a complex project."
+               `;
+          }
+      }
+
       if (overridePrompt) {
           behaviorInstruction = `INSTRUCTION: ${overridePrompt}`;
       } else {
@@ -95,13 +124,13 @@ export class GeminiAgentService {
                   behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
                   break;
               case 'NEXT_FAIL':
-                  behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
                   break;
               case 'NEXT_PASS':
-                  behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
                   break;
               case 'NEXT_EXPLAIN':
-                  behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic}".`;
+                  behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
                   break;
               case 'FINISH_INTERVIEW':
                   const mood = (context.angerLevel || 0) > 50 ? "cold and brief" : "warm and encouraging";
@@ -117,20 +146,21 @@ export class GeminiAgentService {
       You are Victoria, a Principal Software Engineer.
       Tone: Professional, slightly strict but fair.
       
+      ${greetingConstraint}
       ${behaviorInstruction}
       
       Constraint: Speak naturally as Victoria. Do not repeat robotic phrases. Keep it spoken-word friendly. No markdown. Short and clear.
       `;
       
-      // Update History only for Voice (so context is maintained)
-      this.history.push({ role: "model", parts: [{ text: "..." }] }); // Placeholder if needed, or better:
-      // Actually, we should push the PREVIOUS user text before this. 
-      // But 'evaluate' is separate. 
-      // Simplified: We assume 'history' is managed outside or we just append the result.
+      // Convert history to Gemini format
+      const historyParts = (history || []).map(msg => ({
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [{ text: msg.content }]
+      }));
       
       const payload = {
         contents: [
-            ...this.history, 
+            ...historyParts, 
             { role: "user", parts: [{ text: prompt }] }
         ],
         generationConfig: { temperature: 0.7 } // Creative for voice
@@ -138,7 +168,6 @@ export class GeminiAgentService {
       
       try {
           const text = await this.callGemini(payload);
-          this.history.push({ role: "model", parts: [{ text: text }] });
           return text;
       } catch (e) {
           return "I'm having trouble speaking right now. Let's move on.";

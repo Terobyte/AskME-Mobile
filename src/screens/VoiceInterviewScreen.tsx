@@ -81,6 +81,9 @@ export default function VoiceInterviewScreen() {
   // Chat History
   const [messages, setMessages] = useState<{id: string, text: string, sender: 'user' | 'ai'}[]>([]);
   
+  // Gemini History Buffer (Strictly for AI context)
+  const historyBuffer = useRef<{ role: 'user' | 'assistant' | 'system', content: string }[]>([]);
+
   const latestAiMessage = messages.length > 0 && messages[messages.length - 1].sender === 'ai' 
     ? messages[messages.length - 1].text 
     : "";
@@ -176,6 +179,9 @@ export default function VoiceInterviewScreen() {
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           setMessages(prev => [...prev, { id: Date.now().toString(), text: textToFinalize.trim(), sender: 'user' }]);
           
+          // Append to History Buffer
+          historyBuffer.current.push({ role: 'user', content: textToFinalize.trim() });
+          
           setLiveTranscript("");
           targetTranscript.current = "";
           latestTranscriptRef.current = ""; 
@@ -229,7 +235,7 @@ export default function VoiceInterviewScreen() {
                              currentTopic: lobbyTopic,
                              nextTopic: null,
                              transitionMode: 'STAY'
-                         }, "User is not ready yet. Just chat politely or say 'Take your time'.");
+                         }, "User is not ready yet. Just chat politely or say 'Take your time'.", historyBuffer.current);
                          await playSynchronizedResponse(chatMsg);
                     }
                     
@@ -254,22 +260,47 @@ export default function VoiceInterviewScreen() {
 
                 // --- SPECIAL CASE: INTRO (Index 0) ---
                 if (currentTopicIndex === 0) {
-                     console.log("🚀 [INTRO DETECTED] Ignoring Stats. Forcing Transition.");
+                     // NEW LOGIC: "Confidence Boost"
+                     // We no longer ignore stats. We force a PERFECT score.
                      
-                     // Force Transition to Topic 1
-                     setCurrentTopicIndex(1);
-                     const nextTopic = plan.queue[1];
+                     // 1. CLARIFICATION CHECK (Stay if confused)
+                     if (analysis.intent === 'CLARIFICATION') {
+                         console.log("🤔 [INTRO] Clarification requested. Staying.");
+                         const speech = await agentRef.current.generateVoiceResponse({
+                             currentTopic: currentTopic,
+                             nextTopic: null,
+                             transitionMode: 'STAY',
+                             angerLevel: 0
+                         }, undefined, historyBuffer.current);
+                         await playSynchronizedResponse(speech);
+                         return;
+                     }
+
+                     // 2. AWARD FREE WIN (100% Success)
+                     console.log("🏆 [INTRO] Awarding Free Win (100%). HUD Updating...");
                      
-                     // Direct Voice Call (Skip Math)
+                     // Force Perfect Stats
+                     setTopicSuccess(100);
+                     setTopicPatience(0);
+                     setAnger(0); // Reset anger just in case
+
+                     // REALITY: Show actual feedback (even if it's 0/0/0)
+                     setCurrentMetrics(analysis.metrics); // <--- Use REAL metrics, not hardcoded 10s
+
+                     // 3. TRANSITION TO TOPIC 1
+                     const nextIndex = 1;
+                     setCurrentTopicIndex(nextIndex);
+                     const nextTopic = plan.queue[nextIndex];
+                     
                      const speech = await agentRef.current.generateVoiceResponse({
                         currentTopic: currentTopic,
-                        nextTopic: plan.queue[1],
+                        nextTopic: nextTopic,
                         transitionMode: 'NEXT_PASS',
                         angerLevel: 0
-                    });
+                    }, undefined, historyBuffer.current);
                     
                     await playSynchronizedResponse(speech);
-                    return; // EXIT EARLY (No Stats Update)
+                    return; // EXIT EARLY
                 }
                 
                 
@@ -343,21 +374,36 @@ export default function VoiceInterviewScreen() {
                      
                      // Anger Penalty (unless Mercy)
                      if (shouldPenalizeAnger) {
-                         setAnger(prev => Math.min(100, prev + 35));
+                         // Calculate new Anger Level
+                         const calculatedAnger = Math.min(100, anger + 35);
+                         setAnger(calculatedAnger);
+                         
+                         // CHECK FOR TERMINATION IMMEDIATELY
+                         if (calculatedAnger >= 100) {
+                             console.log("🤬 Anger Limit Reached. Initiating Termination.");
+
+                             // 1. Generate "You're Fired" Speech
+                             const terminationSpeech = await agentRef.current.generateVoiceResponse({
+                                currentTopic: currentTopic,
+                                nextTopic: null,
+                                transitionMode: 'TERMINATE_ANGER',
+                                angerLevel: 100
+                             }, undefined, historyBuffer.current);
+                             
+                             // 2. Play the Speech FULLY
+                             await playSynchronizedResponse(terminationSpeech);
+                         
+                             // 3. SHOW GAME OVER (Only after audio finishes)
+                             setIsInterviewFinished(true);
+                             return; // Stop execution
+                         }
                      } else {
                          console.log("😇 Mercy Rule: Anger saved.");
                      }
                 }
                 
-                // RAGE QUIT CHECK (Hardcore Mode)
-                if (anger >= 100) {
-                     console.log("🤬 RAGE QUIT TRIGGERED!");
-                     transitionMode = 'TERMINATE_ANGER';
-                     shouldFinishInterview = true;
-                }
-                
                 // CHECK FOR END OF INTERVIEW
-                else if (plan && nextIndex >= plan.queue.length) {
+                if (plan && nextIndex >= plan.queue.length) {
                     console.log("🏁 End of Interview Detected.");
                     transitionMode = 'FINISH_INTERVIEW';
                     shouldFinishInterview = true;
@@ -374,7 +420,7 @@ export default function VoiceInterviewScreen() {
                 console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
                 
                 // Safety check for nextTopic (if finished, it's null)
-                const nextTopic = (transitionMode === 'FINISH_INTERVIEW' || transitionMode === 'TERMINATE_ANGER') 
+                const nextTopic = (transitionMode === 'FINISH_INTERVIEW') 
                     ? null 
                     : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
                 
@@ -383,7 +429,7 @@ export default function VoiceInterviewScreen() {
                     nextTopic: nextTopic,       // Context of where we are going (or null)
                     transitionMode: transitionMode,
                     angerLevel: anger // Pass final anger for feedback
-                });
+                }, undefined, historyBuffer.current);
                 
                 await playSynchronizedResponse(speech);
                 
@@ -445,6 +491,7 @@ export default function VoiceInterviewScreen() {
           setTopicPatience(0);
           setAnger(0);
           setIsInterviewFinished(false);
+          historyBuffer.current = []; // Clear history on restart
           
           // OPTIMISTIC START: Set Plan to Intro Only immediately
           setPlan(INITIAL_PLAN);
@@ -672,6 +719,9 @@ export default function VoiceInterviewScreen() {
           
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+          
+          // Append to History Buffer
+          historyBuffer.current.push({ role: 'assistant', content: text });
 
           if (sound) {
               await new Promise<void>((resolve) => {

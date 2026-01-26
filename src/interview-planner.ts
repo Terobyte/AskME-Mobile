@@ -18,16 +18,20 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
   1. matches: Top 10 matching skills (Strong points).
   2. gaps: Top 5 missing skills (Critical gaps to defend).
   3. cool_skills: Top 2 unique/impressive skills from the Resume that stand out.
+  4. soft_skills: Top 5 leadership/behavioral skills RELEVANT to the role (e.g. "Stakeholder Management" for PM).
   
-  For EACH item:
+  For EACH item in ALL lists:
   - Assign a concise technical "category". Do NOT use generic terms like "Backend" or "Frontend" unless strictly accurate. Group them into natural technical domains.
   - Assign a "Relevance Score" (1-10) based on how critical it is for the extracted Job Role. (e.g. Docker=10 for DevOps, Word=1 for DevOps).
+  - GENERATE "question_script": A highly specific, role-based scenario question for this skill.
+    - For Technical Skills: Create a debugging scenario or architecture challenge. (e.g. "Your React app has a memory leak in a large list. How do you debug it?")
+    - For Soft Skills: Create a conflict/leadership scenario. (e.g. "A stakeholder wants to release a feature you know is buggy. How do you handle it?")
   
   Resume: ${resume}
   JD: ${jd}
   
-  Return strictly raw JSON with keys: job_role, matches, gaps, cool_skills. 
-  Each skill array must contain objects: { "skill": "Skill Name", "category": "Specific Domain", "score": number }.
+  Return strictly raw JSON with keys: job_role, matches, gaps, cool_skills, soft_skills. 
+  Each skill array must contain objects: { "skill": "Skill Name", "category": "Specific Domain", "score": number, "question_script": "The generated question" }.
   Do not use Markdown formatting.`;
 
   // Helper: Call Gemini with Retry Logic
@@ -164,6 +168,7 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
       type: 'Intro',
       topic: 'Introduction', // Topic Name
       category: 'Introduction',
+      context: 'The user is introducing themselves. Ask them to describe their background and experience briefly.',
       estimated_time: '5m'
   });
 
@@ -185,21 +190,44 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
           type: item.type as any,
           topic: item.skill,
           category: item.category,
+          context: item.question_script || `Tell me about your experience with ${item.skill}.`, // Use Pre-Generated Script
           estimated_time: '5m',
           score: item.score
       });
       techCount++;
   }
 
-  // 3. Add Soft Skills
+  // 3. Add Soft Skills (Now using PRO-generated list)
   let softCount = 0;
-  for (const item of poolSoftSkills) {
+  const softSkillsFromAI = sanitizeAndFilter(analysis.soft_skills, "Soft Skills");
+  
+  // Fallback if AI failed to generate soft skills
+  if (softSkillsFromAI.length === 0) {
+      // Use DB fallback
+      const poolSoftSkills: { skill: string, category: string, score: number, question_script: string }[] = [];
+      const softSkillCategories = Object.keys(softSkillsDB);
+      for (let i = 0; i < 5; i++) {
+          const cat = softSkillCategories[Math.floor(Math.random() * softSkillCategories.length)];
+          // @ts-ignore
+          const skill = softSkillsDB[cat][Math.floor(Math.random() * softSkillsDB[cat].length)];
+          poolSoftSkills.push({ 
+              skill, 
+              category: "Soft Skills", 
+              score: 5, 
+              question_script: `Tell me about a time you demonstrated ${skill} in a professional setting.` 
+          });
+      }
+      softSkillsFromAI.push(...poolSoftSkills);
+  }
+
+  for (const item of softSkillsFromAI) {
       if (softCount >= softLimit) break;
       finalQueue.push({
           id: `soft_${softCount}`,
           type: 'SoftSkill',
           topic: item.skill,
           category: item.category,
+          context: item.question_script || `Tell me about a time you used ${item.skill}.`,
           estimated_time: '5m',
           score: item.score
       });

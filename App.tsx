@@ -11,13 +11,11 @@ const Stack = createStackNavigator();
 export default function App() {
   return (
     <NavigationContainer>
-      <Stack.Navigator initialRouteName="VoiceInterview">
+      <Stack.Navigator initialRouteName="Interview">
         <Stack.Screen 
-          name="VoiceInterview" 
+          name="Interview" 
           component={VoiceInterviewScreen} 
           options={{ headerShown: false }} 
-          // Pass mock params for testing if needed
-          initialParams={{ resumeContext: "Senior React Native Developer" }} 
         />
       </Stack.Navigator>
     </NavigationContainer>

@@ -10,8 +10,9 @@ import Slider from '@react-native-community/slider';
 import * as FileSystem from 'expo-file-system';
 import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse, QuestionResult, FinalInterviewReport } from '../types';
 import Svg, { Path, Defs, LinearGradient, Stop, Mask, Rect } from 'react-native-svg';
-import AnimatedReanimated, { useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, runOnJS, useDerivedValue, useAnimatedStyle, withSpring, withSequence, withRepeat } from 'react-native-reanimated';
+import AnimatedReanimated, { useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, runOnJS, useDerivedValue, useAnimatedStyle, withSpring, withSequence, withRepeat, interpolateColor } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import RNShake from 'react-native-shake';
 
 import { GeminiAgentService } from '../services/gemini-agent';
 import { generateInterviewPlan } from '../interview-planner';
@@ -22,6 +23,7 @@ import { MetricsHud } from '../components/MetricsHud';
 // Animated SVG Components
 const AnimatedPath = AnimatedReanimated.createAnimatedComponent(Path);
 const AnimatedText = AnimatedReanimated.createAnimatedComponent(Text);
+const AnimatedRect = AnimatedReanimated.createAnimatedComponent(Rect); // For color interpolation if needed, or just interpolate props
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -45,6 +47,7 @@ export default function VoiceInterviewScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [showSettings, setShowSettings] = useState(true); 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [showDebug, setShowDebug] = useState(false); // Secret Debug Toggle
   
   // Audio Recorder (Expo Audio)
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -136,6 +139,18 @@ export default function VoiceInterviewScreen() {
           micScale.setValue(1); 
       }
   }, [isRecording]);
+
+  // Secret Shake Listener
+  useEffect(() => {
+    const subscription = RNShake.addListener(() => {
+      setShowDebug(prev => !prev);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   // Permissions & Cleanup
   useEffect(() => {
@@ -986,13 +1001,6 @@ export default function VoiceInterviewScreen() {
       const animatedProps = useAnimatedProps(() => {
           const radius = 120;
           const circumference = Math.PI * radius; // Semi-circle
-          // If loading, just show a small indeterminate segment or nothing?
-          // Let's rely on the progress value which we are animating above.
-          const targetScore = loading ? 10 : score; // Fill fully if loading (pulsing) or to score
-          // Actually, if loading, we pulse progress between 0 and 0.2.
-          // The strokeDashoffset calculation:
-          // offset = C * (1 - progress * (score/10))
-          // If loading, we want it to move.
           const effectiveScore = loading ? 10 : score;
           const strokeDashoffset = circumference * (1 - progress.value * (effectiveScore / 10)); 
           return {
@@ -1000,12 +1008,20 @@ export default function VoiceInterviewScreen() {
           };
       });
 
-      // Color Logic
-      const getScoreColor = () => {
-          if (score >= 8) return "#10B981"; // Green
-          if (score >= 5) return "#F59E0B"; // Orange
-          return "#EF4444"; // Red
-      };
+      // Rainbow Color Interpolation
+      const animatedColorProps = useAnimatedProps(() => {
+        // 0 -> Red (#EF4444), 0.5 -> Orange (#F59E0B), 1 -> Green (#10B981)
+        // We use progress.value (0 to 1)
+        // Note: interpolateColor requires a worklet or shared value on UI thread
+        const color = interpolateColor(
+            progress.value,
+            [0, 0.5, 1],
+            ['#EF4444', '#F59E0B', '#10B981']
+        );
+        return {
+            fill: color
+        };
+      });
 
       return (
           <View style={styles.revealContainer}>
@@ -1054,7 +1070,7 @@ export default function VoiceInterviewScreen() {
                   <View style={styles.scoreTextContainer}>
                       <Text style={[
                           styles.scoreText, 
-                          isRevealed && { color: getScoreColor(), transform: [{scale: 1.2}] }
+                          isRevealed && { color: score >= 8 ? "#10B981" : score >= 5 ? "#F59E0B" : "#EF4444", transform: [{scale: 1.2}] }
                       ]}>
                           {displayScore}
                       </Text>
@@ -1064,6 +1080,7 @@ export default function VoiceInterviewScreen() {
 
               {isRevealed && (
                   <View style={styles.summaryContainer}>
+                       {/* Typewriter Effect for Summary */}
                       <Text style={styles.summaryText}>{summary}</Text>
                   </View>
               )}
@@ -1080,8 +1097,8 @@ export default function VoiceInterviewScreen() {
       );
   };
 
-  const DebugConsole = () => {
-    if (!__DEV__) return null;
+  const DebugOverlay = () => {
+    if (!showDebug) return null;
 
     const options = ["0", "3", "5", "8", "10", "NONSENSE", "CLARIFICATION", "GIVE_UP", "SHOW_ANSWER", "I_AM_READY"];
 
@@ -1114,31 +1131,54 @@ export default function VoiceInterviewScreen() {
     };
 
     return (
-        <View style={styles.debugConsole}>
-            <View style={styles.debugRow}>
-                <Text style={styles.debugText}>😡 {anger.toFixed(0)} | ⏳ {topicPatience.toFixed(0)} | 🎯 {topicSuccess.toFixed(0)}</Text>
+        <View style={styles.debugOverlay}>
+            <View style={styles.debugHeader}>
+                <Text style={styles.debugTitle}>�️ DEBUG</Text>
+                <TouchableOpacity onPress={() => setShowDebug(false)}>
+                    <Ionicons name="close-circle" size={24} color="#FF3B30" />
+                </TouchableOpacity>
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
-                {options.map(opt => (
-                    <TouchableOpacity 
-                        key={opt} 
-                        style={[styles.debugChip, debugValue === opt && styles.debugChipActive]}
-                        onPress={() => setDebugValue(opt)}
-                    >
-                        <Text style={[styles.debugChipText, debugValue === opt && styles.debugChipTextActive]}>{opt}</Text>
-                    </TouchableOpacity>
-                ))}
-            </ScrollView>
-            <View style={styles.debugRow}>
-                 <TouchableOpacity style={styles.debugButton} onPress={handleSimulate} disabled={isSimulating}>
-                    <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
-                 </TouchableOpacity>
-                 <TouchableOpacity 
-                    style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]} 
-                    onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
-                 >
-                    <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
-                 </TouchableOpacity>
+
+            {/* Metrics Control */}
+            <View style={styles.debugSection}>
+                <Text style={styles.debugLabel}>Anger Level: {anger.toFixed(0)}%</Text>
+                <Slider
+                    style={{width: '100%', height: 30}}
+                    minimumValue={0}
+                    maximumValue={100}
+                    step={5}
+                    value={anger}
+                    onValueChange={setAnger}
+                    minimumTrackTintColor="#FF3B30"
+                    thumbTintColor="#FF3B30"
+                />
+            </View>
+
+            {/* Simulation Control */}
+            <View style={styles.debugSection}>
+                <Text style={styles.debugLabel}>Simulate Response:</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
+                    {options.map(opt => (
+                        <TouchableOpacity 
+                            key={opt} 
+                            style={[styles.debugChip, debugValue === opt && styles.debugChipActive]}
+                            onPress={() => setDebugValue(opt)}
+                        >
+                            <Text style={[styles.debugChipText, debugValue === opt && styles.debugChipTextActive]}>{opt}</Text>
+                        </TouchableOpacity>
+                    ))}
+                </ScrollView>
+                <View style={styles.debugRow}>
+                     <TouchableOpacity style={styles.debugButton} onPress={handleSimulate} disabled={isSimulating}>
+                        <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
+                     </TouchableOpacity>
+                     <TouchableOpacity 
+                        style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]} 
+                        onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
+                     >
+                        <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
+                     </TouchableOpacity>
+                </View>
             </View>
         </View>
     );
@@ -1149,7 +1189,7 @@ export default function VoiceInterviewScreen() {
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
       
       {/* DEV CONSOLE */}
-      <DebugConsole />
+      <DebugOverlay />
       
       <View style={styles.header}>
           <Text style={{fontWeight:'bold', fontSize:18}}>AskME AI</Text>
@@ -1158,16 +1198,18 @@ export default function VoiceInterviewScreen() {
           </TouchableOpacity>
       </View>
 
-      {/* Metrics HUD - Updated Props */}
-      <MetricsHud 
-          metrics={currentMetrics} 
-          success={topicSuccess} 
-          patience={topicPatience}
-          anger={anger} // Pass Anger
-          topicTitle={plan && plan.queue[Math.min(currentTopicIndex, plan.queue.length-1)] 
-            ? `${Math.min(currentTopicIndex, plan.queue.length-1)}. ${plan.queue[Math.min(currentTopicIndex, plan.queue.length-1)].topic}` 
-            : "Introduction"}
-      />
+      {/* Metrics HUD - Only visible when debug is OPEN */}
+      {showDebug && (
+        <MetricsHud 
+            metrics={currentMetrics} 
+            success={topicSuccess} 
+            patience={topicPatience}
+            anger={anger} 
+            topicTitle={plan && plan.queue[Math.min(currentTopicIndex, plan.queue.length-1)] 
+                ? `${Math.min(currentTopicIndex, plan.queue.length-1)}. ${plan.queue[Math.min(currentTopicIndex, plan.queue.length-1)].topic}` 
+                : "Introduction"}
+        />
+      )}
 
       {/* ... Rest of your UI (Modals, Chat, Buttons) remains the same ... */}
       <Modal visible={showSettings} animationType="fade" transparent>
@@ -1559,49 +1601,69 @@ const styles = StyleSheet.create({
       color: '#000',
       fontWeight: 'bold',
   },
-  debugConsole: {
+  debugOverlay: {
     position: 'absolute',
-    bottom: 120, // Above mic button
-    left: 10,
-    right: 10,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    padding: 10,
-    borderRadius: 12,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#1C1C1E',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
     zIndex: 9999,
-    borderWidth: 1,
-    borderColor: '#333',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -5 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 20,
+  },
+  debugHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  debugTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  debugSection: {
+    marginBottom: 20,
+  },
+  debugLabel: {
+    color: '#8E8E93',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 10,
+    textTransform: 'uppercase',
   },
   debugRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  debugText: {
-    color: '#00FF00',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    fontSize: 12,
-    fontWeight: 'bold',
+    marginTop: 15,
   },
   debugScroll: {
     marginBottom: 8,
     height: 35,
   },
   debugChip: {
-    backgroundColor: '#333',
+    backgroundColor: '#2C2C2E',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 8,
     marginRight: 8,
     borderWidth: 1,
-    borderColor: '#555',
+    borderColor: '#3A3A3C',
   },
   debugChipActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: '#0A84FF',
+    borderColor: '#0A84FF',
   },
   debugChipText: {
-    color: '#CCC',
+    color: '#8E8E93',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -1610,9 +1672,9 @@ const styles = StyleSheet.create({
   },
   debugButton: {
     flex: 1,
-    backgroundColor: '#FF3B30',
-    paddingVertical: 8,
-    borderRadius: 8,
+    backgroundColor: '#30D158',
+    paddingVertical: 12,
+    borderRadius: 10,
     alignItems: 'center',
     marginRight: 10,
   },
@@ -1622,14 +1684,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   debugToggle: {
-    padding: 8,
-    backgroundColor: '#444',
-    borderRadius: 8,
-    width: 40,
+    padding: 12,
+    backgroundColor: '#3A3A3C',
+    borderRadius: 10,
+    width: 44,
     alignItems: 'center',
   },
   debugToggleActive: {
-    backgroundColor: '#FF9500',
+    backgroundColor: '#FF9F0A',
   },
   debugToggleText: {
     fontSize: 16,

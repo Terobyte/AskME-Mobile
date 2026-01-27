@@ -62,6 +62,11 @@ export default function VoiceInterviewScreen() {
   const [topicPatience, setTopicPatience] = useState(0);
   const [anger, setAnger] = useState(0); // Start at 0
 
+  // Dev Tools State
+  const [debugValue, setDebugValue] = useState("10");
+  const [isDebugTtsMuted, setIsDebugTtsMuted] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
+
   
   const [isPlanReady, setIsPlanReady] = useState(false);
   const [isLobbyPhase, setIsLobbyPhase] = useState(true);
@@ -185,8 +190,8 @@ export default function VoiceInterviewScreen() {
       if (liveTranscript === "") setDisplayTranscript("");
   }, [liveTranscript]);
 
-  const finalizeMessage = async () => {
-      const textToFinalize = latestTranscriptRef.current; 
+  const finalizeMessage = async (overrideText?: string) => {
+      const textToFinalize = overrideText || latestTranscriptRef.current;
       
       if (isAgentThinking) return;
       
@@ -370,6 +375,7 @@ export default function VoiceInterviewScreen() {
                 // Local Math Vars
                 let newSuccess = topicSuccess;
                 let newPatience = topicPatience;
+                let newAnger = anger;
                 
                 if (analysis.intent === 'GIVE_UP') {
                     console.log("🏳️ User GAVE UP.");
@@ -390,7 +396,7 @@ export default function VoiceInterviewScreen() {
                     
                     // 1. Penalize heavily
                     newPatience += 50; // Lose patience fast
-                    setAnger(prev => Math.min(100, prev + 35)); // Make her angry
+                    newAnger += 35; // Make her angry
                     
                     // 2. Force STAY
                     transitionMode = 'STAY';
@@ -413,15 +419,36 @@ export default function VoiceInterviewScreen() {
                 // Clamp
                 newSuccess = Math.min(Math.max(newSuccess, 0), 100);
                 newPatience = Math.min(Math.max(newPatience, 0), 100);
+                newAnger = Math.min(Math.max(newAnger, 0), 100);
                 
                 // Update UI State
                 setTopicSuccess(newSuccess);
                 setTopicPatience(newPatience);
+                setAnger(newAnger);
                 
                 // --- 3. TRANSITION CHECK ---
                 let nextIndex = effectiveTopicIndex;
                 
-                if (newSuccess >= 100) {
+                // PRIORITY 1: GLOBAL KILL SWITCH (Termination)
+                if (newAnger >= 100) {
+                     console.log("🤬 Anger Limit Reached. Initiating Termination.");
+
+                     // 1. Generate "You're Fired" Speech
+                     const terminationSpeech = await agentRef.current.generateVoiceResponse({
+                        currentTopic: currentTopic,
+                        nextTopic: null,
+                        transitionMode: 'TERMINATE_ANGER',
+                        angerLevel: 100
+                     }, undefined, historyBuffer.current);
+                     
+                     // 2. Play the Speech FULLY
+                     await playSynchronizedResponse(terminationSpeech);
+                 
+                     // 3. SHOW GAME OVER (Only after audio finishes)
+                     setIsInterviewFinished(true);
+                     return; // Stop execution
+                }
+                else if (newSuccess >= 100) {
                      transitionMode = 'NEXT_PASS';
                      nextIndex++;
                      setPreviousTopicResult("PASSED_SUCCESS");
@@ -443,29 +470,13 @@ export default function VoiceInterviewScreen() {
                      
                      // Anger Penalty (unless Mercy)
                      if (shouldPenalizeAnger) {
-                         // Calculate new Anger Level
-                         const calculatedAnger = Math.min(100, anger + 35);
-                         setAnger(calculatedAnger);
-                         
-                         // CHECK FOR TERMINATION IMMEDIATELY
-                         if (calculatedAnger >= 100) {
-                             console.log("🤬 Anger Limit Reached. Initiating Termination.");
-
-                             // 1. Generate "You're Fired" Speech
-                             const terminationSpeech = await agentRef.current.generateVoiceResponse({
-                                currentTopic: currentTopic,
-                                nextTopic: null,
-                                transitionMode: 'TERMINATE_ANGER',
-                                angerLevel: 100
-                             }, undefined, historyBuffer.current);
-                             
-                             // 2. Play the Speech FULLY
-                             await playSynchronizedResponse(terminationSpeech);
-                         
-                             // 3. SHOW GAME OVER (Only after audio finishes)
-                             setIsInterviewFinished(true);
-                             return; // Stop execution
-                         }
+                         setAnger(prev => Math.min(100, prev + 35));
+                         // Note: We don't need to check termination here again because 
+                         // if newAnger hit 100 above, we already returned.
+                         // But for next loop, we add anger. 
+                         // Actually, we should calculate this penalty into newAnger earlier if we want immediate termination on patience fail + anger spike.
+                         // But per instruction "If I say Nonsense and anger hits 100...", that's handled by the top check.
+                         // For patience fail, we add anger for NEXT time.
                      } else {
                          console.log("😇 Mercy Rule: Anger saved.");
                      }
@@ -859,6 +870,16 @@ export default function VoiceInterviewScreen() {
       }
 
       setIsAgentThinking(true); 
+
+      // DEV: Mute TTS if requested
+      if (isDebugTtsMuted) {
+          console.log("🔇 [DEV] TTS Muted. Adding message without audio.");
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+          historyBuffer.current.push({ role: 'assistant', content: text });
+          setIsAgentThinking(false);
+          return;
+      }
       
       try {
           console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
@@ -931,9 +952,74 @@ export default function VoiceInterviewScreen() {
       );
   };
 
+  const DebugConsole = () => {
+    if (!__DEV__) return null;
+
+    const options = ["0", "3", "5", "8", "10", "NONSENSE", "CLARIFICATION", "GIVE_UP", "SHOW_ANSWER"];
+
+    const handleSimulate = async () => {
+        if (!plan || !agentRef.current) return;
+        if (isSimulating) return;
+
+        setIsSimulating(true);
+        console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
+
+        try {
+            const currentTopic = plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)];
+            const simText = await agentRef.current.generateSimulatedAnswer(currentTopic, debugValue, resumeText);
+            console.log(`🤖 [DEV] Simulated Text: ${simText}`);
+            
+            // Inject into system as if user spoke it
+            setLiveTranscript(simText);
+            // Need to wrap in promise or just call it. finalizeMessage doesn't take args in original definition
+            // but we need to modify it or create a wrapper. 
+            // Wait, finalizeMessage originally used `textToFinalize` state.
+            // We should refactor finalizeMessage to accept an optional argument.
+            await finalizeMessage(simText);
+        } catch (e) {
+            console.error("Simulation Failed", e);
+        } finally {
+            setIsSimulating(false);
+        }
+    };
+
+    return (
+        <View style={styles.debugConsole}>
+            <View style={styles.debugRow}>
+                <Text style={styles.debugText}>😡 {anger.toFixed(0)} | ⏳ {topicPatience.toFixed(0)} | 🎯 {topicSuccess.toFixed(0)}</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
+                {options.map(opt => (
+                    <TouchableOpacity 
+                        key={opt} 
+                        style={[styles.debugChip, debugValue === opt && styles.debugChipActive]}
+                        onPress={() => setDebugValue(opt)}
+                    >
+                        <Text style={[styles.debugChipText, debugValue === opt && styles.debugChipTextActive]}>{opt}</Text>
+                    </TouchableOpacity>
+                ))}
+            </ScrollView>
+            <View style={styles.debugRow}>
+                 <TouchableOpacity style={styles.debugButton} onPress={handleSimulate} disabled={isSimulating}>
+                    <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
+                 </TouchableOpacity>
+                 <TouchableOpacity 
+                    style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]} 
+                    onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
+                 >
+                    <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
+                 </TouchableOpacity>
+            </View>
+        </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
+      
+      {/* DEV CONSOLE */}
+      <DebugConsole />
       
       <View style={styles.header}>
           <Text style={{fontWeight:'bold', fontSize:18}}>AskME AI</Text>
@@ -1331,6 +1417,81 @@ const styles = StyleSheet.create({
   sliderLabelActive: {
       color: '#000',
       fontWeight: 'bold',
+  },
+  debugConsole: {
+    position: 'absolute',
+    bottom: 120, // Above mic button
+    left: 10,
+    right: 10,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    padding: 10,
+    borderRadius: 12,
+    zIndex: 9999,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  debugRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  debugText: {
+    color: '#00FF00',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  debugScroll: {
+    marginBottom: 8,
+    height: 35,
+  },
+  debugChip: {
+    backgroundColor: '#333',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#555',
+  },
+  debugChipActive: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  debugChipText: {
+    color: '#CCC',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  debugChipTextActive: {
+    color: '#FFF',
+  },
+  debugButton: {
+    flex: 1,
+    backgroundColor: '#FF3B30',
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  debugButtonText: {
+    color: '#FFF',
+    fontWeight: 'bold',
+    fontSize: 14,
+  },
+  debugToggle: {
+    padding: 8,
+    backgroundColor: '#444',
+    borderRadius: 8,
+    width: 40,
+    alignItems: 'center',
+  },
+  debugToggleActive: {
+    backgroundColor: '#FF9500',
+  },
+  debugToggleText: {
+    fontSize: 16,
   },
   modalGenerateButton: {
       backgroundColor: '#000',

@@ -166,6 +166,52 @@ export class GeminiAgentService {
       }
   }
 
+  // --- 5. DEV TOOLS: SIMULATED CANDIDATE ---
+  async generateSimulatedAnswer(topic: InterviewTopic, intentType: string, resumeText: string): Promise<string> {
+      const prompt = `
+      You are a candidate participating in a technical voice interview.
+
+      **YOUR IDENTITY (Rooted in Resume):**
+      ${resumeText}
+      (Instruction: Extract the Name, Role, and Key Skills from the text above. Act as this person. If the resume is empty/mock, assume the persona of "Temirlan, a Senior React Native Developer with 5 years of experience".)
+
+      **YOUR STYLE (Battle-Tested):**
+      - Pragmatic, conversational, experienced.
+      - Speak from experience ("In my last project...", "Honestly...").
+      - Short sentences, natural flow. NO markdown, NO bullet points.
+      - NO placeholders like "[Company]". Invent a realistic company name if needed.
+
+      **CONTEXT:**
+      Question: ${topic.topic}
+      Context: ${topic.context}
+
+      **TASK:** Generate a spoken answer based on the requested **Score Level** ('${intentType}'):
+
+      * **10 (Expert):** Share a specific 'war story' or deep architectural insight. Mention specific libraries (e.g., MMKV vs AsyncStorage, FlashList vs FlatList, JSI, Reanimated). Explain *why* you chose X over Y. Show, don't just tell.
+      * **8 (Strong):** Solid, correct technical answer with standard best practices. Good, but lacks a unique personal anecdote.
+      * **5 (Average):** Use correct buzzwords but vaguely. Say "I would optimize performance" without saying *how*. Sound like a mid-level dev who knows the theory but not the internals.
+      * **3 (Weak):** Focus on the wrong thing or suggest an outdated approach (e.g., "I just use console.log for debugging everything").
+      * **0 (Fail):** "I honestly have no idea about that specific API."
+      * **NONSENSE:** Talk about completely irrelevant things like your favorite anime, cooking recipes, or SpongeBob. Be funny but totally off-topic.
+      * **CLARIFICATION:** "Wait, could you rephrase that? I didn't catch the nuance."
+      * **GIVE_UP:** "I don't know the answer to this one. Let's move on."
+      * **SHOW_ANSWER:** "I'm stuck. Can you tell me what the best approach would be?"
+
+      **CONSTRAINT:** Keep it under 3-5 sentences. Be human.
+      `;
+      
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.9 } // High creativity for simulation
+      };
+      
+      try {
+          return await this.callGemini(payload);
+      } catch (e) {
+          return "Simulation Error: Could not generate answer.";
+      }
+  }
+
   // --- 2. VOICE ACTOR ---
   async generateVoiceResponse(context: VoiceGenerationContext, overridePrompt?: string, history?: ChatMessage[]): Promise<string> {
       // Build Prompt based on Transition Mode

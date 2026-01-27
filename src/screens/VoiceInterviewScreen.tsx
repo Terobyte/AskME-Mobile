@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, TextInput, Animated, ActivityIndicator, Image } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, TextInput, Animated, ActivityIndicator, Image, Easing as RNEasing } from 'react-native';
 import { useAudioRecorder, RecordingPresets, AudioModule, AudioPlayer, setAudioModeAsync, IOSOutputFormat, AndroidOutputFormat, AndroidAudioEncoder } from 'expo-audio';
 import { Buffer } from 'buffer';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,12 +9,19 @@ import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
 import * as FileSystem from 'expo-file-system';
 import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse, QuestionResult, FinalInterviewReport } from '../types';
+import Svg, { Path, Defs, LinearGradient, Stop, Mask, Rect } from 'react-native-svg';
+import AnimatedReanimated, { useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, runOnJS, useDerivedValue, useAnimatedStyle, withSpring, withSequence, withRepeat } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 
 import { GeminiAgentService } from '../services/gemini-agent';
 import { generateInterviewPlan } from '../interview-planner';
 import { TTSService } from '../services/tts-service';
 import { useTypewriter } from '../hooks/useTypewriter';
 import { MetricsHud } from '../components/MetricsHud';
+
+// Animated SVG Components
+const AnimatedPath = AnimatedReanimated.createAnimatedComponent(Path);
+const AnimatedText = AnimatedReanimated.createAnimatedComponent(Text);
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -720,52 +727,45 @@ export default function VoiceInterviewScreen() {
         setDisplayTranscript("");
         lastPosition.current = 0;
 
-        // 2. Check Permissions
+        // 2. Check Permissions FIRST
         const perm = await AudioModule.requestRecordingPermissionsAsync();
         if (!perm.granted) {
             Alert.alert('Permission missing', 'Microphone access is required.');
             return;
         }
 
-        // Configure Audio Mode again just in case
+        // 3. Configure Audio Mode (CRITICAL FIX)
+        // User requested specific settings for IOS
         await setAudioModeAsync({
             playsInSilentMode: true,
-            allowsRecording: true,
+            allowsRecording: true, // Maps to allowsRecordingIOS in expo-audio adapter or handled internally
             shouldPlayInBackground: true,
             shouldRouteThroughEarpiece: false,
+            // interuptionModeIOS: 1, // Optional: DoNotMix
+            // interuptionModeAndroid: 1, // Optional: DoNotMix
         });
 
-        // 3. Connect WebSocket (if not open)
+        // 4. Connect WebSocket (if not open)
         if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
             await connectToDeepgram();
         }
 
-        // 4. Start Recording (expo-audio)
-        // FIX: Use string values that match the expected types (even if Enums are types only in TS definition)
-        // Expo Audio types might be defined as string unions or numbers.
-        // We use the raw values that correspond to the desired formats.
-        // 4. Start Recording (expo-audio)
-        // 4. Start Recording (Fixed: Using string literals to avoid "undefined" Enums)
-        // 4. Start Recording
-        console.log("🎙️ Preparing Recorder (Corrected)...");
+        // 5. Start Recording
+        console.log("🎙️ Preparing Recorder...");
 
         await recorder.prepareToRecordAsync({
-            // 👇 ЭТИ ПАРАМЕТРЫ ДОЛЖНЫ БЫТЬ ТУТ (НАВЕРХУ)
             numberOfChannels: 1,
-            
             android: {
                 extension: '.amr',
-                outputFormat: 'amr_wb',
+                outputFormat: 'amrwb',
                 audioEncoder: 'amr_wb',
                 sampleRate: 16000,
-                bitRate: 23850,
             },
             ios: {
                 extension: '.wav',
-                outputFormat: 'lpcm',
+                outputFormat: 'linearPCM',
                 audioQuality: 96,
                 sampleRate: 16000,
-                bitRate: 256000,
                 linearPCMBitDepth: 16,
                 linearPCMIsBigEndian: false,
                 linearPCMIsFloat: false,
@@ -775,17 +775,12 @@ export default function VoiceInterviewScreen() {
 
         console.log("✅ Recorder Prepared. Starting...");
         recorder.record();
-
-        console.log("✅ Recorder Prepared. Starting...");
-        recorder.record();
         
-        console.log("✅ Recorder Prepared. Starting...");
-        recorder.record();
         console.log("🎙️ Recorder Started. URI:", recorder.uri);
         setIsRecording(true);
         setStatus('listening');
 
-        // 5. START STREAMING LOOP (The "Hack" to stream from disk)
+        // 6. START STREAMING LOOP
         // We poll the file every 150ms, slice the new bytes, and send to Deepgram
         if (streamInterval.current) clearInterval(streamInterval.current);
         
@@ -952,10 +947,143 @@ export default function VoiceInterviewScreen() {
       );
   };
 
+  const ScoreReveal = ({ score, summary, loading }: { score: number, summary: string, loading: boolean }) => {
+      const progress = useSharedValue(0);
+      const [showButton, setShowButton] = useState(false);
+      const [displayScore, setDisplayScore] = useState("0.0");
+      const [isRevealed, setIsRevealed] = useState(false);
+
+      useEffect(() => {
+          // Scramble Animation
+          const interval = setInterval(() => {
+              if (loading || progress.value < 1) {
+                  setDisplayScore((Math.random() * 10).toFixed(1));
+              }
+          }, 50);
+
+          if (!loading) {
+              // Start Arc Animation only when not loading
+              progress.value = withTiming(1, {
+                  duration: 4000,
+                  easing: Easing.bezier(0.4, 0, 0.2, 1)
+              }, (finished) => {
+                  if (finished) {
+                      runOnJS(setIsRevealed)(true);
+                      runOnJS(Haptics.notificationAsync)(Haptics.NotificationFeedbackType.Success);
+                      runOnJS(setDisplayScore)(score.toFixed(1));
+                      // Show button after a delay
+                      runOnJS(setTimeout)(() => setShowButton(true), 1500);
+                  }
+              });
+          } else {
+             // Pulse/Breathe effect while loading
+             progress.value = withRepeat(withTiming(0.2, { duration: 1000 }), -1, true);
+          }
+
+          return () => clearInterval(interval);
+      }, [loading]);
+
+      const animatedProps = useAnimatedProps(() => {
+          const radius = 120;
+          const circumference = Math.PI * radius; // Semi-circle
+          // If loading, just show a small indeterminate segment or nothing?
+          // Let's rely on the progress value which we are animating above.
+          const targetScore = loading ? 10 : score; // Fill fully if loading (pulsing) or to score
+          // Actually, if loading, we pulse progress between 0 and 0.2.
+          // The strokeDashoffset calculation:
+          // offset = C * (1 - progress * (score/10))
+          // If loading, we want it to move.
+          const effectiveScore = loading ? 10 : score;
+          const strokeDashoffset = circumference * (1 - progress.value * (effectiveScore / 10)); 
+          return {
+              strokeDashoffset,
+          };
+      });
+
+      // Color Logic
+      const getScoreColor = () => {
+          if (score >= 8) return "#10B981"; // Green
+          if (score >= 5) return "#F59E0B"; // Orange
+          return "#EF4444"; // Red
+      };
+
+      return (
+          <View style={styles.revealContainer}>
+              <View style={styles.gaugeContainer}>
+                  <Svg width={300} height={160} viewBox="0 0 300 160">
+                      <Defs>
+                          <LinearGradient id="grad" x1="0" y1="0" x2="1" y2="0">
+                              <Stop offset="0" stopColor="#EF4444" stopOpacity="1" />
+                              <Stop offset="0.5" stopColor="#F59E0B" stopOpacity="1" />
+                              <Stop offset="1" stopColor="#10B981" stopOpacity="1" />
+                          </LinearGradient>
+                          <Mask id="mask">
+                              <AnimatedPath
+                                  d="M 30 150 A 120 120 0 0 1 270 150"
+                                  stroke="white"
+                                  strokeWidth="20"
+                                  fill="none"
+                                  strokeDasharray={`${Math.PI * 120}`}
+                                  animatedProps={animatedProps}
+                                  strokeLinecap="round"
+                              />
+                          </Mask>
+                      </Defs>
+                      
+                      {/* Background Track */}
+                      <Path
+                          d="M 30 150 A 120 120 0 0 1 270 150"
+                          stroke="#333"
+                          strokeWidth="20"
+                          fill="none"
+                          strokeLinecap="round"
+                      />
+
+                      {/* Gradient Fill with Mask */}
+                      <Rect
+                          x="0"
+                          y="0"
+                          width="300"
+                          height="160"
+                          fill="url(#grad)"
+                          mask="url(#mask)"
+                      />
+                  </Svg>
+                  
+                  {/* Score Text */}
+                  <View style={styles.scoreTextContainer}>
+                      <Text style={[
+                          styles.scoreText, 
+                          isRevealed && { color: getScoreColor(), transform: [{scale: 1.2}] }
+                      ]}>
+                          {displayScore}
+                      </Text>
+                      <Text style={styles.scoreLabel}>OVERALL SCORE</Text>
+                  </View>
+              </View>
+
+              {isRevealed && (
+                  <View style={styles.summaryContainer}>
+                      <Text style={styles.summaryText}>{summary}</Text>
+                  </View>
+              )}
+
+              {showButton && (
+                  <AnimatedReanimated.View entering={withSpring(1) as any} style={styles.resultButtonContainer}>
+                      <TouchableOpacity style={styles.resultButton} onPress={() => Alert.alert("Detailed Report Coming Soon!")}>
+                          <Text style={styles.resultButtonText}>CHECK YOUR RESULTS</Text>
+                          <Ionicons name="arrow-forward" size={20} color="#FFF" />
+                      </TouchableOpacity>
+                  </AnimatedReanimated.View>
+              )}
+          </View>
+      );
+  };
+
   const DebugConsole = () => {
     if (!__DEV__) return null;
 
-    const options = ["0", "3", "5", "8", "10", "NONSENSE", "CLARIFICATION", "GIVE_UP", "SHOW_ANSWER"];
+    const options = ["0", "3", "5", "8", "10", "NONSENSE", "CLARIFICATION", "GIVE_UP", "SHOW_ANSWER", "I_AM_READY"];
 
     const handleSimulate = async () => {
         if (!plan || !agentRef.current) return;
@@ -965,16 +1093,18 @@ export default function VoiceInterviewScreen() {
         console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
 
         try {
-            const currentTopic = plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)];
-            const simText = await agentRef.current.generateSimulatedAnswer(currentTopic, debugValue, resumeText);
+            let simText = "";
+            if (debugValue === "I_AM_READY") {
+                simText = "I am ready.";
+            } else {
+                const currentTopic = plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)];
+                simText = await agentRef.current.generateSimulatedAnswer(currentTopic, debugValue, resumeText);
+            }
+            
             console.log(`🤖 [DEV] Simulated Text: ${simText}`);
             
             // Inject into system as if user spoke it
             setLiveTranscript(simText);
-            // Need to wrap in promise or just call it. finalizeMessage doesn't take args in original definition
-            // but we need to modify it or create a wrapper. 
-            // Wait, finalizeMessage originally used `textToFinalize` state.
-            // We should refactor finalizeMessage to accept an optional argument.
             await finalizeMessage(simText);
         } catch (e) {
             console.error("Simulation Failed", e);
@@ -1185,6 +1315,17 @@ export default function VoiceInterviewScreen() {
             )}
         </ScrollView>
       </View>
+
+      {/* SCORE REVEAL OVERLAY */}
+      <Modal visible={isInterviewFinished} transparent animationType="fade">
+          <BlurView intensity={90} tint="dark" style={styles.blurContainer}>
+              <ScoreReveal 
+                  score={finalReport ? finalReport.averageScore : 0} 
+                  summary={finalReport ? finalReport.overallSummary : "Calculating results..."} 
+                  loading={!finalReport}
+              />
+          </BlurView>
+      </Modal>
 
       <View style={styles.controls}>
           <TouchableOpacity 
@@ -1502,13 +1643,83 @@ const styles = StyleSheet.create({
       marginBottom: 50,
   },
   modalGenerateButtonText: {
-      color: '#FFF',
-      fontSize: 18,
-      fontWeight: 'bold',
-  },
-  planPreview: {
-      backgroundColor: 'rgba(255,255,255,0.5)',
-      padding: 15,
-      borderRadius: 10,
-  }
+        color: '#FFF',
+        fontSize: 18,
+        fontWeight: 'bold',
+    },
+    planPreview: {
+        backgroundColor: 'rgba(255,255,255,0.5)',
+        padding: 15,
+        borderRadius: 10,
+    },
+    revealContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: '#000', // Dark Mode for Reveal
+        width: '100%',
+    },
+    gaugeContainer: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: 200,
+        marginBottom: 20,
+    },
+    scoreTextContainer: {
+        position: 'absolute',
+        top: 80,
+        alignItems: 'center',
+    },
+    scoreText: {
+        fontSize: 48,
+        fontWeight: '900',
+        color: '#FFF',
+        fontVariant: ['tabular-nums'],
+    },
+    scoreLabel: {
+        fontSize: 12,
+        color: '#666',
+        letterSpacing: 2,
+        marginTop: 5,
+        fontWeight: 'bold',
+    },
+    summaryContainer: {
+        paddingHorizontal: 30,
+        alignItems: 'center',
+        marginTop: 20,
+        marginBottom: 40,
+    },
+    summaryText: {
+        color: '#CCC',
+        fontSize: 16,
+        lineHeight: 24,
+        textAlign: 'center',
+        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    resultButtonContainer: {
+        width: '100%',
+        alignItems: 'center',
+        position: 'absolute',
+        bottom: 50,
+    },
+    resultButton: {
+        flexDirection: 'row',
+        backgroundColor: '#FFF',
+        paddingVertical: 16,
+        paddingHorizontal: 32,
+        borderRadius: 30,
+        alignItems: 'center',
+        shadowColor: '#FFF',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0.3,
+        shadowRadius: 10,
+        elevation: 5,
+    },
+    resultButtonText: {
+        color: '#000',
+        fontWeight: 'bold',
+        fontSize: 16,
+        marginRight: 10,
+        letterSpacing: 1,
+    },
 });

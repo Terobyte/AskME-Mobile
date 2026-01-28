@@ -1,181 +1,541 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { Alert, LayoutAnimation } from 'react-native';
+import { 
+  InterviewPlan, 
+  EvaluationMetrics, 
+  QuestionResult, 
+  FinalInterviewReport,
+  InterviewMode,
+  ChatMessage 
+} from '../../types';
 import { GeminiAgentService } from '../../services/gemini-agent';
 import { generateInterviewPlan } from '../../interview-planner';
-import { StorageService } from '../../services/storage-service';
-import {
-  InterviewPlan,
-  InterviewTopic,
-  EvaluationMetrics,
-  QuestionResult,
-  FinalInterviewReport,
-  ChatMessage,
-  InterviewMode,
-  VoiceGenerationContext,
-} from '../../types';
+import { TTSService } from '../../services/tts-service';
+import { safeAudioModeSwitch } from './useInterviewAudio';
 
 // ============================================
-// TYPE DEFINITIONS
+// TYPES
 // ============================================
 
-export interface Message {
-  id: string;
-  text: string;
-  sender: 'user' | 'ai';
-}
-
-export interface InterviewMetrics {
-  anger: number;
-  topicSuccess: number;
-}
-
-export interface UseInterviewLogicConfig {
-  geminiApiKey: string;
-  onAISpeakStart?: () => void;
-  onAISpeakEnd?: () => void;
+interface UseInterviewLogicConfig {
+  // Audio coordination (dependency injection)
+  onAIStart?: () => void;         // Called when AI starts speaking
+  onAIEnd?: () => void;           // Called when AI finishes speaking
+  
+  // Optional callbacks
   onInterviewComplete?: (results: FinalInterviewReport) => void;
 }
 
-export interface UseInterviewLogicReturn {
+interface UseInterviewLogicReturn {
   // State
-  messages: Message[];
-  currentTopic: InterviewTopic | null;
-  metrics: {
-    anger: number;
-    topicSuccess: number;
-  };
+  messages: { id: string; text: string; sender: 'user' | 'ai' }[];
+  anger: number;
+  currentTopic: string;
   isProcessing: boolean;
-  interviewComplete: boolean;
-  currentMetrics: EvaluationMetrics | null;
+  isFinished: boolean;
+  
+  // Metrics
+  metrics: EvaluationMetrics | null;
+  topicSuccess: number;
+  topicPatience: number;
+  
+  // Interview state
+  plan: InterviewPlan | null;
+  currentTopicIndex: number;
+  isLobbyPhase: boolean;
+  isPlanReady: boolean;
   finalReport: FinalInterviewReport | null;
-
-  // Actions
-  initializeInterview: (resumeText: string, jdText: string, mode: InterviewMode) => Promise<void>;
-  handleUserResponse: (userText: string) => Promise<void>;
-  handleSaveAndRestart: (resumeText: string, jdText: string, mode: InterviewMode) => Promise<void>;
-  handleForceFinish: () => Promise<void>;
+  
+  // Functions
+  initializeInterview: (resume: string, jobDescription: string, mode: InterviewMode) => Promise<void>;
+  processUserInput: (text: string) => Promise<void>;
+  forceFinish: () => Promise<void>;
+  restart: () => void;
+  
+  // Computed
+  progress: number;
 }
-
-// ============================================
-// CONSTANTS
-// ============================================
 
 const INITIAL_PLAN: InterviewPlan = {
   meta: { mode: 'short', total_estimated_time: '5m' },
-  queue: [{
-    id: 'intro',
-    topic: 'Introduction',
-    type: 'Intro',
-    estimated_time: '5m',
-    context: "The user is introducing themselves. Ask them to describe their background and experience briefly."
+  queue: [{ 
+    id: 'intro', 
+    topic: 'Introduction', 
+    type: 'Intro', 
+    estimated_time: '5m', 
+    context: "The user is introducing themselves. Ask them to describe their background and experience briefly." 
   }]
 };
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000;
-
 // ============================================
-// HOOK IMPLEMENTATION
+// HOOK
 // ============================================
 
-export function useInterviewLogic(config: UseInterviewLogicConfig): UseInterviewLogicReturn {
-  const { onAISpeakStart, onAISpeakEnd, onInterviewComplete } = config;
+export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInterviewLogicReturn => {
+  const { onAIStart, onAIEnd, onInterviewComplete } = config;
 
-  // State Management
-  const [resumeText, setResumeText] = useState<string>('');
+  // Core State
+  const [messages, setMessages] = useState<{ id: string; text: string; sender: 'user' | 'ai' }[]>([]);
+  const [anger, setAnger] = useState(0);
+  const [topicSuccess, setTopicSuccess] = useState(0);
+  const [topicPatience, setTopicPatience] = useState(0);
   const [plan, setPlan] = useState<InterviewPlan | null>(null);
-  const [anger, setAnger] = useState<number>(0);
-  const [topicSuccess, setTopicSuccess] = useState<number>(0);
-  const [topicPatience, setTopicPatience] = useState<number>(0);
-  const [currentTopicIndex, setCurrentTopicIndex] = useState<number>(0);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [interviewComplete, setInterviewComplete] = useState<boolean>(false);
   const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
+  const [isFinished, setIsFinished] = useState(false);
+  const [resumeText, setResumeText] = useState('');
+  const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isLobbyPhase, setIsLobbyPhase] = useState(true);
+  const [isPlanReady, setIsPlanReady] = useState(false);
   const [finalReport, setFinalReport] = useState<FinalInterviewReport | null>(null);
-  const [isLobbyPhase, setIsLobbyPhase] = useState<boolean>(true);
   const [previousTopicResult, setPreviousTopicResult] = useState<string | null>(null);
 
   // Refs
   const agentRef = useRef<GeminiAgentService | null>(null);
   const historyBuffer = useRef<ChatMessage[]>([]);
   const bulkEvalPromise = useRef<Promise<QuestionResult[]> | null>(null);
+  const latestTranscriptRef = useRef('');
 
   // ============================================
-  // HELPER FUNCTIONS
+  // COMPUTED VALUES
   // ============================================
 
-  const addMessage = useCallback((text: string, sender: 'user' | 'ai') => {
-    const message: Message = {
-      id: `${Date.now()}_${sender}`,
-      text,
-      sender,
-    };
-    setMessages(prev => [...prev, message]);
+  const currentTopic = plan && plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)]
+    ? plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)].topic
+    : "Introduction";
 
-    // Update history buffer
-    historyBuffer.current.push({
-      role: sender === 'user' ? 'user' : 'assistant',
-      content: text,
-    });
-  }, []);
+  const progress = plan 
+    ? Math.min((currentTopicIndex / plan.queue.length) * 100, 100)
+    : 0;
 
-  const retryWithBackoff = async <T,>(
-    fn: () => Promise<T>,
-    retries: number = MAX_RETRIES
-  ): Promise<T> => {
-    for (let i = 0; i < retries; i++) {
-      try {
-        return await fn();
-      } catch (error) {
-        if (i === retries - 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * (i + 1)));
-        console.warn(`Retry ${i + 1}/${retries} after error:`, error);
+  // ============================================
+  // CORE FUNCTIONS
+  // ============================================
+
+  const playSynchronizedResponse = async (text: string): Promise<void> => {
+    setIsProcessing(true);
+
+    // Notify audio hook to stop recording (prevent echo)
+    onAIStart?.();
+
+    try {
+      console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
+
+      // Force speaker mode before TTS playback
+      console.log("🔊 Forcing speaker output for TTS...");
+      await safeAudioModeSwitch('playback');
+      
+      // Small delay to ensure audio mode is applied
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Prepare audio
+      const player = await TTSService.prepareAudio(text);
+
+      console.log("💥 Sync: BOOM! Playing.");
+
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+
+      // Append to History Buffer
+      historyBuffer.current.push({ role: 'assistant', content: text });
+
+      if (player) {
+        await new Promise<void>((resolve) => {
+          const listener = player.addListener('playbackStatusUpdate', (status: any) => {
+            if (status.didJustFinish) {
+              listener.remove();
+              // @ts-ignore
+              if (typeof player.release === 'function') player.release();
+              else player.remove();
+              resolve();
+            }
+          });
+          player.play();
+        });
       }
+
+    } catch (e) {
+      console.error("Sync Error:", e);
+    } finally {
+      setIsProcessing(false);
+      // Notify audio hook that AI finished speaking
+      onAIEnd?.();
     }
-    throw new Error('Max retries exceeded');
   };
 
-  // ============================================
-  // CORE LOGIC FUNCTIONS
-  // ============================================
+  const processUserInput = async (text: string): Promise<void> => {
+    const textToFinalize = text.trim();
 
-  const initializeInterview = useCallback(async (
-    resume: string,
-    jd: string,
+    if (isProcessing) return;
+
+    if (textToFinalize.length > 0) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setMessages(prev => [...prev, { id: Date.now().toString(), text: textToFinalize, sender: 'user' }]);
+
+      // Append to History Buffer
+      historyBuffer.current.push({ role: 'user', content: textToFinalize });
+
+      if (agentRef.current) {
+        setIsProcessing(true);
+        try {
+          // --- LOBBY PHASE LOGIC ---
+          if (isLobbyPhase) {
+            console.log("🏨 [LOBBY] Analyzing Lobby Input...");
+
+            // Use a dummy topic for analysis context
+            const lobbyTopic: any = { topic: "Lobby Check", context: "User is in the waiting lobby." };
+            const lastAiText = historyBuffer.current.length > 0
+              ? historyBuffer.current[historyBuffer.current.length - 1].content
+              : "Welcome to the lobby.";
+
+            const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize, lobbyTopic, lastAiText);
+
+            if (analysis.intent === 'READY_CONFIRM') {
+              // User is ready to start
+              console.log("✅ [LOBBY] User Ready -> STARTING INTRO (Optimistic)");
+
+              const currentPlan = plan || INITIAL_PLAN;
+
+              // Initialize Agent Context properly
+              const initialContext = {
+                currentTopic: currentPlan.queue[0],
+                previousResult: null,
+                angerLevel: 0,
+                isLastTopic: false
+              };
+
+              // Call Start Interview Logic
+              const introResponse = await agentRef.current.startInterview(resumeText, "Candidate", initialContext);
+              let introMsg = "";
+              if (typeof introResponse === 'string') {
+                introMsg = introResponse;
+              } else {
+                introMsg = introResponse.message;
+              }
+
+              setIsLobbyPhase(false);
+              setCurrentTopicIndex(0);
+
+              await playSynchronizedResponse(introMsg);
+
+            } else {
+              console.log("🗣️ [LOBBY] Small Talk");
+              // Just chat or acknowledge
+              const chatMsg = await agentRef.current.generateVoiceResponse({
+                currentTopic: lobbyTopic,
+                nextTopic: null,
+                transitionMode: 'STAY'
+              }, "User is not ready yet. Just chat politely or say 'Take your time'.", historyBuffer.current);
+              await playSynchronizedResponse(chatMsg);
+            }
+
+            setIsProcessing(false);
+            return; // EXIT LOBBY LOGIC
+          }
+
+          // --- REGULAR INTERVIEW LOGIC ---
+          if (!plan) return;
+
+          let effectiveTopicIndex = currentTopicIndex;
+          let effectivePrevResult = previousTopicResult;
+
+          const safeIndex = Math.min(effectiveTopicIndex, plan.queue.length - 1);
+          const currentTopic = plan.queue[safeIndex];
+
+          // --- 1. ANALYSIS PHASE (JUDGE) ---
+          console.log("🔍 [1] Analyzing User Intent...");
+
+          const lastAiText = historyBuffer.current.length > 0
+            ? historyBuffer.current[historyBuffer.current.length - 1].content
+            : "Start of topic";
+
+          const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize, currentTopic, lastAiText);
+          console.log("📊 [1] Result:", JSON.stringify(analysis));
+
+          // --- SPECIAL CASE: INTRO (Index 0) ---
+          if (currentTopicIndex === 0) {
+            // 1. NONSENSE CHECK
+            if (analysis.intent === 'NONSENSE') {
+              console.log("🤡 [INTRO] Nonsense detected -> STAY.");
+              setCurrentMetrics(analysis.metrics);
+
+              // Punishment
+              setTopicPatience(prev => Math.min(100, prev + 50));
+              setAnger(prev => Math.min(100, prev + 35));
+
+              const speech = await agentRef.current.generateVoiceResponse({
+                currentTopic: currentTopic,
+                nextTopic: null,
+                transitionMode: 'STAY',
+                angerLevel: anger + 10
+              }, undefined, historyBuffer.current);
+              await playSynchronizedResponse(speech);
+              return;
+            }
+
+            // 2. CLARIFICATION CHECK (Stay if confused)
+            if (analysis.intent === 'CLARIFICATION') {
+              console.log("🤔 [INTRO] Clarification requested -> STAY.");
+              const speech = await agentRef.current.generateVoiceResponse({
+                currentTopic: currentTopic,
+                nextTopic: null,
+                transitionMode: 'STAY',
+              }, undefined, historyBuffer.current);
+              await playSynchronizedResponse(speech);
+              return;
+            }
+
+            // 3. VALID INPUT -> MOVE NEXT
+            console.log("✅ [INTRO] Valid input -> MOVING NEXT.");
+
+            // Reset Stats for Topic 1
+            setTopicSuccess(0);
+            setTopicPatience(0);
+
+            setCurrentMetrics(analysis.metrics);
+
+            // Transition to Topic 1
+            const nextIndex = 1;
+            setCurrentTopicIndex(nextIndex);
+            const nextTopic = plan.queue[nextIndex];
+
+            const speech = await agentRef.current.generateVoiceResponse({
+              currentTopic: currentTopic,
+              nextTopic: nextTopic,
+              transitionMode: 'NEXT_PASS',
+            }, undefined, historyBuffer.current);
+
+            await playSynchronizedResponse(speech);
+            return; // EXIT EARLY
+          }
+
+          // --- BLOCKING CLARIFICATION CHECK ---
+          if (analysis.intent === 'CLARIFICATION') {
+            console.log("🛑 [LOGIC] CLARIFICATION DETECTED -> FORCE STAY & RETURN");
+
+            const speech = await agentRef.current.generateVoiceResponse({
+              currentTopic: currentTopic,
+              nextTopic: null,
+              transitionMode: 'STAY',
+              angerLevel: anger
+            }, undefined, historyBuffer.current);
+
+            await playSynchronizedResponse(speech);
+            setIsProcessing(false);
+            return;
+          }
+
+          setCurrentMetrics(analysis.metrics);
+
+          // --- 2. GAME LOGIC PHASE ---
+          let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER' = 'STAY';
+          let shouldPenalizeAnger = true;
+          let shouldFinishInterview = false;
+
+          let newSuccess = topicSuccess;
+          let newPatience = topicPatience;
+          let newAnger = anger;
+
+          if (analysis.intent === 'GIVE_UP') {
+            console.log("🏳️ User GAVE UP.");
+            newPatience = 110;
+          }
+          else if (analysis.intent === 'SHOW_ANSWER') {
+            console.log("💡 User asked for ANSWER.");
+            newPatience = 110;
+            shouldPenalizeAnger = false;
+            transitionMode = 'NEXT_EXPLAIN';
+          }
+          else if (analysis.intent === 'CLARIFICATION') {
+            console.log("🤔 User asked for CLARIFICATION.");
+          }
+          else if (analysis.intent === 'NONSENSE') {
+            console.log("🤡 User is Trolling/Nonsense.");
+
+            newPatience += 50;
+            newAnger += 35;
+
+            transitionMode = 'STAY';
+
+            setCurrentMetrics({ accuracy: 0, depth: 0, structure: 0, reasoning: "Response was identified as nonsense/irrelevant." });
+          }
+          else {
+            // ATTEMPT -> Normal Scoring
+            const { accuracy, depth, structure } = analysis.metrics;
+            const overall = (accuracy + depth + structure) / 3;
+
+            console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`);
+
+            if (overall < 5) newPatience += ((10 - overall) * 7);
+            else if (overall < 7) { newSuccess += (overall * 7); newPatience += 10; }
+            else { newSuccess += (overall * 13); newPatience -= (overall * 3); }
+          }
+
+          // Clamp
+          newSuccess = Math.min(Math.max(newSuccess, 0), 100);
+          newPatience = Math.min(Math.max(newPatience, 0), 100);
+          newAnger = Math.min(Math.max(newAnger, 0), 100);
+
+          // Update UI State
+          setTopicSuccess(newSuccess);
+          setTopicPatience(newPatience);
+          setAnger(newAnger);
+
+          // --- 3. TRANSITION CHECK ---
+          let nextIndex = effectiveTopicIndex;
+
+          // PRIORITY 1: GLOBAL KILL SWITCH (Termination)
+          if (newAnger >= 100) {
+            console.log("🤬 Anger Limit Reached. Initiating Termination.");
+
+            const terminationSpeech = await agentRef.current.generateVoiceResponse({
+              currentTopic: currentTopic,
+              nextTopic: null,
+              transitionMode: 'TERMINATE_ANGER',
+              angerLevel: 100
+            }, undefined, historyBuffer.current);
+
+            await playSynchronizedResponse(terminationSpeech);
+
+            setIsFinished(true);
+            return;
+          }
+          else if (newSuccess >= 100) {
+            transitionMode = 'NEXT_PASS';
+            nextIndex++;
+            setPreviousTopicResult("PASSED_SUCCESS");
+            setTopicSuccess(0);
+            setTopicPatience(0);
+            setAnger(prev => Math.max(0, prev - 5));
+          }
+          else if (newPatience >= 100) {
+            if (transitionMode !== 'NEXT_EXPLAIN') transitionMode = 'NEXT_FAIL';
+
+            nextIndex++;
+            setPreviousTopicResult("FAILED_PATIENCE");
+            setTopicSuccess(0);
+            setTopicPatience(0);
+
+            if (shouldPenalizeAnger) {
+              setAnger(prev => Math.min(100, prev + 35));
+            } else {
+              console.log("😇 Mercy Rule: Anger saved.");
+            }
+          }
+
+          // CHECK FOR END OF INTERVIEW
+          if (plan && nextIndex >= plan.queue.length) {
+            console.log("🏁 End of Interview Detected.");
+            transitionMode = 'FINISH_INTERVIEW';
+            shouldFinishInterview = true;
+          } else {
+            if (nextIndex !== currentTopicIndex) {
+              console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
+              setCurrentTopicIndex(nextIndex);
+
+              // Trigger batch evaluation for previous topics
+              if (plan && nextIndex === plan.queue.length - 1) {
+                console.log("🚀 Triggering Background Batch Eval for previous topics...");
+                const historySnapshot = [...historyBuffer.current];
+                bulkEvalPromise.current = agentRef.current.evaluateBatch(historySnapshot);
+              }
+            }
+          }
+
+          // --- 4. ACTING PHASE (VOICE) ---
+          console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
+
+          const nextTopic = (transitionMode === 'FINISH_INTERVIEW')
+            ? null
+            : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
+
+          const speech = await agentRef.current.generateVoiceResponse({
+            currentTopic: currentTopic,
+            nextTopic: nextTopic,
+            transitionMode: transitionMode,
+            angerLevel: anger
+          }, undefined, historyBuffer.current);
+
+          await playSynchronizedResponse(speech);
+
+          // GENERATE FINAL REPORT
+          if (shouldFinishInterview) {
+            console.log("📊 Generating Final Report...");
+            setIsProcessing(true);
+
+            try {
+              const previousResults = bulkEvalPromise.current
+                ? await bulkEvalPromise.current
+                : [];
+
+              const lastInteraction = { role: 'user' as const, content: textToFinalize };
+
+              const finalResult = await agentRef.current.evaluateFinal(lastInteraction, previousResults);
+
+              const allResults = [...previousResults, finalResult.finalQuestion];
+              const avg = allResults.length > 0
+                ? allResults.reduce((a, b) => a + b.score, 0) / allResults.length
+                : 0;
+
+              const report: FinalInterviewReport = {
+                questions: allResults,
+                averageScore: Number(avg.toFixed(1)),
+                overallSummary: finalResult.overallSummary,
+                timestamp: Date.now()
+              };
+
+              console.log("✅ Final Report Ready:", JSON.stringify(report, null, 2));
+              setFinalReport(report);
+              onInterviewComplete?.(report);
+
+            } catch (err) {
+              console.error("Report Gen Error:", err);
+            }
+
+            setIsFinished(true);
+          }
+        } catch (error) {
+          console.error("Agent Error:", error);
+          Alert.alert("Error", "An error occurred during the interview. Please try again.");
+        } finally {
+          setIsProcessing(false);
+        }
+      }
+    }
+  };
+
+  const initializeInterview = async (
+    resume: string, 
+    jobDescription: string, 
     mode: InterviewMode
-  ) => {
+  ): Promise<void> => {
     try {
-      setIsProcessing(true);
-      setResumeText(resume);
-
-      // Initialize Gemini Agent
+      // 1. Initialize Agent
       agentRef.current = new GeminiAgentService();
 
-      // Reset state
+      // 2. Reset State
       setCurrentTopicIndex(0);
       setPreviousTopicResult(null);
       setTopicSuccess(0);
       setTopicPatience(0);
       setAnger(0);
-      setInterviewComplete(false);
+      setIsFinished(false);
       setFinalReport(null);
-      setCurrentMetrics(null);
       historyBuffer.current = [];
+      setResumeText(resume);
+
+      // 3. Set initial plan (Intro only)
+      setPlan(INITIAL_PLAN);
+      setIsPlanReady(false);
+      setIsLobbyPhase(true);
       setMessages([]);
 
-      // Set initial plan (intro only)
-      setPlan(INITIAL_PLAN);
-      setIsLobbyPhase(true);
-
-      // Generate greeting
+      // 4. Play immediate greeting
       const greeting = "Hello, I'm Victoria. I'll be conducting your technical interview today. I have your details in front of me. Whenever you're ready to begin, just let me know.";
-      
-      if (onAISpeakStart) onAISpeakStart();
-      addMessage(greeting, 'ai');
-      if (onAISpeakEnd) onAISpeakEnd();
+      await playSynchronizedResponse(greeting);
 
-      // Generate full plan asynchronously
-      generateInterviewPlan(resume, jd, mode)
+      // 5. Generate full plan asynchronously
+      generateInterviewPlan(resume, jobDescription, mode)
         .then(generatedPlan => {
           setPlan(prev => {
             if (!prev) return generatedPlan;
@@ -184,458 +544,71 @@ export function useInterviewLogic(config: UseInterviewLogicConfig): UseInterview
               queue: [prev.queue[0], ...generatedPlan.queue.slice(1)]
             };
           });
+          setIsPlanReady(true);
           console.log("✅ Plan Ready:", generatedPlan.queue.length, "topics");
         })
         .catch(err => {
-          console.error("Plan Generation Error:", err);
+          console.error("Plan Gen Error:", err);
+          Alert.alert("Error", "Failed to generate interview plan.");
         });
 
     } catch (error) {
-      console.error("Initialization Error:", error);
+      Alert.alert("Error", "Failed to initialize interview.");
+      console.error(error);
       throw error;
-    } finally {
-      setIsProcessing(false);
     }
-  }, [addMessage, onAISpeakStart, onAISpeakEnd]);
+  };
 
-  const handleUserResponse = useCallback(async (userText: string) => {
-    if (!agentRef.current || isProcessing || !userText.trim()) return;
-
-    try {
-      setIsProcessing(true);
-
-      // Add user message
-      addMessage(userText.trim(), 'user');
-
-      // ============================================
-      // LOBBY PHASE LOGIC
-      // ============================================
-      if (isLobbyPhase) {
-        console.log("🏨 [LOBBY] Analyzing Lobby Input...");
-
-        const lobbyTopic: InterviewTopic = {
-          id: 'lobby',
-          topic: 'Lobby Check',
-          type: 'Intro',
-          context: "User is in the waiting lobby.",
-          estimated_time: '1m'
-        };
-
-        const lastAiText = historyBuffer.current.length > 0
-          ? historyBuffer.current[historyBuffer.current.length - 1].content
-          : "Welcome to the lobby.";
-
-        const analysis: any = await retryWithBackoff(() =>
-          agentRef.current!.evaluateUserAnswer(userText.trim(), lobbyTopic, lastAiText)
-        );
-
-        if (analysis.intent === 'READY_CONFIRM') {
-          console.log("✅ [LOBBY] User Ready -> STARTING INTRO");
-
-          const currentPlan = plan || INITIAL_PLAN;
-          const initialContext = {
-            currentTopic: currentPlan.queue[0],
-            previousResult: null,
-            angerLevel: 0,
-            isLastTopic: false
-          };
-
-          const introResponse = await retryWithBackoff(() =>
-            agentRef.current!.startInterview(resumeText, "Candidate", initialContext)
-          );
-
-          const introMsg = typeof introResponse === 'string'
-            ? introResponse
-            : introResponse.message;
-
-          setIsLobbyPhase(false);
-          setCurrentTopicIndex(0);
-
-          if (onAISpeakStart) onAISpeakStart();
-          addMessage(introMsg, 'ai');
-          if (onAISpeakEnd) onAISpeakEnd();
-
-        } else {
-          console.log("🗣️ [LOBBY] Small Talk");
-          const chatMsg = await retryWithBackoff(() =>
-            agentRef.current!.generateVoiceResponse({
-              currentTopic: lobbyTopic,
-              nextTopic: null,
-              transitionMode: 'STAY'
-            }, "User is not ready yet. Just chat politely or say 'Take your time'.", historyBuffer.current)
-          );
-
-          if (onAISpeakStart) onAISpeakStart();
-          addMessage(chatMsg, 'ai');
-          if (onAISpeakEnd) onAISpeakEnd();
-        }
-
-        return;
-      }
-
-      // ============================================
-      // REGULAR INTERVIEW LOGIC
-      // ============================================
-      if (!plan) return;
-
-      const safeIndex = Math.min(currentTopicIndex, plan.queue.length - 1);
-      const currentTopic = plan.queue[safeIndex];
-
-      // Analysis Phase
-      console.log("🔍 Analyzing User Intent...");
-      const lastAiText = historyBuffer.current.length > 0
-        ? historyBuffer.current[historyBuffer.current.length - 1].content
-        : "Start of topic";
-
-      const analysis: any = await retryWithBackoff(() =>
-        agentRef.current!.evaluateUserAnswer(userText.trim(), currentTopic, lastAiText)
-      );
-
-      console.log("📊 Analysis Result:", JSON.stringify(analysis));
-
-      // Handle Intro Topic (Index 0)
-      if (currentTopicIndex === 0) {
-        if (analysis.intent === 'NONSENSE') {
-          console.log("🤡 [INTRO] Nonsense detected -> STAY.");
-          setCurrentMetrics(analysis.metrics);
-          setTopicPatience(prev => Math.min(100, prev + 50));
-          setAnger(prev => Math.min(100, prev + 35));
-
-          const speech = await retryWithBackoff(() =>
-            agentRef.current!.generateVoiceResponse({
-              currentTopic,
-              nextTopic: null,
-              transitionMode: 'STAY',
-              angerLevel: anger + 10
-            }, undefined, historyBuffer.current)
-          );
-
-          if (onAISpeakStart) onAISpeakStart();
-          addMessage(speech, 'ai');
-          if (onAISpeakEnd) onAISpeakEnd();
-          return;
-        }
-
-        if (analysis.intent === 'CLARIFICATION') {
-          console.log("🤔 [INTRO] Clarification requested -> STAY.");
-          const speech = await retryWithBackoff(() =>
-            agentRef.current!.generateVoiceResponse({
-              currentTopic,
-              nextTopic: null,
-              transitionMode: 'STAY'
-            }, undefined, historyBuffer.current)
-          );
-
-          if (onAISpeakStart) onAISpeakStart();
-          addMessage(speech, 'ai');
-          if (onAISpeakEnd) onAISpeakEnd();
-          return;
-        }
-
-        // Valid input -> Move to next topic
-        console.log("✅ [INTRO] Valid input -> MOVING NEXT.");
-        setTopicSuccess(0);
-        setTopicPatience(0);
-        setCurrentMetrics(analysis.metrics);
-
-        const nextIndex = 1;
-        setCurrentTopicIndex(nextIndex);
-        const nextTopic = plan.queue[nextIndex];
-
-        const speech = await retryWithBackoff(() =>
-          agentRef.current!.generateVoiceResponse({
-            currentTopic,
-            nextTopic,
-            transitionMode: 'NEXT_PASS'
-          }, undefined, historyBuffer.current)
-        );
-
-        if (onAISpeakStart) onAISpeakStart();
-        addMessage(speech, 'ai');
-        if (onAISpeakEnd) onAISpeakEnd();
-        return;
-      }
-
-      // Handle Clarification (blocking)
-      if (analysis.intent === 'CLARIFICATION') {
-        console.log("🛑 CLARIFICATION DETECTED -> FORCE STAY");
-        const speech = await retryWithBackoff(() =>
-          agentRef.current!.generateVoiceResponse({
-            currentTopic,
-            nextTopic: null,
-            transitionMode: 'STAY',
-            angerLevel: anger
-          }, undefined, historyBuffer.current)
-        );
-
-        if (onAISpeakStart) onAISpeakStart();
-        addMessage(speech, 'ai');
-        if (onAISpeakEnd) onAISpeakEnd();
-        return;
-      }
-
-      setCurrentMetrics(analysis.metrics);
-
-      // Game Logic Phase
-      let transitionMode: VoiceGenerationContext['transitionMode'] = 'STAY';
-      let shouldPenalizeAnger = true;
-      let shouldFinishInterview = false;
-
-      let newSuccess = topicSuccess;
-      let newPatience = topicPatience;
-      let newAnger = anger;
-
-      if (analysis.intent === 'GIVE_UP') {
-        console.log("🏳️ User GAVE UP.");
-        newPatience = 110;
-      } else if (analysis.intent === 'SHOW_ANSWER') {
-        console.log("💡 User asked for ANSWER.");
-        newPatience = 110;
-        shouldPenalizeAnger = false;
-        transitionMode = 'NEXT_EXPLAIN';
-      } else if (analysis.intent === 'NONSENSE') {
-        console.log("🤡 User is Trolling/Nonsense.");
-        newPatience += 50;
-        newAnger += 35;
-        transitionMode = 'STAY';
-        setCurrentMetrics({ accuracy: 0, depth: 0, structure: 0, reasoning: "Response was identified as nonsense/irrelevant." });
-      } else {
-        // ATTEMPT -> Normal Scoring
-        const { accuracy, depth, structure } = analysis.metrics;
-        const overall = (accuracy + depth + structure) / 3;
-
-        console.log(`🔹 Overall Score: ${overall.toFixed(1)}`);
-
-        if (overall < 5) {
-          newPatience += ((10 - overall) * 7);
-        } else if (overall < 7) {
-          newSuccess += (overall * 7);
-          newPatience += 10;
-        } else {
-          newSuccess += (overall * 13);
-          newPatience -= (overall * 3);
-        }
-      }
-
-      // Clamp values
-      newSuccess = Math.min(Math.max(newSuccess, 0), 100);
-      newPatience = Math.min(Math.max(newPatience, 0), 100);
-      newAnger = Math.min(Math.max(newAnger, 0), 100);
-
-      setTopicSuccess(newSuccess);
-      setTopicPatience(newPatience);
-      setAnger(newAnger);
-
-      // Transition Logic
-      let nextIndex = currentTopicIndex;
-
-      // Check for termination
-      if (newAnger >= 100) {
-        console.log("🤬 Anger Limit Reached. Initiating Termination.");
-        const terminationSpeech = await retryWithBackoff(() =>
-          agentRef.current!.generateVoiceResponse({
-            currentTopic,
-            nextTopic: null,
-            transitionMode: 'TERMINATE_ANGER',
-            angerLevel: 100
-          }, undefined, historyBuffer.current)
-        );
-
-        if (onAISpeakStart) onAISpeakStart();
-        addMessage(terminationSpeech, 'ai');
-        if (onAISpeakEnd) onAISpeakEnd();
-
-        setInterviewComplete(true);
-        return;
-      } else if (newSuccess >= 100) {
-        transitionMode = 'NEXT_PASS';
-        nextIndex++;
-        setPreviousTopicResult("PASSED_SUCCESS");
-        setTopicSuccess(0);
-        setTopicPatience(0);
-        setAnger(prev => Math.max(0, prev - 5));
-      } else if (newPatience >= 100) {
-        if (transitionMode !== 'NEXT_EXPLAIN') transitionMode = 'NEXT_FAIL';
-        nextIndex++;
-        setPreviousTopicResult("FAILED_PATIENCE");
-        setTopicSuccess(0);
-        setTopicPatience(0);
-
-        if (shouldPenalizeAnger) {
-          setAnger(prev => Math.min(100, prev + 35));
-        }
-      }
-
-      // Check for end of interview
-      if (nextIndex >= plan.queue.length) {
-        console.log("🏁 End of Interview Detected.");
-        transitionMode = 'FINISH_INTERVIEW';
-        shouldFinishInterview = true;
-      } else {
-        if (nextIndex !== currentTopicIndex) {
-          console.log(`⏩ Transitioning to Topic ${nextIndex}`);
-          setCurrentTopicIndex(nextIndex);
-
-          // Trigger batch evaluation for previous topics
-          if (nextIndex === plan.queue.length - 1) {
-            console.log("🚀 Triggering Background Batch Eval...");
-            const historySnapshot = [...historyBuffer.current];
-            bulkEvalPromise.current = agentRef.current.evaluateBatch(historySnapshot);
-          }
-        }
-      }
-
-      // Generate voice response
-      const nextTopic = transitionMode === 'FINISH_INTERVIEW'
-        ? null
-        : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
-
-      const speech = await retryWithBackoff(() =>
-        agentRef.current!.generateVoiceResponse({
-          currentTopic,
-          nextTopic,
-          transitionMode,
-          angerLevel: anger
-        }, undefined, historyBuffer.current)
-      );
-
-      if (onAISpeakStart) onAISpeakStart();
-      addMessage(speech, 'ai');
-      if (onAISpeakEnd) onAISpeakEnd();
-
-      // Handle interview completion
-      if (shouldFinishInterview) {
-        console.log("📊 Generating Final Report...");
-
-        try {
-          const previousResults = bulkEvalPromise.current
-            ? await bulkEvalPromise.current
-            : [];
-
-          const lastInteraction: ChatMessage = {
-            role: 'user',
-            content: userText.trim()
-          };
-
-          const finalResult = await retryWithBackoff(() =>
-            agentRef.current!.evaluateFinal(lastInteraction, previousResults)
-          );
-
-          const allResults = [...previousResults, finalResult.finalQuestion];
-          const avg = allResults.length > 0
-            ? allResults.reduce((a, b) => a + b.score, 0) / allResults.length
-            : 0;
-
-          const report: FinalInterviewReport = {
-            questions: allResults,
-            averageScore: Number(avg.toFixed(1)),
-            overallSummary: finalResult.overallSummary,
-            timestamp: Date.now()
-          };
-
-          console.log("✅ Final Report Ready");
-          setFinalReport(report);
-
-          // Auto-save to history
-          await StorageService.saveInterview({
-            id: `interview_${Date.now()}`,
-            jobTitle: plan?.queue?.[0]?.category || 'Practice Interview',
-            companyName: plan?.meta?.mode || 'General',
-            date: Date.now(),
-            averageScore: report.averageScore,
-            report,
-          });
-
-          if (onInterviewComplete) {
-            onInterviewComplete(report);
-          }
-
-        } catch (err) {
-          console.error("Report Generation Error:", err);
-        }
-
-        setInterviewComplete(true);
-      }
-
-    } catch (error) {
-      console.error("Error handling user response:", error);
-      addMessage("I encountered an error processing your response. Please try again.", 'ai');
-    } finally {
-      setIsProcessing(false);
-    }
-  }, [
-    isProcessing,
-    isLobbyPhase,
-    plan,
-    currentTopicIndex,
-    anger,
-    topicSuccess,
-    topicPatience,
-    resumeText,
-    addMessage,
-    onAISpeakStart,
-    onAISpeakEnd,
-    onInterviewComplete
-  ]);
-
-  const handleSaveAndRestart = useCallback(async (
-    resume: string,
-    jd: string,
-    mode: InterviewMode
-  ) => {
-    await initializeInterview(resume, jd, mode);
-  }, [initializeInterview]);
-
-  const handleForceFinish = useCallback(async () => {
+  const forceFinish = async (): Promise<void> => {
     console.log("🛑 Force Finish Triggered");
 
     try {
-      // Generate mock report for testing
-      const mockQuestions: QuestionResult[] = [
-        {
-          id: `mock_q1_${Date.now()}`,
-          topic: "React Native Performance Optimization",
-          score: 8.5,
-          feedback: "Excellent understanding of performance bottlenecks.",
-          userAnswer: "For performance optimization, I focus on using FlatList...",
-          metrics: { accuracy: 9, depth: 8, structure: 8 }
-        },
-        {
-          id: `mock_q2_${Date.now()}`,
-          topic: "State Management Patterns",
-          score: 9.0,
-          feedback: "Strong knowledge of Redux, Context API, and Zustand.",
-          userAnswer: "I prefer Redux Toolkit for complex apps...",
-          metrics: { accuracy: 9, depth: 9, structure: 9 }
-        },
-        {
-          id: `mock_q3_${Date.now()}`,
-          topic: "Native Module Development",
-          score: 7.2,
-          feedback: "Good foundation in bridging iOS/Android native code.",
-          userAnswer: "I've built native modules using the bridge...",
-          metrics: { accuracy: 7, depth: 7, structure: 8 }
-        }
-      ];
-
-      const mockReport: FinalInterviewReport = {
-        questions: mockQuestions,
-        averageScore: 8.2,
-        overallSummary: "Interview ended via force finish. You showed great potential in your responses.",
-        timestamp: Date.now()
-      };
-
-      setFinalReport(mockReport);
-      setInterviewComplete(true);
-
-      if (onInterviewComplete) {
-        onInterviewComplete(mockReport);
-      }
-
-    } catch (error) {
-      console.error("Force Finish Error:", error);
+      await TTSService.stop();
+    } catch (e) {
+      console.error("Force Finish Audio Stop Error:", e);
     }
-  }, [onInterviewComplete]);
+
+    const mockReport: FinalInterviewReport = {
+      questions: [],
+      averageScore: 8.7,
+      overallSummary: "Interview ended via debug mode. You showed great potential in your responses. Keep practicing to improve your technical communication skills!",
+      timestamp: Date.now()
+    };
+
+    setTimeout(() => {
+      setFinalReport(mockReport);
+      setIsFinished(true);
+      onInterviewComplete?.(mockReport);
+    }, 500);
+  };
+
+  const restart = (): void => {
+    setIsFinished(false);
+    setMessages([]);
+    setPlan(null);
+    setCurrentTopicIndex(0);
+    setPreviousTopicResult(null);
+    setTopicSuccess(0);
+    setTopicPatience(0);
+    setAnger(0);
+    setCurrentMetrics(null);
+    setFinalReport(null);
+    setIsLobbyPhase(true);
+    setIsPlanReady(false);
+    historyBuffer.current = [];
+    bulkEvalPromise.current = null;
+  };
+
+  // ============================================
+  // CLEANUP
+  // ============================================
+
+  useEffect(() => {
+    return () => {
+      console.log('🧹 useInterviewLogic: Cleaning up...');
+      TTSService.stop().catch(e => console.warn('⚠️ TTS stop failed on unmount:', e));
+    };
+  }, []);
 
   // ============================================
   // RETURN INTERFACE
@@ -644,22 +617,30 @@ export function useInterviewLogic(config: UseInterviewLogicConfig): UseInterview
   return {
     // State
     messages,
-    currentTopic: plan && currentTopicIndex < plan.queue.length
-      ? plan.queue[currentTopicIndex]
-      : null,
-    metrics: {
-      anger,
-      topicSuccess,
-    },
+    anger,
+    currentTopic,
     isProcessing,
-    interviewComplete,
-    currentMetrics,
+    isFinished,
+    
+    // Metrics
+    metrics: currentMetrics,
+    topicSuccess,
+    topicPatience,
+    
+    // Interview state
+    plan,
+    currentTopicIndex,
+    isLobbyPhase,
+    isPlanReady,
     finalReport,
-
-    // Actions
+    
+    // Functions
     initializeInterview,
-    handleUserResponse,
-    handleSaveAndRestart,
-    handleForceFinish,
+    processUserInput,
+    forceFinish,
+    restart,
+    
+    // Computed
+    progress,
   };
-}
+};

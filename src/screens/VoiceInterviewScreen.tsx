@@ -1,20 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, TextInput, Animated, ActivityIndicator, Image, Easing as RNEasing } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, ActivityIndicator, Image, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
-import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse, QuestionResult, FinalInterviewReport } from '../types';
-import AnimatedReanimated, { useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, runOnJS, useDerivedValue, useAnimatedStyle, withSpring, withSequence, withRepeat, interpolateColor } from 'react-native-reanimated';
+import { InterviewMode } from '../types';
 import * as Haptics from 'expo-haptics';
 import RNShake from 'react-native-shake';
 
-import { GeminiAgentService } from '../services/gemini-agent';
-import { generateInterviewPlan } from '../interview-planner';
-import { TTSService } from '../services/tts-service';
 import { useTypewriter } from '../hooks/useTypewriter';
-import { useInterviewAudio, safeAudioModeSwitch } from '../hooks/interview/useInterviewAudio';
+import { useInterviewAudio } from '../hooks/interview/useInterviewAudio';
+import { useInterviewLogic } from '../hooks/interview/useInterviewLogic';
 import { MetricsHud } from '../components/MetricsHud';
 import { ScoreReveal } from '../components/interview/ScoreReveal';
 import { DebugOverlay } from '../components/interview/DebugOverlay';
@@ -31,80 +28,28 @@ const MOCK_RESUME = `Senior React Native Developer with 5 years of experience. E
 const MOCK_JOB_DESCRIPTION = `We are looking for a Senior Mobile Engineer to build our flagship iOS and Android app.`;
 const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 
-const INITIAL_PLAN: InterviewPlan = {
-    meta: { mode: 'short', total_estimated_time: '5m' },
-    queue: [{ id: 'intro', topic: 'Introduction', type: 'Intro', estimated_time: '5m', context: "The user is introducing themselves. Ask them to describe their background and experience briefly." }]
-};
-
 export default function VoiceInterviewScreen() {
     const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
     const [showSettings, setShowSettings] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
-    const [showDebug, setShowDebug] = useState(false); // Secret Debug Toggle
+    const [showDebug, setShowDebug] = useState(false);
 
-    // Gemini Agent
-    const agentRef = useRef<GeminiAgentService | null>(null);
-    const [isAgentThinking, setIsAgentThinking] = useState(false);
-
-    // Context State (Global)
+    // Settings State
     const [resumeText, setResumeText] = useState(MOCK_RESUME);
     const [jdText, setJdText] = useState(MOCK_JOB_DESCRIPTION);
     const [mode, setMode] = useState<InterviewMode>('short');
     const [sliderValue, setSliderValue] = useState(0);
     const [resumeFile, setResumeFile] = useState<any>(null);
-    const [plan, setPlan] = useState<InterviewPlan | null>(null);
-    const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
-    const [finalReport, setFinalReport] = useState<FinalInterviewReport | null>(null);
-    const bulkEvalPromise = useRef<Promise<QuestionResult[]> | null>(null);
-
-    // RPG Scoring State
-    const [topicSuccess, setTopicSuccess] = useState(0);
-    const [topicPatience, setTopicPatience] = useState(0);
-    const [anger, setAnger] = useState(0); // Start at 0
 
     // Dev Tools State
     const [debugValue, setDebugValue] = useState("10");
     const [isDebugTtsMuted, setIsDebugTtsMuted] = useState(false);
     const [isSimulating, setIsSimulating] = useState(false);
 
-
-    const [isPlanReady, setIsPlanReady] = useState(false);
-    const [isLobbyPhase, setIsLobbyPhase] = useState(true);
-
-    // Campaign State
-    const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
-    const [isInterviewFinished, setIsInterviewFinished] = useState(false);
-    const [previousTopicResult, setPreviousTopicResult] = useState<string | null>(null);
-
-    // Slider Logic
-    const getModeFromSlider = (val: number): InterviewMode => {
-        if (val === 0) return 'short';
-        if (val === 1) return 'medium';
-        return 'freestyle';
-    };
-
-    const handleSliderChange = (val: number) => {
-        setSliderValue(val);
-        setMode(getModeFromSlider(val));
-    };
-
-    // Chat History
-    const [messages, setMessages] = useState<{ id: string, text: string, sender: 'user' | 'ai' }[]>([]);
-
-    // Gemini History Buffer (Strictly for AI context)
-    const historyBuffer = useRef<{ role: 'user' | 'assistant' | 'system', content: string }[]>([]);
-
-    const latestAiMessage = messages.length > 0 && messages[messages.length - 1].sender === 'ai'
-        ? messages[messages.length - 1].text
-        : "";
-    const displayedAiText = useTypewriter(latestAiMessage, 30);
-
     // Live Bubble State
     const [liveTranscript, setLiveTranscript] = useState("");
-    const [isFinalChunk, setIsFinalChunk] = useState(false);
     const [displayTranscript, setDisplayTranscript] = useState("");
     const targetTranscript = useRef("");
-    const latestTranscriptRef = useRef("");
 
     // Audio Recording Hook
     const {
@@ -113,6 +58,7 @@ export default function VoiceInterviewScreen() {
         stopRecording,
         micScale,
         isSendingData,
+        transcript,
     } = useInterviewAudio({
         onTranscriptUpdate: (text, isFinal) => {
             if (isFinal) {
@@ -121,16 +67,65 @@ export default function VoiceInterviewScreen() {
                     const spacer = prev.length > 0 ? " " : "";
                     return prev + spacer + text.trim();
                 });
-                setIsFinalChunk(true);
             }
         },
         onRecordingStop: () => {
-            finalizeMessage();
+            // When recording stops, process the transcript
+            if (liveTranscript.trim().length > 0) {
+                processUserInput(liveTranscript);
+                setLiveTranscript("");
+                targetTranscript.current = "";
+                setDisplayTranscript("");
+            }
         },
         onStatusChange: (newStatus) => {
             setStatus(newStatus);
         },
     });
+
+    // Interview Logic Hook (with audio coordination)
+    const {
+        messages,
+        anger,
+        currentTopic,
+        isProcessing,
+        isFinished,
+        metrics,
+        topicSuccess,
+        topicPatience,
+        plan,
+        currentTopicIndex,
+        isLobbyPhase,
+        isPlanReady,
+        finalReport,
+        initializeInterview,
+        processUserInput,
+        forceFinish,
+        restart,
+        progress,
+    } = useInterviewLogic({
+        onAIStart: async () => {
+            // Stop recording when AI starts speaking
+            if (isRecording) {
+                console.log("🛑 [Coordination] Stopping mic before AI speaks");
+                await stopRecording();
+            }
+            setStatus('speaking');
+        },
+        onAIEnd: () => {
+            // AI finished speaking
+            setStatus('idle');
+        },
+        onInterviewComplete: (results) => {
+            console.log("✅ Interview Complete:", results);
+        }
+    });
+
+    // Typewriter effect for AI messages
+    const latestAiMessage = messages.length > 0 && messages[messages.length - 1].sender === 'ai'
+        ? messages[messages.length - 1].text
+        : "";
+    const displayedAiText = useTypewriter(latestAiMessage, 30);
 
     // Secret Shake Listener
     useEffect(() => {
@@ -156,396 +151,19 @@ export default function VoiceInterviewScreen() {
 
     useEffect(() => {
         targetTranscript.current = liveTranscript;
-        latestTranscriptRef.current = liveTranscript;
         if (liveTranscript === "") setDisplayTranscript("");
     }, [liveTranscript]);
 
-    const finalizeMessage = async (overrideText?: string) => {
-        const textToFinalize = overrideText || latestTranscriptRef.current;
-
-        if (isAgentThinking) return;
-
-        if (textToFinalize.trim().length > 0) {
-            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-            setMessages(prev => [...prev, { id: Date.now().toString(), text: textToFinalize.trim(), sender: 'user' }]);
-
-            // Append to History Buffer
-            historyBuffer.current.push({ role: 'user', content: textToFinalize.trim() });
-
-            setLiveTranscript("");
-            targetTranscript.current = "";
-            latestTranscriptRef.current = "";
-            setDisplayTranscript("");
-            setIsFinalChunk(false);
-
-            if (agentRef.current) {
-                setIsAgentThinking(true);
-                try {
-                    // --- LOBBY PHASE LOGIC ---
-                    if (isLobbyPhase) {
-                        console.log("🏨 [LOBBY] Analyzing Lobby Input...");
-
-                        // Use a dummy topic for analysis context
-                        const lobbyTopic: any = { topic: "Lobby Check", context: "User is in the waiting lobby." };
-                        const lastAiText = historyBuffer.current.length > 0
-                            ? historyBuffer.current[historyBuffer.current.length - 1].content
-                            : "Welcome to the lobby.";
-
-                        const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), lobbyTopic, lastAiText);
-
-                        if (analysis.intent === 'READY_CONFIRM') {
-                            // OPTIMISTIC START: We don't care if plan is fully ready, because we have Intro.
-                            console.log("✅ [LOBBY] User Ready -> STARTING INTRO (Optimistic)");
-
-                            // Fallback to INITIAL_PLAN if plan is null (though it shouldn't be due to setPlan in handleStartInterview)
-                            const currentPlan = plan || INITIAL_PLAN;
-
-                            // Initialize Agent Context properly
-                            const initialContext = {
-                                currentTopic: currentPlan.queue[0], // This is Intro
-                                previousResult: null,
-                                angerLevel: 0,
-                                isLastTopic: false
-                            };
-
-                            // Call Start Interview Logic
-                            const introResponse = await agentRef.current.startInterview(resumeText, "Candidate", initialContext);
-                            let introMsg = "";
-                            if (typeof introResponse === 'string') {
-                                introMsg = introResponse;
-                            } else {
-                                introMsg = introResponse.message;
-                            }
-
-                            setIsLobbyPhase(false);
-                            setCurrentTopicIndex(0); // Actually we are AT intro now.
-
-                            await playSynchronizedResponse(introMsg);
-
-                        } else {
-                            console.log("🗣️ [LOBBY] Small Talk");
-                            // Just chat or acknowledge
-                            const chatMsg = await agentRef.current.generateVoiceResponse({
-                                currentTopic: lobbyTopic,
-                                nextTopic: null,
-                                transitionMode: 'STAY'
-                            }, "User is not ready yet. Just chat politely or say 'Take your time'.", historyBuffer.current);
-                            await playSynchronizedResponse(chatMsg);
-                        }
-
-                        setIsAgentThinking(false);
-                        return; // EXIT LOBBY LOGIC
-                    }
-
-                    // --- REGULAR INTERVIEW LOGIC ---
-                    if (!plan) return;
-
-                    let effectiveTopicIndex = currentTopicIndex;
-                    let effectivePrevResult = previousTopicResult;
-
-                    const safeIndex = Math.min(effectiveTopicIndex, plan.queue.length - 1);
-                    const currentTopic = plan.queue[safeIndex];
-
-                    // --- 1. ANALYSIS PHASE (JUDGE) ---
-                    // We analyze EVERY answer, including Intro, to log intent/metrics.
-                    console.log("🔍 [1] Analyzing User Intent...");
-
-                    const lastAiText = historyBuffer.current.length > 0
-                        ? historyBuffer.current[historyBuffer.current.length - 1].content
-                        : "Start of topic";
-
-                    const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize.trim(), currentTopic, lastAiText);
-                    console.log("📊 [1] Result:", JSON.stringify(analysis));
-
-                    // --- SPECIAL CASE: INTRO (Index 0) ---
-                    if (currentTopicIndex === 0) {
-                        // 1. NONSENSE CHECK
-                        if (analysis.intent === 'NONSENSE') {
-                            console.log("🤡 [INTRO] Nonsense detected -> STAY.");
-                            setCurrentMetrics(analysis.metrics);
-
-                            // Punishment
-                            setTopicPatience(prev => Math.min(100, prev + 50));
-                            setAnger(prev => Math.min(100, prev + 35));
-
-                            const speech = await agentRef.current.generateVoiceResponse({
-                                currentTopic: currentTopic,
-                                nextTopic: null,
-                                transitionMode: 'STAY',
-                                angerLevel: anger + 10
-                            }, undefined, historyBuffer.current);
-                            await playSynchronizedResponse(speech);
-                            return;
-                        }
-
-                        // 2. CLARIFICATION CHECK (Stay if confused)
-                        if (analysis.intent === 'CLARIFICATION') {
-                            console.log("🤔 [INTRO] Clarification requested -> STAY.");
-                            const speech = await agentRef.current.generateVoiceResponse({
-                                currentTopic: currentTopic,
-                                nextTopic: null,
-                                transitionMode: 'STAY',
-
-                            }, undefined, historyBuffer.current);
-                            await playSynchronizedResponse(speech);
-                            return;
-                        }
-
-                        // 3. VALID INPUT (ATTEMPT, GIVE_UP, SHOW_ANSWER, READY_CONFIRM) -> MOVE NEXT
-                        console.log("✅ [INTRO] Valid input -> MOVING NEXT.");
-
-                        // Reset Stats for Topic 1
-                        setTopicSuccess(0);
-                        setTopicPatience(0);
-
-                        setCurrentMetrics(analysis.metrics);
-
-                        // Transition to Topic 1
-                        const nextIndex = 1;
-                        setCurrentTopicIndex(nextIndex);
-                        const nextTopic = plan.queue[nextIndex];
-
-                        const speech = await agentRef.current.generateVoiceResponse({
-                            currentTopic: currentTopic,
-                            nextTopic: nextTopic,
-                            transitionMode: 'NEXT_PASS',
-                        }, undefined, historyBuffer.current);
-
-                        await playSynchronizedResponse(speech);
-                        return; // EXIT EARLY
-                    }
-
-                    // --- BLOCKING CLARIFICATION CHECK ---
-                    if (analysis.intent === 'CLARIFICATION') {
-                        console.log("🛑 [LOGIC] CLARIFICATION DETECTED -> FORCE STAY & RETURN");
-
-                        // 1. Generate explanation response (STAY mode)
-                        const speech = await agentRef.current.generateVoiceResponse({
-                            currentTopic: currentTopic,
-                            nextTopic: null,
-                            transitionMode: 'STAY',
-                            angerLevel: anger
-                        }, undefined, historyBuffer.current);
-
-                        // 2. Play Audio
-                        await playSynchronizedResponse(speech);
-
-                        // 3. CRITICAL: Stop execution here
-                        setIsAgentThinking(false);
-                        return;
-                    }
-
-                    setCurrentMetrics(analysis.metrics); // Show HUD immediately
-
-                    // --- 2. GAME LOGIC PHASE ---
-                    let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER' = 'STAY';
-                    let shouldPenalizeAnger = true;
-                    let shouldFinishInterview = false;
-
-                    // Local Math Vars
-                    let newSuccess = topicSuccess;
-                    let newPatience = topicPatience;
-                    let newAnger = anger;
-
-                    if (analysis.intent === 'GIVE_UP') {
-                        console.log("🏳️ User GAVE UP.");
-                        newPatience = 110; // Instant Fail
-                    }
-                    else if (analysis.intent === 'SHOW_ANSWER') {
-                        console.log("💡 User asked for ANSWER.");
-                        newPatience = 110; // Instant Fail (Progress-wise)
-                        shouldPenalizeAnger = false; // MERCY
-                        transitionMode = 'NEXT_EXPLAIN';
-                    }
-                    else if (analysis.intent === 'CLARIFICATION') {
-                        console.log("🤔 User asked for CLARIFICATION.");
-                        // No metric changes, stay on topic
-                    }
-                    else if (analysis.intent === 'NONSENSE') {
-                        console.log("🤡 User is Trolling/Nonsense.");
-
-                        // 1. Penalize heavily
-                        newPatience += 50; // Lose patience fast
-                        newAnger += 35; // Make her angry
-
-                        // 2. Force STAY
-                        transitionMode = 'STAY';
-
-                        // 3. Force specific feedback metric to 0
-                        setCurrentMetrics({ accuracy: 0, depth: 0, structure: 0, reasoning: "Response was identified as nonsense/irrelevant." });
-                    }
-                    else {
-                        // ATTEMPT -> Normal Scoring
-                        const { accuracy, depth, structure } = analysis.metrics;
-                        const overall = (accuracy + depth + structure) / 3;
-
-                        console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`);
-
-                        if (overall < 5) newPatience += ((10 - overall) * 7);
-                        else if (overall < 7) { newSuccess += (overall * 7); newPatience += 10; }
-                        else { newSuccess += (overall * 13); newPatience -= (overall * 3); }
-                    }
-
-                    // Clamp
-                    newSuccess = Math.min(Math.max(newSuccess, 0), 100);
-                    newPatience = Math.min(Math.max(newPatience, 0), 100);
-                    newAnger = Math.min(Math.max(newAnger, 0), 100);
-
-                    // Update UI State
-                    setTopicSuccess(newSuccess);
-                    setTopicPatience(newPatience);
-                    setAnger(newAnger);
-
-                    // --- 3. TRANSITION CHECK ---
-                    let nextIndex = effectiveTopicIndex;
-
-                    // PRIORITY 1: GLOBAL KILL SWITCH (Termination)
-                    if (newAnger >= 100) {
-                        console.log("🤬 Anger Limit Reached. Initiating Termination.");
-
-                        // 1. Generate "You're Fired" Speech
-                        const terminationSpeech = await agentRef.current.generateVoiceResponse({
-                            currentTopic: currentTopic,
-                            nextTopic: null,
-                            transitionMode: 'TERMINATE_ANGER',
-                            angerLevel: 100
-                        }, undefined, historyBuffer.current);
-
-                        // 2. Play the Speech FULLY
-                        await playSynchronizedResponse(terminationSpeech);
-
-                        // 3. SHOW GAME OVER (Only after audio finishes)
-                        setIsInterviewFinished(true);
-                        return; // Stop execution
-                    }
-                    else if (newSuccess >= 100) {
-                        transitionMode = 'NEXT_PASS';
-                        nextIndex++;
-                        setPreviousTopicResult("PASSED_SUCCESS");
-                        // Reset Stats
-                        setTopicSuccess(0);
-                        setTopicPatience(0);
-                        // Anger Relief
-                        setAnger(prev => Math.max(0, prev - 5));
-                    }
-                    else if (newPatience >= 100) {
-                        // If we didn't already set EXPLAIN, set FAIL
-                        if (transitionMode !== 'NEXT_EXPLAIN') transitionMode = 'NEXT_FAIL';
-
-                        nextIndex++;
-                        setPreviousTopicResult("FAILED_PATIENCE");
-                        // Reset Stats
-                        setTopicSuccess(0);
-                        setTopicPatience(0);
-
-                        // Anger Penalty (unless Mercy)
-                        if (shouldPenalizeAnger) {
-                            setAnger(prev => Math.min(100, prev + 35));
-                            // Note: We don't need to check termination here again because 
-                            // if newAnger hit 100 above, we already returned.
-                            // But for next loop, we add anger. 
-                            // Actually, we should calculate this penalty into newAnger earlier if we want immediate termination on patience fail + anger spike.
-                            // But per instruction "If I say Nonsense and anger hits 100...", that's handled by the top check.
-                            // For patience fail, we add anger for NEXT time.
-                        } else {
-                            console.log("😇 Mercy Rule: Anger saved.");
-                        }
-                    }
-
-                    // CHECK FOR END OF INTERVIEW
-                    if (plan && nextIndex >= plan.queue.length) {
-                        console.log("🏁 End of Interview Detected.");
-                        transitionMode = 'FINISH_INTERVIEW';
-                        shouldFinishInterview = true;
-                        // DO NOT increment currentTopicIndex (keep at last valid index for safety)
-                    } else {
-                        // Normal Transition
-                        if (nextIndex !== currentTopicIndex) {
-                            console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
-                            setCurrentTopicIndex(nextIndex);
-
-                            // --- OPTIMIZED BATCH EVALUATION TRIGGER ---
-                            // If we are entering the LAST topic (n-1), trigger eval for 0 to n-2 in background
-                            if (plan && nextIndex === plan.queue.length - 1) {
-                                console.log("🚀 Triggering Background Batch Eval for previous topics...");
-                                // Create a snapshot of history excluding the current (last) topic's interaction
-                                // But since we just transitioned, historyBuffer currently contains up to n-2 answers?
-                                // No, historyBuffer contains EVERYTHING so far.
-                                // We want to evaluate everything BEFORE the upcoming final question.
-                                // So we send the current history snapshot.
-                                const historySnapshot = [...historyBuffer.current];
-                                bulkEvalPromise.current = agentRef.current.evaluateBatch(historySnapshot);
-                                // Do NOT await. Let it run.
-                            }
-                        }
-                    }
-
-                    // --- 4. ACTING PHASE (VOICE) ---
-                    console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
-
-                    // Safety check for nextTopic (if finished, it's null)
-                    const nextTopic = (transitionMode === 'FINISH_INTERVIEW')
-                        ? null
-                        : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
-
-                    const speech = await agentRef.current.generateVoiceResponse({
-                        currentTopic: currentTopic, // Context of what we just talked about
-                        nextTopic: nextTopic,       // Context of where we are going (or null)
-                        transitionMode: transitionMode,
-                        angerLevel: anger // Pass final anger for feedback
-                    }, undefined, historyBuffer.current);
-
-                    await playSynchronizedResponse(speech);
-
-                    // SHOW MODAL AFTER AUDIO & FINAL REPORT GEN
-                    if (shouldFinishInterview) {
-                        // --- FINAL REPORT GENERATION ---
-                        console.log("📊 Generating Final Report...");
-                        setIsAgentThinking(true); // Keep spinner
-
-                        try {
-                            // 1. Await the background batch (n-1)
-                            const previousResults = bulkEvalPromise.current
-                                ? await bulkEvalPromise.current
-                                : [];
-
-                            // 2. Evaluate the FINAL interaction (which is just finishing now)
-                            // We need the user's LAST answer. 
-                            // historyBuffer.current has the full history. The last user msg is the one we just processed.
-                            // Actually, 'textToFinalize' is the last user answer.
-                            const lastInteraction = { role: 'user' as const, content: textToFinalize.trim() };
-
-                            const finalResult = await agentRef.current.evaluateFinal(lastInteraction, previousResults);
-
-                            // 3. Aggregate
-                            const allResults = [...previousResults, finalResult.finalQuestion];
-                            const avg = allResults.length > 0
-                                ? allResults.reduce((a, b) => a + b.score, 0) / allResults.length
-                                : 0;
-
-                            const report: FinalInterviewReport = {
-                                questions: allResults,
-                                averageScore: Number(avg.toFixed(1)),
-                                overallSummary: finalResult.overallSummary,
-                                timestamp: Date.now()
-                            };
-
-                            console.log("✅ Final Report Ready:", JSON.stringify(report, null, 2));
-                            setFinalReport(report);
-
-                        } catch (err) {
-                            console.error("Report Gen Error:", err);
-                        }
-
-                        setIsInterviewFinished(true);
-                    }
-                } catch (error) {
-                    console.error("Agent Error:", error);
-                } finally {
-                    setIsAgentThinking(false);
-                }
-            }
-        }
+    // Slider Logic
+    const getModeFromSlider = (val: number): InterviewMode => {
+        if (val === 0) return 'short';
+        if (val === 1) return 'medium';
+        return 'freestyle';
+    };
+
+    const handleSliderChange = (val: number) => {
+        setSliderValue(val);
+        setMode(getModeFromSlider(val));
     };
 
     const pickResume = async () => {
@@ -580,48 +198,10 @@ export default function VoiceInterviewScreen() {
 
     const handleSaveAndRestart = async () => {
         setIsGenerating(true);
-        setShowSettings(false); // Hide settings immediately
+        setShowSettings(false);
 
         try {
-            // 1. Initialize Agent
-            agentRef.current = new GeminiAgentService();
-
-            // 2. Reset State
-            setCurrentTopicIndex(0);
-            setPreviousTopicResult(null);
-            setTopicSuccess(0);
-            setTopicPatience(0);
-            setAnger(0);
-            setIsInterviewFinished(false);
-            historyBuffer.current = []; // Clear history on restart
-
-            // OPTIMISTIC START: Set Plan to Intro Only immediately
-            setPlan(INITIAL_PLAN);
-            setIsPlanReady(false); // Indicates full plan is loading
-            setIsLobbyPhase(true);
-            setMessages([]);
-
-            // 3. Play Immediate Greeting
-            const greeting = "Hello, I'm Victoria. I'll be conducting your technical interview today. I have your details in front of me. Whenever you're ready to begin, just let me know.";
-            await playSynchronizedResponse(greeting);
-
-            // 4. Async Plan Generation
-            generateInterviewPlan(resumeText, jdText, mode).then(generatedPlan => {
-                setPlan(prev => {
-                    if (!prev) return generatedPlan;
-                    // Merge new questions into existing plan (keeping Intro at 0)
-                    return {
-                        ...generatedPlan,
-                        queue: [prev.queue[0], ...generatedPlan.queue.slice(1)]
-                    };
-                });
-                setIsPlanReady(true);
-                console.log("✅ Plan Ready:", generatedPlan.queue.length, "topics");
-            }).catch(err => {
-                console.error("Plan Gen Error:", err);
-                Alert.alert("Error", "Failed to generate interview plan.");
-            });
-
+            await initializeInterview(resumeText, jdText, mode);
         } catch (error) {
             Alert.alert("Error", "Failed to initialize interview.");
             console.error(error);
@@ -631,14 +211,12 @@ export default function VoiceInterviewScreen() {
     };
 
     const handleReturnToSettings = () => {
-        setIsInterviewFinished(false);
+        restart();
         setShowSettings(true);
-        setMessages([]); // Clear chat
-        // We keep resumeText/jdText loaded
     };
 
     const toggleRecording = () => {
-        if (isAgentThinking) return;
+        if (isProcessing) return;
 
         if (isRecording) {
             stopRecording();
@@ -647,71 +225,38 @@ export default function VoiceInterviewScreen() {
         }
     };
 
-    const playSynchronizedResponse = async (text: string) => {
-        // 🛑 STOP ECHO LOOP: Ensure Mic is OFF before AI speaks
-        if (isRecording) {
-            console.log("🛑 Preventing Self-Listening: Stopping Mic before TTS.");
-            await stopRecording();
-        }
+    const handleForceFinish = async () => {
+        console.log("🛑 [DEBUG] Force Finish Triggered from Screen");
+        await forceFinish();
+    };
 
-        setIsAgentThinking(true);
+    const handleSimulate = async () => {
+        if (!plan) return;
+        if (isSimulating) return;
 
-        // DEV: Mute TTS if requested
-        if (isDebugTtsMuted) {
-            console.log("🔇 [DEV] TTS Muted. Adding message without audio.");
-            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-            setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
-            historyBuffer.current.push({ role: 'assistant', content: text });
-            setIsAgentThinking(false);
-            return;
-        }
+        setIsSimulating(true);
+        console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
 
         try {
-            console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
-
-            // 🔊 CRITICAL: Force speaker mode before TTS playback
-            console.log("🔊 Forcing speaker output for TTS...");
-            await safeAudioModeSwitch('playback');
-            
-            // Small delay to ensure audio mode is applied
-            await new Promise(resolve => setTimeout(resolve, 100));
-
-            // Prepare audio
-            const player = await TTSService.prepareAudio(text);
-
-            console.log("💥 Sync: BOOM! Playing.");
-
-            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-            setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
-
-            // Append to History Buffer
-            historyBuffer.current.push({ role: 'assistant', content: text });
-
-            if (player) {
-                await new Promise<void>((resolve) => {
-                    const listener = player.addListener('playbackStatusUpdate', (status: any) => {
-                        if (status.didJustFinish) {
-                            listener.remove();
-                            // @ts-ignore
-                            if (typeof player.release === 'function') player.release();
-                            else player.remove();
-                            resolve();
-                        }
-                    });
-                    player.play();
-                });
+            // For simulation, we'll inject a pre-made text based on the debug value
+            let simText = "";
+            if (debugValue === "I_AM_READY") {
+                simText = "I am ready.";
+            } else {
+                // For simplicity, just use a mock response
+                simText = `This is a simulated ${debugValue}-level response to the current question.`;
             }
 
+            console.log(`🤖 [DEV] Simulated Text: ${simText}`);
+
+            // Inject into system as if user spoke it
+            setLiveTranscript(simText);
+            await processUserInput(simText);
+            setLiveTranscript("");
         } catch (e) {
-            console.error("Sync Error:", e);
-            // Only add message if not already added (though logic above adds it before play)
-            // The catch block in original code added message again? No, setMessages was called.
-            // If error happens before setMessages, we might miss it.
-            // But original code had setMessages in catch block too.
-            // I'll keep the logic consistent: setMessages was called before playback.
-            // If error occurs, we just log.
+            console.error("Simulation Failed", e);
         } finally {
-            setIsAgentThinking(false);
+            setIsSimulating(false);
         }
     };
 
@@ -738,64 +283,6 @@ export default function VoiceInterviewScreen() {
         );
     };
 
-    // Safe Force Finish Handler - stops audio safely before showing score
-    const handleForceFinish = async () => {
-        console.log("🛑 [DEBUG] Force Finish Triggered");
-
-        // 1. Stop all audio first
-        try {
-            await TTSService.stop();
-            if (isRecording) {
-                await stopRecording();
-            }
-        } catch (e) {
-            console.error("Force Finish Audio Stop Error:", e);
-        }
-
-        // 2. Prepare mock final report
-        const mockReport: FinalInterviewReport = {
-            questions: [],
-            averageScore: 8.7,
-            overallSummary: "Interview ended via debug mode. You showed great potential in your responses. Keep practicing to improve your technical communication skills!",
-            timestamp: Date.now()
-        };
-
-        // 3. Use setTimeout to allow audio cleanup, then batch BOTH state updates
-        setTimeout(() => {
-            console.log("🎬 [DEBUG] Setting finalReport and isInterviewFinished together");
-            setFinalReport(mockReport);
-            setIsInterviewFinished(true);
-        }, 500);
-    };
-
-    const handleSimulate = async () => {
-        if (!plan || !agentRef.current) return;
-        if (isSimulating) return;
-
-        setIsSimulating(true);
-        console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
-
-        try {
-            let simText = "";
-            if (debugValue === "I_AM_READY") {
-                simText = "I am ready.";
-            } else {
-                const currentTopic = plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)];
-                simText = await agentRef.current.generateSimulatedAnswer(currentTopic, debugValue, resumeText);
-            }
-
-            console.log(`🤖 [DEV] Simulated Text: ${simText}`);
-
-            // Inject into system as if user spoke it
-            setLiveTranscript(simText);
-            await finalizeMessage(simText);
-        } catch (e) {
-            console.error("Simulation Failed", e);
-        } finally {
-            setIsSimulating(false);
-        }
-    };
-
     return (
         <SafeAreaView style={styles.container}>
             <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
@@ -808,7 +295,7 @@ export default function VoiceInterviewScreen() {
                 debugValue={debugValue}
                 isDebugTtsMuted={isDebugTtsMuted}
                 isSimulating={isSimulating}
-                setAnger={setAnger}
+                setAnger={(val) => console.warn("Direct anger setting disabled in refactored version")}
                 setDebugValue={setDebugValue}
                 setIsDebugTtsMuted={setIsDebugTtsMuted}
                 onSimulate={handleSimulate}
@@ -825,17 +312,15 @@ export default function VoiceInterviewScreen() {
             {/* Metrics HUD - Only visible when debug is OPEN */}
             {showDebug && (
                 <MetricsHud
-                    metrics={currentMetrics}
+                    metrics={metrics}
                     success={topicSuccess}
                     patience={topicPatience}
                     anger={anger}
-                    topicTitle={plan && plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)]
-                        ? `${Math.min(currentTopicIndex, plan.queue.length - 1)}. ${plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)].topic}`
-                        : "Introduction"}
+                    topicTitle={`${currentTopicIndex}. ${currentTopic}`}
                 />
             )}
 
-            {/* ... Rest of your UI (Modals, Chat, Buttons) remains the same ... */}
+            {/* Settings Modal */}
             <Modal visible={showSettings} animationType="fade" transparent>
                 <BlurView intensity={20} style={styles.blurContainer} tint="light">
                     <View style={styles.modalContainer}>
@@ -901,8 +386,7 @@ export default function VoiceInterviewScreen() {
                 </BlurView>
             </Modal>
 
-            {/* Old Finish Modal removed - using ScoreReveal Modal instead */}
-
+            {/* Chat Container */}
             <View style={styles.chatContainer}>
                 <ScrollView
                     style={styles.chatList}
@@ -955,7 +439,7 @@ export default function VoiceInterviewScreen() {
             </View>
 
             {/* SCORE REVEAL OVERLAY */}
-            <Modal visible={isInterviewFinished} transparent animationType="fade">
+            <Modal visible={isFinished} transparent animationType="fade">
                 <BlurView intensity={90} tint="dark" style={styles.blurContainer}>
                     <ScoreReveal
                         score={finalReport ? finalReport.averageScore : 0}
@@ -966,19 +450,20 @@ export default function VoiceInterviewScreen() {
                 </BlurView>
             </Modal>
 
+            {/* Mic Controls */}
             <View style={styles.controls}>
                 <TouchableOpacity
                     onPress={toggleRecording}
-                    disabled={isAgentThinking}
+                    disabled={isProcessing}
                     activeOpacity={0.7}
                 >
                     <Animated.View style={[
                         styles.micButton,
                         isRecording ? styles.recording : null,
-                        isAgentThinking ? styles.micButtonDisabled : null,
+                        isProcessing ? styles.micButtonDisabled : null,
                         { transform: [{ scale: micScale }] }
                     ]}>
-                        {isAgentThinking ? (
+                        {isProcessing ? (
                             <ActivityIndicator color="#FFF" />
                         ) : (
                             <Ionicons name={isRecording ? "stop" : "mic"} size={32} color="#FFF" />
@@ -990,8 +475,8 @@ export default function VoiceInterviewScreen() {
                     <View style={[
                         styles.vadPixel,
                         {
-                            backgroundColor: isAgentThinking ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
-                            shadowColor: isAgentThinking ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
+                            backgroundColor: isProcessing ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
+                            shadowColor: isProcessing ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
                         }
                     ]} />
                 )}

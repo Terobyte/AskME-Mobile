@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Alert, Platform, Animated } from 'react-native';
-import { useAudioRecorder, RecordingPresets, AudioModule, setAudioModeAsync } from 'expo-audio';
+import { useAudioRecorder, RecordingPresets, AudioModule, setAudioModeAsync, IOSOutputFormat } from 'expo-audio';
 import { TTSService } from '../../services/tts-service';
 
 // ============================================
@@ -37,121 +37,30 @@ interface UseInterviewAudioReturn {
 // ============================================
 
 export const safeAudioModeSwitch = async (mode: 'recording' | 'playback'): Promise<boolean> => {
-  const maxRetries = 3;
-  
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      if (mode === 'recording') {
-        // RECORDING MODE: Microphone input
-        await setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-          shouldPlayInBackground: true,
-          shouldRouteThroughEarpiece: false, // Force speaker even during recording
-          interruptionMode: 'doNotMix',
-          
-          // iOS SPECIFIC: Force AVAudioSessionCategoryPlayAndRecord with DefaultToSpeaker
-          ...(Platform.OS === 'ios' && {
-            iosCategory: 'playAndRecord',
-            iosMode: 'videoChat', // Better for real-time communication
-            iosCategoryOptions: ['defaultToSpeaker', 'allowBluetooth']
-          })
-        });
-      } else {
-        // PLAYBACK MODE: TTS Output - FORCE SPEAKER
-        await setAudioModeAsync({
-          allowsRecording: false,
-          playsInSilentMode: true,
-          shouldPlayInBackground: true,
-          shouldRouteThroughEarpiece: false, // CRITICAL: Force speaker
-          interruptionMode: 'doNotMix',
-          
-          // iOS SPECIFIC: Use playback category with speaker preference
-          ...(Platform.OS === 'ios' && {
-            iosCategory: 'playback', // Dedicated playback mode
-            iosMode: 'spokenAudio', // Optimized for voice content
-            iosCategoryOptions: ['defaultToSpeaker', 'duckOthers']
-          })
-        });
-        
-        // ANDROID SPECIFIC: Additional speaker enforcement
-        if (Platform.OS === 'android') {
-          console.log('📱 [Android] Forcing speaker mode...');
-          // expo-audio should handle this via shouldRouteThroughEarpiece: false
-          // but we log for debugging
-        }
-      }
-      
-      // Wait for audio mode to apply
-      await new Promise(resolve => setTimeout(resolve, 200)); // Increased wait time
-      
-      console.log(`✅ Audio Mode: ${mode} (attempt ${i + 1}/${maxRetries})`);
-      return true;
-      
-    } catch (err) {
-      console.warn(`⚠️ Audio Mode Switch Failed (${i + 1}/${maxRetries}):`, err);
-      if (i === maxRetries - 1) {
-        console.error('❌ All audio mode switch attempts failed');
-        throw err;
-      }
-      
-      // Exponential backoff
-      await new Promise(resolve => setTimeout(resolve, 300 * (i + 1)));
-    }
-  }
-  return false;
-};
-
-// ============================================
-// FORCE ENABLE SPEAKER (Emergency override)
-// ============================================
-
-export const forceEnableSpeaker = async (): Promise<boolean> => {
   try {
-    console.log('🔊 [FORCE] Enabling speaker output...');
+    if (mode === 'recording') {
+      // RECORDING MODE: Simple and compatible
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: true,
+      });
+    } else {
+      // PLAYBACK MODE: Simple and compatible
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+      });
+    }
     
-    await setAudioModeAsync({
-      allowsRecording: false,
-      playsInSilentMode: true,
-      shouldPlayInBackground: false,
-      shouldRouteThroughEarpiece: false,
-      interruptionMode: 'mixWithOthers',
-      
-      ...(Platform.OS === 'ios' && {
-        iosCategory: 'playback',
-        iosMode: 'spokenAudio',
-        iosCategoryOptions: ['defaultToSpeaker', 'duckOthers', 'allowBluetooth']
-      })
-    });
-    
-    await new Promise(resolve => setTimeout(resolve, 250));
-    console.log('✅ [FORCE] Speaker enabled');
+    console.log(`✅ Audio Mode: ${mode}`);
     return true;
     
-  } catch (error) {
-    console.error('❌ [FORCE] Failed to enable speaker:', error);
-    return false;
+  } catch (err) {
+    console.error(`❌ Audio Mode Switch Failed:`, err);
+    throw err;
   }
 };
 
-// ============================================
-// CHECK CURRENT AUDIO ROUTE (Diagnostics)
-// ============================================
-
-export const checkAudioRoute = async (): Promise<string> => {
-  try {
-    // This is a diagnostic helper - actual route checking would require native module
-    console.log('🔍 [AUDIO ROUTE] Checking current output...');
-    
-    // expo-audio doesn't expose route info directly, but we can verify mode
-    // In production, you'd use: react-native-audio-routing or custom native module
-    
-    return 'unknown - use native module for actual route detection';
-  } catch (error) {
-    console.error('❌ Audio route check failed:', error);
-    return 'error';
-  }
-};
 
 // ============================================
 // CUSTOM HOOK
@@ -325,27 +234,29 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
         await connectToDeepgram();
       }
 
-      // 10. Prepare recorder
+      // 10. Prepare recorder with valid 16kHz config for Deepgram
       console.log('🎙️ Preparing recorder...');
       
       await recorder.prepareToRecordAsync({
+        extension: '.wav',
+        sampleRate: 16000,
         numberOfChannels: 1,
+        bitRate: 128000,
         android: {
-          extension: '.amr',
-          outputFormat: 'amrwb',
-          audioEncoder: 'amr_wb',
-          sampleRate: 16000,
+          outputFormat: 'mpeg4',
+          audioEncoder: 'aac',
         },
         ios: {
-          extension: '.wav',
-          outputFormat: 'linearPCM',
+          outputFormat: IOSOutputFormat.LINEARPCM,
           audioQuality: 96,
-          sampleRate: 16000,
           linearPCMBitDepth: 16,
           linearPCMIsBigEndian: false,
           linearPCMIsFloat: false,
         },
-        web: {}
+        web: {
+          mimeType: 'audio/webm',
+          bitsPerSecond: 128000,
+        }
       });
 
       console.log('✅ Recorder prepared successfully');
@@ -518,13 +429,10 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
           return;
         }
 
-        // Configure audio session
+        // Configure audio session - simple and robust
         await setAudioModeAsync({
-          allowsRecording: true,
           playsInSilentMode: true,
-          shouldPlayInBackground: false,
-          interruptionMode: 'doNotMix',
-          shouldRouteThroughEarpiece: false
+          allowsRecording: true,
         });
 
         console.log('✅ Audio Mode Configured');

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Alert, Platform } from 'react-native';
+import { Alert, Platform, Animated } from 'react-native';
 import { useAudioRecorder, RecordingPresets, AudioModule, setAudioModeAsync } from 'expo-audio';
 import { TTSService } from '../../services/tts-service';
 
@@ -11,6 +11,8 @@ interface UseInterviewAudioOptions {
   onTTSStart?: () => void;
   onTTSEnd?: () => void;
   onTranscriptUpdate?: (transcript: string, isFinal: boolean) => void;
+  onRecordingStop?: () => void; // Called when recording stops (for finalizeMessage)
+  onStatusChange?: (status: 'idle' | 'listening') => void; // For status updates
   onError?: (error: Error) => void;
 }
 
@@ -18,7 +20,7 @@ interface UseInterviewAudioReturn {
   // State
   isRecording: boolean;
   transcript: string;
-  micScale: number;
+  micScale: Animated.Value;
   isSendingData: boolean;
   error: string | null;
   permissionGranted: boolean;
@@ -34,42 +36,121 @@ interface UseInterviewAudioReturn {
 // AUDIO MODE HELPER (Retry logic for robust switching)
 // ============================================
 
-const safeAudioModeSwitch = async (mode: 'recording' | 'playback'): Promise<boolean> => {
+export const safeAudioModeSwitch = async (mode: 'recording' | 'playback'): Promise<boolean> => {
   const maxRetries = 3;
+  
   for (let i = 0; i < maxRetries; i++) {
     try {
       if (mode === 'recording') {
+        // RECORDING MODE: Microphone input
         await setAudioModeAsync({
           allowsRecording: true,
           playsInSilentMode: true,
           shouldPlayInBackground: true,
-          shouldRouteThroughEarpiece: false,
-          interruptionMode: 'doNotMix'
+          shouldRouteThroughEarpiece: false, // Force speaker even during recording
+          interruptionMode: 'doNotMix',
+          
+          // iOS SPECIFIC: Force AVAudioSessionCategoryPlayAndRecord with DefaultToSpeaker
+          ...(Platform.OS === 'ios' && {
+            iosCategory: 'playAndRecord',
+            iosMode: 'videoChat', // Better for real-time communication
+            iosCategoryOptions: ['defaultToSpeaker', 'allowBluetooth']
+          })
         });
       } else {
+        // PLAYBACK MODE: TTS Output - FORCE SPEAKER
         await setAudioModeAsync({
           allowsRecording: false,
           playsInSilentMode: true,
           shouldPlayInBackground: true,
-          shouldRouteThroughEarpiece: false,
+          shouldRouteThroughEarpiece: false, // CRITICAL: Force speaker
+          interruptionMode: 'doNotMix',
+          
+          // iOS SPECIFIC: Use playback category with speaker preference
+          ...(Platform.OS === 'ios' && {
+            iosCategory: 'playback', // Dedicated playback mode
+            iosMode: 'spokenAudio', // Optimized for voice content
+            iosCategoryOptions: ['defaultToSpeaker', 'duckOthers']
+          })
         });
+        
+        // ANDROID SPECIFIC: Additional speaker enforcement
+        if (Platform.OS === 'android') {
+          console.log('📱 [Android] Forcing speaker mode...');
+          // expo-audio should handle this via shouldRouteThroughEarpiece: false
+          // but we log for debugging
+        }
       }
       
       // Wait for audio mode to apply
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 200)); // Increased wait time
       
-      console.log(`✅ Audio Mode: ${mode} (attempt ${i + 1})`);
+      console.log(`✅ Audio Mode: ${mode} (attempt ${i + 1}/${maxRetries})`);
       return true;
       
     } catch (err) {
       console.warn(`⚠️ Audio Mode Switch Failed (${i + 1}/${maxRetries}):`, err);
-      if (i === maxRetries - 1) throw err;
+      if (i === maxRetries - 1) {
+        console.error('❌ All audio mode switch attempts failed');
+        throw err;
+      }
       
       // Exponential backoff
       await new Promise(resolve => setTimeout(resolve, 300 * (i + 1)));
     }
   }
   return false;
+};
+
+// ============================================
+// FORCE ENABLE SPEAKER (Emergency override)
+// ============================================
+
+export const forceEnableSpeaker = async (): Promise<boolean> => {
+  try {
+    console.log('🔊 [FORCE] Enabling speaker output...');
+    
+    await setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+      shouldRouteThroughEarpiece: false,
+      interruptionMode: 'mixWithOthers',
+      
+      ...(Platform.OS === 'ios' && {
+        iosCategory: 'playback',
+        iosMode: 'spokenAudio',
+        iosCategoryOptions: ['defaultToSpeaker', 'duckOthers', 'allowBluetooth']
+      })
+    });
+    
+    await new Promise(resolve => setTimeout(resolve, 250));
+    console.log('✅ [FORCE] Speaker enabled');
+    return true;
+    
+  } catch (error) {
+    console.error('❌ [FORCE] Failed to enable speaker:', error);
+    return false;
+  }
+};
+
+// ============================================
+// CHECK CURRENT AUDIO ROUTE (Diagnostics)
+// ============================================
+
+export const checkAudioRoute = async (): Promise<string> => {
+  try {
+    // This is a diagnostic helper - actual route checking would require native module
+    console.log('🔍 [AUDIO ROUTE] Checking current output...');
+    
+    // expo-audio doesn't expose route info directly, but we can verify mode
+    // In production, you'd use: react-native-audio-routing or custom native module
+    
+    return 'unknown - use native module for actual route detection';
+  } catch (error) {
+    console.error('❌ Audio route check failed:', error);
+    return 'error';
+  }
 };
 
 // ============================================
@@ -81,6 +162,8 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
     onTTSStart,
     onTTSEnd,
     onTranscriptUpdate,
+    onRecordingStop,
+    onStatusChange,
     onError
   } = options;
 
@@ -90,7 +173,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
   const [isSendingData, setIsSendingData] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [permissionGranted, setPermissionGranted] = useState(false);
-  const [micScale] = useState(1); // Simplified - animation handled externally if needed
+  const micScale = useRef(new Animated.Value(1)).current;
 
   // Refs
   const ws = useRef<WebSocket | null>(null);
@@ -124,6 +207,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
       socket.onopen = () => {
         console.log('✅ WebSocket Connected');
         setIsRecording(true);
+        onStatusChange?.('listening');
         setError(null);
       };
 
@@ -350,10 +434,14 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
       // 4. Reset UI state
       setIsRecording(false);
       setIsSendingData(false);
+      onStatusChange?.('idle');
 
       // 5. Wait for audio device to be fully released
       await new Promise(resolve => setTimeout(resolve, 200));
       console.log('✅ Audio device fully released');
+
+      // 6. Notify parent that recording stopped (for finalizeMessage)
+      onRecordingStop?.();
 
     } catch (error) {
       const err = error instanceof Error ? error : new Error('Failed to stop recording');
@@ -382,6 +470,33 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
   const clearError = (): void => {
     setError(null);
   };
+
+  // ============================================
+  // MIC PULSING ANIMATION
+  // ============================================
+
+  useEffect(() => {
+    if (isRecording) {
+      // Start pulsing animation
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(micScale, {
+            toValue: 1.1,
+            duration: 800,
+            useNativeDriver: true
+          }),
+          Animated.timing(micScale, {
+            toValue: 1.0,
+            duration: 800,
+            useNativeDriver: true
+          })
+        ])
+      ).start();
+    } else {
+      // Reset scale when not recording
+      micScale.setValue(1);
+    }
+  }, [isRecording, micScale]);
 
   // ============================================
   // INITIALIZATION & CLEANUP

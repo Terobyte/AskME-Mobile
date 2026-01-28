@@ -1,13 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, TextInput, Animated, ActivityIndicator, Image, Easing as RNEasing } from 'react-native';
-import { useAudioRecorder, RecordingPresets, AudioModule, AudioPlayer, setAudioModeAsync, IOSOutputFormat, AndroidOutputFormat, AndroidAudioEncoder } from 'expo-audio';
-import { Buffer } from 'buffer';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
-import * as FileSystem from 'expo-file-system';
 import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse, QuestionResult, FinalInterviewReport } from '../types';
 import AnimatedReanimated, { useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, runOnJS, useDerivedValue, useAnimatedStyle, withSpring, withSequence, withRepeat, interpolateColor } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
@@ -17,6 +14,7 @@ import { GeminiAgentService } from '../services/gemini-agent';
 import { generateInterviewPlan } from '../interview-planner';
 import { TTSService } from '../services/tts-service';
 import { useTypewriter } from '../hooks/useTypewriter';
+import { useInterviewAudio, safeAudioModeSwitch } from '../hooks/interview/useInterviewAudio';
 import { MetricsHud } from '../components/MetricsHud';
 import { ScoreReveal } from '../components/interview/ScoreReveal';
 import { DebugOverlay } from '../components/interview/DebugOverlay';
@@ -40,13 +38,9 @@ const INITIAL_PLAN: InterviewPlan = {
 
 export default function VoiceInterviewScreen() {
     const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
-    const [isRecording, setIsRecording] = useState(false);
     const [showSettings, setShowSettings] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
     const [showDebug, setShowDebug] = useState(false); // Secret Debug Toggle
-
-    // Audio Recorder (Expo Audio)
-    const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
     // Gemini Agent
     const agentRef = useRef<GeminiAgentService | null>(null);
@@ -112,29 +106,31 @@ export default function VoiceInterviewScreen() {
     const targetTranscript = useRef("");
     const latestTranscriptRef = useRef("");
 
-    const [isSendingData, setIsSendingData] = useState(false);
-    const micScale = useRef(new Animated.Value(1)).current;
-
-    const ws = useRef<WebSocket | null>(null);
-    // Removed recording ref (replaced by useAudioRecorder hook)
-    const lastPosition = useRef(0);
-    const streamInterval = useRef<NodeJS.Timeout | null>(null);
-
-    const VOLUME_THRESHOLD = -65;
-
-    // Mic Pulsing
-    useEffect(() => {
-        if (isRecording) {
-            Animated.loop(
-                Animated.sequence([
-                    Animated.timing(micScale, { toValue: 1.1, duration: 800, useNativeDriver: true }),
-                    Animated.timing(micScale, { toValue: 1.0, duration: 800, useNativeDriver: true })
-                ])
-            ).start();
-        } else {
-            micScale.setValue(1);
-        }
-    }, [isRecording]);
+    // Audio Recording Hook
+    const {
+        isRecording,
+        startRecording,
+        stopRecording,
+        micScale,
+        isSendingData,
+    } = useInterviewAudio({
+        onTranscriptUpdate: (text, isFinal) => {
+            if (isFinal) {
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                setLiveTranscript(prev => {
+                    const spacer = prev.length > 0 ? " " : "";
+                    return prev + spacer + text.trim();
+                });
+                setIsFinalChunk(true);
+            }
+        },
+        onRecordingStop: () => {
+            finalizeMessage();
+        },
+        onStatusChange: (newStatus) => {
+            setStatus(newStatus);
+        },
+    });
 
     // Secret Shake Listener
     useEffect(() => {
@@ -145,50 +141,6 @@ export default function VoiceInterviewScreen() {
 
         return () => {
             subscription.remove();
-        };
-    }, []);
-
-    // Permissions & Cleanup
-    useEffect(() => {
-        (async () => {
-            try {
-                // 1. Request Permissions
-                const status = await AudioModule.requestRecordingPermissionsAsync();
-                if (!status.granted) {
-                    Alert.alert('Permission to access microphone was denied');
-                    return;
-                }
-
-                // 2. CONFIGURE AUDIO SESSION (Critical Fix)
-                await setAudioModeAsync({
-                    allowsRecording: true,      // Fixes "RecordingDisabledException"
-                    playsInSilentMode: true,    // Fixes "No Sound" in silent mode
-                    shouldPlayInBackground: false,
-                    interruptionMode: 'doNotMix', // Stops other music/podcasts
-                    shouldRouteThroughEarpiece: false // Force Speaker
-                });
-
-                console.log("✅ Audio Mode Configured");
-
-            } catch (e) {
-                console.error("Audio Config Error:", e);
-            }
-        })();
-
-        return () => {
-            TTSService.stop();
-            if (recorder.isRecording) {
-                recorder.stop();
-            }
-            if (streamInterval.current) {
-                clearInterval(streamInterval.current);
-                streamInterval.current = null;
-            }
-            if (ws.current) {
-                ws.current.close();
-                ws.current = null;
-            }
-            setIsRecording(false);
         };
     }, []);
 
@@ -685,179 +637,6 @@ export default function VoiceInterviewScreen() {
         // We keep resumeText/jdText loaded
     };
 
-    const connectToDeepgram = async () => {
-        const API_KEY = process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY || "";
-        const cleanKey = API_KEY.trim();
-        if (!cleanKey) {
-            Alert.alert("Configuration Error", "Deepgram API Key is missing.");
-            return;
-        }
-        const socketUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&filler_words=true&encoding=linear16&sample_rate=16000&container=wav&interim_results=true`;
-        const socket = new WebSocket(socketUrl, ['token', cleanKey]);
-        ws.current = socket;
-        socket.onopen = () => {
-            setIsRecording(true);
-            setStatus('listening');
-        };
-        socket.onmessage = async (event) => {
-            try {
-                if (typeof event.data === 'string') {
-                    const msg = JSON.parse(event.data);
-                    if (msg.channel?.alternatives?.[0]?.transcript) {
-                        const text = msg.channel.alternatives[0].transcript;
-                        if (text.trim().length > 0) {
-                            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                            if (msg.is_final) {
-                                setLiveTranscript(prev => {
-                                    const spacer = prev.length > 0 ? " " : "";
-                                    return prev + spacer + text.trim();
-                                });
-                                setIsFinalChunk(true);
-                            }
-                        }
-                    }
-                }
-            } catch (e) {
-                console.error("WS Message Error:", e);
-            }
-        };
-        socket.onerror = (e: any) => {
-            stopRecording();
-        };
-        socket.onclose = (e) => {
-            setIsRecording(false);
-            setStatus('idle');
-        };
-    };
-
-    const startRecording = async () => {
-        try {
-            // 1. Reset State
-            setLiveTranscript("");
-            targetTranscript.current = "";
-            setDisplayTranscript("");
-            lastPosition.current = 0;
-
-            // 2. Check Permissions FIRST
-            const perm = await AudioModule.requestRecordingPermissionsAsync();
-            if (!perm.granted) {
-                Alert.alert('Permission missing', 'Microphone access is required.');
-                return;
-            }
-
-            // 3. Configure Audio Mode (CRITICAL FIX)
-            // User requested specific settings for IOS
-            await setAudioModeAsync({
-                playsInSilentMode: true,
-                allowsRecording: true, // Maps to allowsRecordingIOS in expo-audio adapter or handled internally
-                shouldPlayInBackground: true,
-                shouldRouteThroughEarpiece: false,
-                // interuptionModeIOS: 1, // Optional: DoNotMix
-                // interuptionModeAndroid: 1, // Optional: DoNotMix
-            });
-
-            // 4. Connect WebSocket (if not open)
-            if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-                await connectToDeepgram();
-            }
-
-            // 5. Start Recording
-            console.log("🎙️ Preparing Recorder...");
-
-            await recorder.prepareToRecordAsync({
-                numberOfChannels: 1,
-                android: {
-                    extension: '.amr',
-                    outputFormat: 'amrwb',
-                    audioEncoder: 'amr_wb',
-                    sampleRate: 16000,
-                },
-                ios: {
-                    extension: '.wav',
-                    outputFormat: 'linearPCM',
-                    audioQuality: 96,
-                    sampleRate: 16000,
-                    linearPCMBitDepth: 16,
-                    linearPCMIsBigEndian: false,
-                    linearPCMIsFloat: false,
-                },
-                web: {}
-            });
-
-            console.log("✅ Recorder Prepared. Starting...");
-            recorder.record();
-
-            console.log("🎙️ Recorder Started. URI:", recorder.uri);
-            setIsRecording(true);
-            setStatus('listening');
-
-            // 6. START STREAMING LOOP
-            // We poll the file every 150ms, slice the new bytes, and send to Deepgram
-            if (streamInterval.current) clearInterval(streamInterval.current);
-
-            streamInterval.current = setInterval(async () => {
-                // Safety Checks
-                if (!recorder.isRecording || !recorder.uri) return;
-                // if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return; // Allow logging even if closed
-
-                try {
-                    // Read the file growing on disk
-                    const response = await fetch(recorder.uri);
-                    const blob = await response.blob();
-
-                    // DEBUG LOG
-                    // console.log(`Stats: Size=${blob.size}, Last=${lastPosition.current}`);
-
-                    // If we have new data
-                    if (blob.size > lastPosition.current) {
-                        const chunk = blob.slice(lastPosition.current);
-
-                        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-                            ws.current.send(chunk); // Send to Deepgram
-                            setIsSendingData(true); // Trigger UI animation (PURPLE)
-                        } else {
-                            // console.warn("⚠️ WS Not Open during stream");
-                        }
-
-                        lastPosition.current = blob.size; // Update cursor
-                    } else {
-                        setIsSendingData(false); // Back to ORANGE
-                    }
-                } catch (e) {
-                    console.log("Stream Read Error:", e);
-                }
-            }, 150); // Faster polling
-
-        } catch (err) {
-            Alert.alert("Error", "Could not start microphone.");
-            console.error(err);
-        }
-    };
-
-    const stopRecording = async () => {
-        try {
-            if (streamInterval.current) {
-                clearInterval(streamInterval.current);
-                streamInterval.current = null;
-            }
-            if (recorder.isRecording) {
-                await recorder.stop();
-            }
-            if (ws.current) {
-                if (ws.current.readyState === WebSocket.OPEN) {
-                    ws.current.send(JSON.stringify({ type: 'CloseStream' }));
-                }
-                ws.current.close();
-                ws.current = null;
-            }
-            setIsRecording(false);
-            setStatus('idle');
-            finalizeMessage();
-        } catch (error) {
-            console.error("Error stopping recording:", error);
-        }
-    };
-
     const toggleRecording = () => {
         if (isAgentThinking) return;
 
@@ -870,7 +649,7 @@ export default function VoiceInterviewScreen() {
 
     const playSynchronizedResponse = async (text: string) => {
         // 🛑 STOP ECHO LOOP: Ensure Mic is OFF before AI speaks
-        if (recorder.isRecording) {
+        if (isRecording) {
             console.log("🛑 Preventing Self-Listening: Stopping Mic before TTS.");
             await stopRecording();
         }
@@ -890,13 +669,14 @@ export default function VoiceInterviewScreen() {
         try {
             console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
 
-            await setAudioModeAsync({
-                allowsRecording: false,
-                playsInSilentMode: true,
-                shouldPlayInBackground: true,
-                shouldRouteThroughEarpiece: false,
-            });
+            // 🔊 CRITICAL: Force speaker mode before TTS playback
+            console.log("🔊 Forcing speaker output for TTS...");
+            await safeAudioModeSwitch('playback');
+            
+            // Small delay to ensure audio mode is applied
+            await new Promise(resolve => setTimeout(resolve, 100));
 
+            // Prepare audio
             const player = await TTSService.prepareAudio(text);
 
             console.log("💥 Sync: BOOM! Playing.");
@@ -965,8 +745,8 @@ export default function VoiceInterviewScreen() {
         // 1. Stop all audio first
         try {
             await TTSService.stop();
-            if (recorder.isRecording) {
-                await recorder.stop();
+            if (isRecording) {
+                await stopRecording();
             }
         } catch (e) {
             console.error("Force Finish Audio Stop Error:", e);

@@ -9,7 +9,6 @@ import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
 import * as FileSystem from 'expo-file-system';
 import { InterviewMode, InterviewPlan, EvaluationMetrics, AiResponse, QuestionResult, FinalInterviewReport } from '../types';
-import Svg, { Path, Defs, LinearGradient, Stop, Mask, Rect } from 'react-native-svg';
 import AnimatedReanimated, { useSharedValue, useAnimatedProps, withTiming, withDelay, Easing, runOnJS, useDerivedValue, useAnimatedStyle, withSpring, withSequence, withRepeat, interpolateColor } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import RNShake from 'react-native-shake';
@@ -19,11 +18,8 @@ import { generateInterviewPlan } from '../interview-planner';
 import { TTSService } from '../services/tts-service';
 import { useTypewriter } from '../hooks/useTypewriter';
 import { MetricsHud } from '../components/MetricsHud';
-
-// Animated SVG Components
-const AnimatedPath = AnimatedReanimated.createAnimatedComponent(Path);
-const AnimatedText = AnimatedReanimated.createAnimatedComponent(Text);
-const AnimatedRect = AnimatedReanimated.createAnimatedComponent(Rect); // For color interpolation if needed, or just interpolate props
+import { ScoreReveal } from '../components/interview/ScoreReveal';
+import { DebugOverlay } from '../components/interview/DebugOverlay';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -41,243 +37,6 @@ const INITIAL_PLAN: InterviewPlan = {
     meta: { mode: 'short', total_estimated_time: '5m' },
     queue: [{ id: 'intro', topic: 'Introduction', type: 'Intro', estimated_time: '5m', context: "The user is introducing themselves. Ask them to describe their background and experience briefly." }]
 };
-
-// ============================================
-// SCORE REVEAL COMPONENT (Extracted to prevent re-creation)
-// ============================================
-interface ScoreRevealProps {
-    score: number;
-    summary: string;
-    loading: boolean;
-    onReturnToMenu?: () => void;
-}
-
-const ScoreReveal = React.memo(({ score, summary, loading, onReturnToMenu }: ScoreRevealProps) => {
-    const progress = useSharedValue(0);
-    const [showButton, setShowButton] = useState(false);
-    const [displayScore, setDisplayScore] = useState("0.0");
-    const [isRevealed, setIsRevealed] = useState(false);
-    const [displaySummary, setDisplaySummary] = useState("");
-    const animationStartedRef = useRef(false);
-    const scrambleIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-    // Scramble Effect - runs continuously until revealed
-    useEffect(() => {
-        scrambleIntervalRef.current = setInterval(() => {
-            if (!isRevealed) {
-                setDisplayScore((Math.random() * 10).toFixed(1));
-            }
-        }, 50);
-
-        return () => {
-            if (scrambleIntervalRef.current) {
-                clearInterval(scrambleIntervalRef.current);
-            }
-        };
-    }, [isRevealed]);
-
-    // Main Animation - only runs ONCE when loading becomes false
-    useEffect(() => {
-        if (!loading && !animationStartedRef.current) {
-            animationStartedRef.current = true;
-            console.log("🎰 [ScoreReveal] Starting casino animation...");
-
-            // Start Arc Animation
-            progress.value = withTiming(1, {
-                duration: 4000,
-                easing: Easing.bezier(0.4, 0, 0.2, 1)
-            }, (finished) => {
-                if (finished) {
-                    runOnJS(setIsRevealed)(true);
-                    runOnJS(Haptics.notificationAsync)(Haptics.NotificationFeedbackType.Success);
-                    runOnJS(setDisplayScore)(score.toFixed(1));
-                }
-            });
-        } else if (loading) {
-            // Pulse/Breathe effect while loading
-            progress.value = withRepeat(withTiming(0.2, { duration: 1000 }), -1, true);
-        }
-    }, [loading, score]);
-
-    // Typewriter effect for summary
-    useEffect(() => {
-        if (isRevealed && summary) {
-            let index = 0;
-            const typeInterval = setInterval(() => {
-                if (index <= summary.length) {
-                    setDisplaySummary(summary.substring(0, index));
-                    index++;
-                } else {
-                    clearInterval(typeInterval);
-                    // Show button after typewriter completes
-                    setTimeout(() => setShowButton(true), 500);
-                }
-            }, 30);
-            return () => clearInterval(typeInterval);
-        }
-    }, [isRevealed, summary]);
-
-    const animatedProps = useAnimatedProps(() => {
-        const radius = 120;
-        const circumference = Math.PI * radius; // Semi-circle
-        const effectiveScore = loading ? 10 : score;
-        const strokeDashoffset = circumference * (1 - progress.value * (effectiveScore / 10));
-        return {
-            strokeDashoffset,
-        };
-    });
-
-    return (
-        <View style={scoreRevealStyles.revealContainer}>
-            <View style={scoreRevealStyles.gaugeContainer}>
-                <Svg width={300} height={160} viewBox="0 0 300 160">
-                    <Defs>
-                        <LinearGradient id="grad" x1="0" y1="0" x2="1" y2="0">
-                            <Stop offset="0" stopColor="#EF4444" stopOpacity="1" />
-                            <Stop offset="0.5" stopColor="#F59E0B" stopOpacity="1" />
-                            <Stop offset="1" stopColor="#10B981" stopOpacity="1" />
-                        </LinearGradient>
-                        <Mask id="mask">
-                            <AnimatedPath
-                                d="M 30 150 A 120 120 0 0 1 270 150"
-                                stroke="white"
-                                strokeWidth="20"
-                                fill="none"
-                                strokeDasharray={`${Math.PI * 120}`}
-                                animatedProps={animatedProps}
-                                strokeLinecap="round"
-                            />
-                        </Mask>
-                    </Defs>
-
-                    {/* Background Track */}
-                    <Path
-                        d="M 30 150 A 120 120 0 0 1 270 150"
-                        stroke="#333"
-                        strokeWidth="20"
-                        fill="none"
-                        strokeLinecap="round"
-                    />
-
-                    {/* Gradient Fill with Mask */}
-                    <Rect
-                        x="0"
-                        y="0"
-                        width="300"
-                        height="160"
-                        fill="url(#grad)"
-                        mask="url(#mask)"
-                    />
-                </Svg>
-
-                {/* Score Text */}
-                <View style={scoreRevealStyles.scoreTextContainer}>
-                    <Text style={[
-                        scoreRevealStyles.scoreText,
-                        isRevealed && { color: score >= 8 ? "#10B981" : score >= 5 ? "#F59E0B" : "#EF4444", transform: [{ scale: 1.2 }] }
-                    ]}>
-                        {displayScore}
-                    </Text>
-                    <Text style={scoreRevealStyles.scoreLabel}>OVERALL SCORE</Text>
-                </View>
-            </View>
-
-            {isRevealed && (
-                <View style={scoreRevealStyles.summaryContainer}>
-                    <Text style={scoreRevealStyles.summaryText}>{displaySummary}<Text style={{ opacity: displaySummary.length < summary.length ? 1 : 0 }}>|</Text></Text>
-                </View>
-            )}
-
-            {showButton && (
-                <AnimatedReanimated.View style={scoreRevealStyles.resultButtonContainer}>
-                    <TouchableOpacity style={scoreRevealStyles.resultButton} onPress={onReturnToMenu || (() => Alert.alert("Detailed Report Coming Soon!"))}>
-                        <Text style={scoreRevealStyles.resultButtonText}>CHECK YOUR RESULTS</Text>
-                        <Ionicons name="arrow-forward" size={20} color="#000" />
-                    </TouchableOpacity>
-                </AnimatedReanimated.View>
-            )}
-        </View>
-    );
-});
-
-// ScoreReveal Styles (Extracted)
-const scoreRevealStyles = StyleSheet.create({
-    revealContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: '#000',
-        width: '100%',
-    },
-    gaugeContainer: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: 200,
-        marginBottom: 20,
-    },
-    scoreTextContainer: {
-        position: 'absolute',
-        top: 80,
-        alignItems: 'center',
-    },
-    scoreText: {
-        fontSize: 48,
-        fontWeight: '900',
-        color: '#FFF',
-        fontVariant: ['tabular-nums'],
-    },
-    scoreLabel: {
-        fontSize: 12,
-        color: '#666',
-        letterSpacing: 2,
-        marginTop: 5,
-        fontWeight: 'bold',
-    },
-    summaryContainer: {
-        paddingHorizontal: 30,
-        alignItems: 'center',
-        marginTop: 20,
-        marginBottom: 40,
-        minHeight: 100,
-    },
-    summaryText: {
-        color: '#CCC',
-        fontSize: 16,
-        lineHeight: 24,
-        textAlign: 'center',
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    resultButtonContainer: {
-        width: '100%',
-        alignItems: 'center',
-        position: 'absolute',
-        bottom: 50,
-    },
-    resultButton: {
-        flexDirection: 'row',
-        backgroundColor: '#FFF',
-        paddingVertical: 16,
-        paddingHorizontal: 32,
-        borderRadius: 30,
-        alignItems: 'center',
-        shadowColor: '#FFF',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.3,
-        shadowRadius: 10,
-        elevation: 5,
-    },
-    resultButtonText: {
-        color: '#000',
-        fontWeight: 'bold',
-        fontSize: 16,
-        marginRight: 10,
-        letterSpacing: 1,
-    },
-});
-
-// ============================================
-// MAIN COMPONENT
-// ============================================
 
 export default function VoiceInterviewScreen() {
     const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
@@ -1229,99 +988,32 @@ export default function VoiceInterviewScreen() {
         }, 500);
     };
 
-    const DebugOverlay = () => {
-        if (!showDebug) return null;
+    const handleSimulate = async () => {
+        if (!plan || !agentRef.current) return;
+        if (isSimulating) return;
 
-        const options = ["0", "3", "5", "8", "10", "NONSENSE", "CLARIFICATION", "GIVE_UP", "SHOW_ANSWER", "I_AM_READY"];
+        setIsSimulating(true);
+        console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
 
-        const handleSimulate = async () => {
-            if (!plan || !agentRef.current) return;
-            if (isSimulating) return;
-
-            setIsSimulating(true);
-            console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
-
-            try {
-                let simText = "";
-                if (debugValue === "I_AM_READY") {
-                    simText = "I am ready.";
-                } else {
-                    const currentTopic = plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)];
-                    simText = await agentRef.current.generateSimulatedAnswer(currentTopic, debugValue, resumeText);
-                }
-
-                console.log(`🤖 [DEV] Simulated Text: ${simText}`);
-
-                // Inject into system as if user spoke it
-                setLiveTranscript(simText);
-                await finalizeMessage(simText);
-            } catch (e) {
-                console.error("Simulation Failed", e);
-            } finally {
-                setIsSimulating(false);
+        try {
+            let simText = "";
+            if (debugValue === "I_AM_READY") {
+                simText = "I am ready.";
+            } else {
+                const currentTopic = plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)];
+                simText = await agentRef.current.generateSimulatedAnswer(currentTopic, debugValue, resumeText);
             }
-        };
 
-        return (
-            <View style={styles.debugOverlay}>
-                <View style={styles.debugHeader}>
-                    <Text style={styles.debugTitle}>�️ DEBUG</Text>
-                    <TouchableOpacity onPress={() => setShowDebug(false)}>
-                        <Ionicons name="close-circle" size={24} color="#FF3B30" />
-                    </TouchableOpacity>
-                </View>
+            console.log(`🤖 [DEV] Simulated Text: ${simText}`);
 
-                {/* Metrics Control */}
-                <View style={styles.debugSection}>
-                    <Text style={styles.debugLabel}>Anger Level: {anger.toFixed(0)}%</Text>
-                    <Slider
-                        style={{ width: '100%', height: 30 }}
-                        minimumValue={0}
-                        maximumValue={100}
-                        step={5}
-                        value={anger}
-                        onValueChange={setAnger}
-                        minimumTrackTintColor="#FF3B30"
-                        thumbTintColor="#FF3B30"
-                    />
-                </View>
-
-                {/* Simulation Control */}
-                <View style={styles.debugSection}>
-                    <Text style={styles.debugLabel}>Simulate Response:</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
-                        {options.map(opt => (
-                            <TouchableOpacity
-                                key={opt}
-                                style={[styles.debugChip, debugValue === opt && styles.debugChipActive]}
-                                onPress={() => setDebugValue(opt)}
-                            >
-                                <Text style={[styles.debugChipText, debugValue === opt && styles.debugChipTextActive]}>{opt}</Text>
-                            </TouchableOpacity>
-                        ))}
-                    </ScrollView>
-                    <View style={styles.debugRow}>
-                        <TouchableOpacity style={styles.debugButton} onPress={handleSimulate} disabled={isSimulating}>
-                            <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]}
-                            onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
-                        >
-                            <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
-                        </TouchableOpacity>
-                    </View>
-
-                    {/* Force Finish Button */}
-                    <TouchableOpacity
-                        style={[styles.debugButton, { backgroundColor: '#FF3B30', marginTop: 15, marginRight: 0 }]}
-                        onPress={handleForceFinish}
-                    >
-                        <Text style={styles.debugButtonText}>🛑 FORCE FINISH</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
-        );
+            // Inject into system as if user spoke it
+            setLiveTranscript(simText);
+            await finalizeMessage(simText);
+        } catch (e) {
+            console.error("Simulation Failed", e);
+        } finally {
+            setIsSimulating(false);
+        }
     };
 
     return (
@@ -1329,7 +1021,19 @@ export default function VoiceInterviewScreen() {
             <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
 
             {/* DEV CONSOLE */}
-            <DebugOverlay />
+            <DebugOverlay
+                visible={showDebug}
+                onClose={() => setShowDebug(false)}
+                anger={anger}
+                debugValue={debugValue}
+                isDebugTtsMuted={isDebugTtsMuted}
+                isSimulating={isSimulating}
+                setAnger={setAnger}
+                setDebugValue={setDebugValue}
+                setIsDebugTtsMuted={setIsDebugTtsMuted}
+                onSimulate={handleSimulate}
+                onForceFinish={handleForceFinish}
+            />
 
             <View style={styles.header}>
                 <Text style={{ fontWeight: 'bold', fontSize: 18 }}>AskME AI</Text>
@@ -1714,101 +1418,6 @@ const styles = StyleSheet.create({
         color: '#000',
         fontWeight: 'bold',
     },
-    debugOverlay: {
-        position: 'absolute',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        backgroundColor: '#1C1C1E',
-        borderTopLeftRadius: 20,
-        borderTopRightRadius: 20,
-        padding: 20,
-        zIndex: 9999,
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -5 },
-        shadowOpacity: 0.3,
-        shadowRadius: 10,
-        elevation: 20,
-    },
-    debugHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 20,
-    },
-    debugTitle: {
-        color: '#FFF',
-        fontSize: 18,
-        fontWeight: 'bold',
-        letterSpacing: 1,
-    },
-    debugSection: {
-        marginBottom: 20,
-    },
-    debugLabel: {
-        color: '#8E8E93',
-        fontSize: 12,
-        fontWeight: '600',
-        marginBottom: 10,
-        textTransform: 'uppercase',
-    },
-    debugRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginTop: 15,
-    },
-    debugScroll: {
-        marginBottom: 8,
-        height: 35,
-    },
-    debugChip: {
-        backgroundColor: '#2C2C2E',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 8,
-        marginRight: 8,
-        borderWidth: 1,
-        borderColor: '#3A3A3C',
-    },
-    debugChipActive: {
-        backgroundColor: '#0A84FF',
-        borderColor: '#0A84FF',
-    },
-    debugChipText: {
-        color: '#8E8E93',
-        fontSize: 12,
-        fontWeight: '600',
-    },
-    debugChipTextActive: {
-        color: '#FFF',
-    },
-    debugButton: {
-        flex: 1,
-        backgroundColor: '#30D158',
-        paddingVertical: 12,
-        borderRadius: 10,
-        alignItems: 'center',
-        marginRight: 10,
-    },
-    debugButtonText: {
-        color: '#FFF',
-        fontWeight: 'bold',
-        fontSize: 14,
-    },
-    debugToggle: {
-        padding: 12,
-        backgroundColor: '#3A3A3C',
-        borderRadius: 10,
-        width: 44,
-        alignItems: 'center',
-    },
-    debugToggleActive: {
-        backgroundColor: '#FF9F0A',
-    },
-    debugToggleText: {
-        fontSize: 16,
-    },
     modalGenerateButton: {
         backgroundColor: '#000',
         paddingVertical: 18,
@@ -1826,75 +1435,5 @@ const styles = StyleSheet.create({
         backgroundColor: 'rgba(255,255,255,0.5)',
         padding: 15,
         borderRadius: 10,
-    },
-    revealContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: '#000', // Dark Mode for Reveal
-        width: '100%',
-    },
-    gaugeContainer: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: 200,
-        marginBottom: 20,
-    },
-    scoreTextContainer: {
-        position: 'absolute',
-        top: 80,
-        alignItems: 'center',
-    },
-    scoreText: {
-        fontSize: 48,
-        fontWeight: '900',
-        color: '#FFF',
-        fontVariant: ['tabular-nums'],
-    },
-    scoreLabel: {
-        fontSize: 12,
-        color: '#666',
-        letterSpacing: 2,
-        marginTop: 5,
-        fontWeight: 'bold',
-    },
-    summaryContainer: {
-        paddingHorizontal: 30,
-        alignItems: 'center',
-        marginTop: 20,
-        marginBottom: 40,
-    },
-    summaryText: {
-        color: '#CCC',
-        fontSize: 16,
-        lineHeight: 24,
-        textAlign: 'center',
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    resultButtonContainer: {
-        width: '100%',
-        alignItems: 'center',
-        position: 'absolute',
-        bottom: 50,
-    },
-    resultButton: {
-        flexDirection: 'row',
-        backgroundColor: '#FFF',
-        paddingVertical: 16,
-        paddingHorizontal: 32,
-        borderRadius: 30,
-        alignItems: 'center',
-        shadowColor: '#FFF',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.3,
-        shadowRadius: 10,
-        elevation: 5,
-    },
-    resultButtonText: {
-        color: '#000',
-        fontWeight: 'bold',
-        fontSize: 16,
-        marginRight: 10,
-        letterSpacing: 1,
     },
 });

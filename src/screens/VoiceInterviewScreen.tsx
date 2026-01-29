@@ -15,6 +15,7 @@ import { useInterviewLogic } from '../hooks/interview/useInterviewLogic';
 import { MetricsHud } from '../components/MetricsHud';
 import { ScoreReveal } from '../components/interview/ScoreReveal';
 import { DebugOverlay } from '../components/interview/DebugOverlay';
+import { ResultsModal } from '../components/interview/ResultsModal';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -33,6 +34,7 @@ export default function VoiceInterviewScreen() {
     const [showSettings, setShowSettings] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
     const [showDebug, setShowDebug] = useState(false);
+    const [showResultsModal, setShowResultsModal] = useState(false);
 
     // Settings State
     const [resumeText, setResumeText] = useState(MOCK_RESUME);
@@ -213,6 +215,11 @@ export default function VoiceInterviewScreen() {
     const handleReturnToSettings = () => {
         restart();
         setShowSettings(true);
+        setShowResultsModal(false);
+    };
+
+    const handleShowResults = () => {
+        setShowResultsModal(true);
     };
 
     const toggleRecording = () => {
@@ -446,9 +453,17 @@ export default function VoiceInterviewScreen() {
                         summary={finalReport ? finalReport.overallSummary : "Calculating results..."}
                         loading={!finalReport}
                         onReturnToMenu={handleReturnToSettings}
+                        onShowResults={handleShowResults}
                     />
                 </BlurView>
             </Modal>
+
+            {/* RESULTS MODAL */}
+            <ResultsModal
+                visible={showResultsModal}
+                onClose={handleReturnToSettings}
+                report={finalReport}
+            />
 
             {/* Mic Controls */}
             <View style={styles.controls}>

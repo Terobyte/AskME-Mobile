@@ -77,6 +77,7 @@ export interface QuestionResult {
   userAnswer: string;
   score: number; // 0-10
   feedback: string;
+  metrics?: EvaluationMetrics; // Optional for backward compatibility
 }
 
 export interface FinalInterviewReport {

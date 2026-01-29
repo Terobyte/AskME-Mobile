@@ -100,12 +100,18 @@ export class GeminiAgentService {
       INSTRUCTION:
       - Identify each Q&A pair.
       - Ignore "System" or "Intro" messages if they don't have a clear Q&A.
-      - For each valid Q&A pair, assign a score (0-10) and brief feedback.
+      - For each valid Q&A pair, assign a score (0-10), brief feedback, and metrics.
       - Return a valid JSON array. Do NOT output trailing commas.
       
       OUTPUT JSON SCHEMA:
       [
-        { "topic": "string", "userAnswer": "string", "score": number, "feedback": "string" },
+        { 
+          "topic": "string", 
+          "userAnswer": "string", 
+          "score": number, 
+          "feedback": "string",
+          "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" }
+        },
         ...
       ]
       `;
@@ -138,12 +144,18 @@ export class GeminiAgentService {
       ${JSON.stringify(lastHistoryItem)}
       
       INSTRUCTION:
-      1. Evaluate the final interaction (Score 0-10 + Feedback).
+      1. Evaluate the final interaction (Score 0-10 + Feedback + Metrics).
       2. Review ALL results (Previous + Final) to generate a "comprehensive_summary" of the candidate's performance.
       
       OUTPUT JSON SCHEMA:
       {
-        "finalQuestion": { "topic": "Final Topic", "userAnswer": "string", "score": number, "feedback": "string" },
+        "finalQuestion": { 
+          "topic": "Final Topic", 
+          "userAnswer": "string", 
+          "score": number, 
+          "feedback": "string",
+          "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" }
+        },
         "overallSummary": "string (3-4 sentences summarizing strengths/weaknesses)"
       }
       `;
@@ -160,7 +172,13 @@ export class GeminiAgentService {
       } catch (e) {
           console.error("Final Eval Error:", e);
           return {
-              finalQuestion: { topic: "Final", userAnswer: "", score: 0, feedback: "Error" },
+              finalQuestion: { 
+                  topic: "Final", 
+                  userAnswer: "", 
+                  score: 0, 
+                  feedback: "Error",
+                  metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" }
+              },
               overallSummary: "Failed to generate summary."
           };
       }

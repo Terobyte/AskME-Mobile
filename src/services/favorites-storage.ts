@@ -29,6 +29,26 @@ const getFavoritesFile = (): File => {
 };
 
 /**
+ * Safely parse JSON with validation
+ */
+const safeParseJSON = (content: string): FavoriteQuestion[] => {
+    try {
+        if (!content || content.trim() === '') {
+            return [];
+        }
+        const parsed = JSON.parse(content);
+        if (!Array.isArray(parsed)) {
+            console.warn('⚠️ [FAVORITES] Data is not an array, resetting');
+            return [];
+        }
+        return parsed;
+    } catch (error) {
+        console.warn('⚠️ [FAVORITES] Invalid JSON, resetting to empty array');
+        return [];
+    }
+};
+
+/**
  * Get all saved favorites
  */
 export const getFavorites = async (): Promise<FavoriteQuestion[]> => {
@@ -40,8 +60,8 @@ export const getFavorites = async (): Promise<FavoriteQuestion[]> => {
             return [];
         }
 
-        const content = file.text();
-        const favorites = JSON.parse(content) as FavoriteQuestion[];
+        const content = file.text() as unknown as string;
+        const favorites = safeParseJSON(content);
         console.log(`⭐ [FAVORITES] Loaded ${favorites.length} favorites`);
         return favorites;
     } catch (error) {
@@ -108,4 +128,17 @@ export const toggleFavorite = async (question: FavoriteQuestion): Promise<{
 export const getFavoriteIds = async (): Promise<Set<string>> => {
     const favorites = await getFavorites();
     return new Set(favorites.map(f => f.id));
+};
+
+/**
+ * Clear all favorites (reset corrupted data)
+ */
+export const clearFavorites = async (): Promise<void> => {
+    try {
+        const file = getFavoritesFile();
+        file.write('[]');
+        console.log('🗑️ [FAVORITES] Cleared all favorites');
+    } catch (error) {
+        console.error('❌ [FAVORITES] Failed to clear:', error);
+    }
 };

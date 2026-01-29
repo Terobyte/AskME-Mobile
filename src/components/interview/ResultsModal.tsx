@@ -1,4 +1,9 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * ResultsModal - Light Control Center Style
+ * Displays interview results with clean, light theme
+ */
+
+import React, { useState, useEffect, useRef } from 'react';
 import {
     StyleSheet,
     View,
@@ -6,195 +11,234 @@ import {
     TouchableOpacity,
     ScrollView,
     Modal,
-    Platform,
+    Dimensions,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { FinalInterviewReport, QuestionResult } from '../../types';
 import { getFavoriteIds, toggleFavorite, FavoriteQuestion } from '../../services/favorites-storage';
+import { saveSession } from '../../services/history-storage';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface ResultsModalProps {
     visible: boolean;
     onClose: () => void;
     report: FinalInterviewReport | null;
+    roleTitle?: string;  // e.g. "React Native Developer"
 }
 
-interface ScoreColors {
-    backgroundColor: string;
-    borderColor: string;
-    textColor: string;
-    label: string;
-}
-
-// Helper function to get color scheme based on score
-const getScoreColor = (score: number): ScoreColors => {
-    if (score > 7) {
-        return {
-            backgroundColor: 'rgba(16, 185, 129, 0.15)',
-            borderColor: 'rgba(16, 185, 129, 0.3)',
-            textColor: '#10B981',
-            label: 'Excellent',
-        };
-    } else if (score >= 5) {
-        return {
-            backgroundColor: 'rgba(245, 158, 11, 0.15)',
-            borderColor: 'rgba(245, 158, 11, 0.3)',
-            textColor: '#F59E0B',
-            label: 'Good',
-        };
-    } else {
-        return {
-            backgroundColor: 'rgba(239, 68, 68, 0.15)',
-            borderColor: 'rgba(239, 68, 68, 0.3)',
-            textColor: '#EF4444',
-            label: 'Needs Work',
-        };
-    }
+// Traffic light colors for scores
+const getScoreColor = (score: number): string => {
+    if (score >= 8) return '#10B981'; // Green
+    if (score >= 5) return '#F59E0B'; // Yellow/Orange
+    return '#EF4444'; // Red
 };
 
-interface QuestionCardProps {
+// Format date
+const formatDate = (timestamp: number): string => {
+    const date = new Date(timestamp);
+    return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+    });
+};
+
+// ============================================
+// QUESTION ROW COMPONENT (Clean, no metrics)
+// ============================================
+interface QuestionRowProps {
     question: QuestionResult;
-    index: number;
+    onPress: () => void;
+}
+
+const QuestionRow: React.FC<QuestionRowProps> = ({ question, onPress }) => {
+    const scoreColor = getScoreColor(question.score);
+
+    return (
+        <TouchableOpacity
+            style={styles.questionRow}
+            onPress={onPress}
+            activeOpacity={0.7}
+        >
+            <Text style={styles.questionText} numberOfLines={1}>
+                {question.topic}
+            </Text>
+            <View style={[styles.scoreIndicator, { backgroundColor: scoreColor }]}>
+                <Text style={styles.scoreIndicatorText}>
+                    {question.score.toFixed(1)}
+                </Text>
+            </View>
+        </TouchableOpacity>
+    );
+};
+
+// ============================================
+// DETAIL VIEW COMPONENT (Full question + metrics + feedback)
+// ============================================
+interface DetailViewProps {
+    visible: boolean;
+    question: QuestionResult | null;
     isFavorite: boolean;
+    onClose: () => void;
     onToggleFavorite: () => void;
 }
 
-// Sub-component for individual question cards
-const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, isFavorite, onToggleFavorite }) => {
-    const colors = getScoreColor(question.score);
+const DetailView: React.FC<DetailViewProps> = ({
+    visible,
+    question,
+    isFavorite,
+    onClose,
+    onToggleFavorite
+}) => {
+    if (!visible || !question) return null;
 
-    // Safely access metrics with fallback
     const metrics = (question as any).metrics || { accuracy: 0, depth: 0, structure: 0 };
 
+    const handleFavorite = async () => {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        onToggleFavorite();
+    };
+
     return (
-        <View
-            style={[
-                styles.card,
-                {
-                    backgroundColor: colors.backgroundColor,
-                    borderColor: colors.borderColor,
-                },
-            ]}
-        >
-            {/* Header Row */}
-            <View style={styles.cardHeader}>
-                <View style={styles.cardHeaderLeft}>
-                    {/* Score Badge */}
-                    <View
-                        style={[
-                            styles.scoreBadge,
-                            {
-                                backgroundColor: colors.backgroundColor,
-                                borderColor: colors.borderColor,
-                            },
-                        ]}
-                    >
-                        <Text
-                            style={[
-                                styles.scoreBadgeText,
-                                { color: colors.textColor },
-                            ]}
-                        >
-                            {question.score.toFixed(1)}
-                        </Text>
-                    </View>
-
-                    {/* Topic and Label */}
-                    <View style={styles.topicContainer}>
-                        <Text style={styles.topicText} numberOfLines={2}>
-                            Q{index + 1}: {question.topic}
-                        </Text>
-                        <Text
-                            style={[
-                                styles.scoreLabel,
-                                { color: colors.textColor },
-                            ]}
-                        >
-                            {colors.label}
-                        </Text>
-                    </View>
-                </View>
-
-                {/* Favorite Button */}
-                <TouchableOpacity
-                    onPress={onToggleFavorite}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    style={styles.favoriteButton}
-                >
-                    <Ionicons
-                        name={isFavorite ? "star" : "star-outline"}
-                        size={22}
-                        color={isFavorite ? "#FFD700" : "rgba(255, 255, 255, 0.5)"}
-                    />
+        <View style={styles.detailOverlay}>
+            <View style={styles.detailCard}>
+                {/* Close button */}
+                <TouchableOpacity style={styles.detailCloseBtn} onPress={onClose}>
+                    <Ionicons name="chevron-back" size={24} color="#333" />
                 </TouchableOpacity>
-            </View>
 
-            {/* Feedback Section */}
-            <View style={styles.feedbackSection}>
-                <Text style={styles.feedbackLabel}>AI FEEDBACK:</Text>
-                <Text style={styles.feedbackText} numberOfLines={4}>
-                    {question.feedback}
-                </Text>
-            </View>
+                <ScrollView
+                    style={styles.detailScroll}
+                    contentContainerStyle={styles.detailScrollContent}
+                    showsVerticalScrollIndicator={false}
+                >
+                    {/* Full Question */}
+                    <View style={styles.detailHeader}>
+                        <Text style={styles.detailQuestion}>{question.topic}</Text>
+                        <TouchableOpacity onPress={handleFavorite} style={styles.favButton}>
+                            <Ionicons
+                                name={isFavorite ? "star" : "star-outline"}
+                                size={26}
+                                color={isFavorite ? "#FFD700" : "#999"}
+                            />
+                        </TouchableOpacity>
+                    </View>
 
-            {/* Metrics Pills */}
-            <View style={styles.metricsContainer}>
-                <View style={styles.metricPill}>
-                    <Text style={styles.metricLabel}>Accuracy</Text>
-                    <Text style={styles.metricValue}>{metrics.accuracy}/10</Text>
-                </View>
-                <View style={styles.metricPill}>
-                    <Text style={styles.metricLabel}>Depth</Text>
-                    <Text style={styles.metricValue}>{metrics.depth}/10</Text>
-                </View>
-                <View style={styles.metricPill}>
-                    <Text style={styles.metricLabel}>Structure</Text>
-                    <Text style={styles.metricValue}>{metrics.structure}/10</Text>
-                </View>
+                    {/* Score */}
+                    <View style={styles.detailScoreRow}>
+                        <Text style={[styles.detailScore, { color: getScoreColor(question.score) }]}>
+                            {question.score.toFixed(1)}/10
+                        </Text>
+                    </View>
+
+                    {/* MANDATORY METRICS */}
+                    <View style={styles.metricsBlock}>
+                        <Text style={styles.metricsTitle}>PERFORMANCE METRICS</Text>
+                        <View style={styles.metricsRow}>
+                            <View style={[styles.metricPill, { backgroundColor: `${getScoreColor(metrics.accuracy)}15` }]}>
+                                <Text style={styles.metricLabel}>Accuracy</Text>
+                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.accuracy) }]}>
+                                    {metrics.accuracy}/10
+                                </Text>
+                            </View>
+                            <View style={[styles.metricPill, { backgroundColor: `${getScoreColor(metrics.depth)}15` }]}>
+                                <Text style={styles.metricLabel}>Depth</Text>
+                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.depth) }]}>
+                                    {metrics.depth}/10
+                                </Text>
+                            </View>
+                            <View style={[styles.metricPill, { backgroundColor: `${getScoreColor(metrics.structure)}15` }]}>
+                                <Text style={styles.metricLabel}>Structure</Text>
+                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.structure) }]}>
+                                    {metrics.structure}/10
+                                </Text>
+                            </View>
+                        </View>
+                    </View>
+
+                    {/* AI Feedback */}
+                    <View style={styles.feedbackBlock}>
+                        <Text style={styles.feedbackTitle}>AI FEEDBACK</Text>
+                        <Text style={styles.feedbackText}>{question.feedback}</Text>
+                    </View>
+
+                    {/* Your Answer (if available) */}
+                    {question.userAnswer && (
+                        <View style={styles.answerBlock}>
+                            <Text style={styles.answerTitle}>YOUR ANSWER</Text>
+                            <Text style={styles.answerText}>{question.userAnswer}</Text>
+                        </View>
+                    )}
+                </ScrollView>
             </View>
         </View>
     );
 };
 
-export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, report }) => {
-    const [localQuestions, setLocalQuestions] = useState<QuestionResult[]>([]);
+// ============================================
+// MAIN RESULTS MODAL
+// ============================================
+export const ResultsModal: React.FC<ResultsModalProps> = ({
+    visible,
+    onClose,
+    report,
+    roleTitle = "Interview Session"
+}) => {
     const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+    const [selectedQuestion, setSelectedQuestion] = useState<QuestionResult | null>(null);
+    const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+
+    // Track if this session has been saved (prevent duplicate saves)
+    const sessionSavedRef = useRef<boolean>(false);
 
     // Generate unique ID for a question
     const getQuestionId = (question: QuestionResult, index: number): string => {
-        return `q_${question.topic.replace(/\s+/g, '_').substring(0, 20)}_${index}_${question.score}`;
+        return `q_${question.topic.replace(/\s+/g, '_').substring(0, 20)}_${index}`;
     };
 
     // Load favorites when modal opens
     useEffect(() => {
         if (visible) {
-            console.log("⭐ [RESULTS MODAL] Loading favorites...");
             getFavoriteIds().then(ids => {
-                console.log("⭐ [RESULTS MODAL] Loaded favorite IDs:", ids.size);
                 setFavoriteIds(ids);
-            });
+            }).catch(() => setFavoriteIds(new Set()));
         }
     }, [visible]);
 
-    // Sync local questions when modal opens or report changes
+    // AUTO-SAVE: Save session to history when modal first opens
     useEffect(() => {
-        console.log("🔍 [RESULTS MODAL] useEffect triggered");
-        if (visible && report?.questions && report.questions.length > 0) {
-            console.log("✅ [RESULTS MODAL] Setting localQuestions:", report.questions.length);
-            setLocalQuestions([...report.questions]);
-        }
-    }, [visible, report?.questions]);
+        if (visible && report && !sessionSavedRef.current) {
+            sessionSavedRef.current = true;
 
-    // Handle favorite toggle with haptic feedback
+            // Save in background (non-blocking)
+            saveSession(
+                roleTitle,
+                report.averageScore,
+                report.overallSummary,
+                report.questions
+            ).then(session => {
+                console.log('💾 [RESULTS] Session auto-saved:', session.id);
+            }).catch(error => {
+                console.error('❌ [RESULTS] Failed to auto-save session:', error);
+            });
+        }
+
+        // Reset saved flag when modal closes (for next session)
+        if (!visible) {
+            sessionSavedRef.current = false;
+        }
+    }, [visible, report, roleTitle]);
+
+    // Handle favorite toggle
     const handleToggleFavorite = async (question: QuestionResult, index: number) => {
         const questionId = getQuestionId(question, index);
-        console.log("⭐ [RESULTS MODAL] Toggle favorite:", questionId);
 
-        // Haptic feedback
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-        // Optimistic UI update
+        // Optimistic update
         setFavoriteIds(prev => {
             const newSet = new Set(prev);
             if (newSet.has(questionId)) {
@@ -205,7 +249,7 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, re
             return newSet;
         });
 
-        // Create favorite question object
+        // Persist
         const favoriteQuestion: FavoriteQuestion = {
             id: questionId,
             topic: question.topic,
@@ -216,258 +260,333 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, re
             timestamp: Date.now(),
         };
 
-        // Persist to storage (in background)
-        toggleFavorite(favoriteQuestion).then(result => {
-            console.log(`⭐ [RESULTS MODAL] ${result.added ? 'Added to' : 'Removed from'} favorites`);
-        });
+        toggleFavorite(favoriteQuestion).catch(console.error);
     };
 
     // Handle empty state
-    if (!report || !report.questions || report.questions.length === 0) {
-        return (
-            <Modal visible={visible} transparent animationType="fade">
-                <BlurView intensity={80} tint="dark" style={styles.blurContainer}>
-                    <View style={styles.modalContainer}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>Interview Results</Text>
-                            <TouchableOpacity onPress={onClose}>
-                                <Ionicons name="close-circle" size={32} color="#FFF" />
-                            </TouchableOpacity>
-                        </View>
-                        <View style={styles.emptyState}>
-                            <Text style={styles.emptyStateText}>No questions available</Text>
-                        </View>
-                    </View>
-                </BlurView>
-            </Modal>
-        );
+    if (!report) {
+        return null;
     }
+
+    const totalScore = report.averageScore;
+    const totalScoreColor = getScoreColor(totalScore);
+    const sessionDate = formatDate(report.timestamp || Date.now());
 
     return (
         <Modal visible={visible} transparent animationType="fade">
-            <BlurView intensity={80} tint="dark" style={styles.blurContainer}>
-                <View style={styles.modalContainer}>
-                    {/* Header */}
-                    <View style={styles.modalHeader}>
+            <BlurView intensity={40} tint="light" style={styles.blurContainer}>
+                <View style={styles.modalCard}>
+                    {/* ===== HEADER ===== */}
+                    <View style={styles.header}>
                         <View style={styles.headerLeft}>
-                            <Text style={styles.modalTitle}>Interview Results</Text>
-                            <Text style={styles.averageScore}>
-                                Average Score: {report.averageScore.toFixed(1)}/10
-                            </Text>
+                            <Text style={styles.roleTitle}>{roleTitle}</Text>
+                            <Text style={styles.dateText}>{sessionDate}</Text>
                         </View>
-                        <TouchableOpacity
-                            onPress={onClose}
-                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        >
-                            <Ionicons name="close-circle" size={32} color="#FFF" />
-                        </TouchableOpacity>
+                        <View style={styles.headerRight}>
+                            <Text style={[styles.totalScore, { color: totalScoreColor }]}>
+                                {totalScore.toFixed(1)}
+                            </Text>
+                            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+                                <Ionicons name="close" size={28} color="#333" />
+                            </TouchableOpacity>
+                        </View>
                     </View>
 
-                    {/* ScrollView with Question Cards - wrapped in flex View */}
-                    <View style={{ flex: 1 }}>
-                        <ScrollView
-                            style={styles.scrollView}
-                            contentContainerStyle={styles.scrollContent}
-                            showsVerticalScrollIndicator={false}
-                        >
-                            {localQuestions.length === 0 ? (
-                                <View style={styles.emptyState}>
-                                    <Text style={styles.emptyStateText}>
-                                        DEBUG: localQuestions is empty
-                                    </Text>
-                                    <Text style={styles.emptyStateText}>
-                                        report.questions: {report?.questions?.length || 0}
-                                    </Text>
-                                </View>
-                            ) : (
-                                localQuestions.map((question, index) => {
-                                    const questionId = getQuestionId(question, index);
-                                    return (
-                                        <QuestionCard
-                                            key={questionId}
-                                            question={question}
-                                            index={index}
-                                            isFavorite={favoriteIds.has(questionId)}
-                                            onToggleFavorite={() => handleToggleFavorite(question, index)}
-                                        />
-                                    );
-                                })
-                            )}
-                        </ScrollView>
-                    </View>
+                    {/* ===== QUESTIONS LIST ===== */}
+                    <ScrollView
+                        style={styles.listContainer}
+                        contentContainerStyle={styles.listContent}
+                        showsVerticalScrollIndicator={false}
+                    >
+                        <Text style={styles.sectionTitle}>QUESTIONS ({report.questions.length})</Text>
 
-                    {/* Summary Footer */}
-                    <View style={styles.summaryFooter}>
-                        <Text style={styles.summaryLabel}>OVERALL SUMMARY</Text>
-                        <ScrollView
-                            style={styles.summaryScrollView}
-                            showsVerticalScrollIndicator={false}
-                        >
+                        {report.questions.map((question, index) => (
+                            <QuestionRow
+                                key={getQuestionId(question, index)}
+                                question={question}
+                                onPress={() => {
+                                    setSelectedQuestion(question);
+                                    setSelectedIndex(index);
+                                }}
+                            />
+                        ))}
+
+                        {/* Summary */}
+                        <View style={styles.summaryBlock}>
+                            <Text style={styles.sectionTitle}>OVERALL SUMMARY</Text>
                             <Text style={styles.summaryText}>{report.overallSummary}</Text>
-                        </ScrollView>
-                    </View>
+                        </View>
+                    </ScrollView>
+
+                    {/* ===== DETAIL VIEW (Overlay) ===== */}
+                    <DetailView
+                        visible={selectedQuestion !== null}
+                        question={selectedQuestion}
+                        isFavorite={selectedQuestion && selectedIndex >= 0
+                            ? favoriteIds.has(getQuestionId(selectedQuestion, selectedIndex))
+                            : false
+                        }
+                        onClose={() => {
+                            setSelectedQuestion(null);
+                            setSelectedIndex(-1);
+                        }}
+                        onToggleFavorite={() => {
+                            if (selectedQuestion && selectedIndex >= 0) {
+                                handleToggleFavorite(selectedQuestion, selectedIndex);
+                            }
+                        }}
+                    />
                 </View>
             </BlurView>
         </Modal>
     );
 };
 
+// ============================================
+// STYLES
+// ============================================
 const styles = StyleSheet.create({
+    // Blur background
     blurContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
     },
-    modalContainer: {
-        width: '90%',
+
+    // Main card (Light theme)
+    modalCard: {
+        width: '92%',
         height: '85%',  // FIXED: Changed from maxHeight to height
-        backgroundColor: 'rgba(20, 20, 20, 0.95)',
+        backgroundColor: 'rgba(255, 255, 255, 0.95)',
         borderRadius: 25,
-        borderWidth: 1,
-        borderColor: 'rgba(255, 255, 255, 0.1)',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.15,
+        shadowRadius: 25,
+        elevation: 15,
         overflow: 'hidden',
     },
-    modalHeader: {
+
+    // ===== HEADER =====
+    header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: 20,
+        alignItems: 'flex-start',
+        paddingHorizontal: 24,
+        paddingTop: 24,
+        paddingBottom: 16,
         borderBottomWidth: 1,
-        borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+        borderBottomColor: 'rgba(0, 0, 0, 0.05)',
     },
     headerLeft: {
         flex: 1,
     },
-    modalTitle: {
-        fontSize: 24,
+    roleTitle: {
+        fontSize: 22,
+        fontWeight: 'bold',
+        color: '#000',
+        marginBottom: 4,
+    },
+    dateText: {
+        fontSize: 14,
+        color: '#666',
+    },
+    headerRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    totalScore: {
+        fontSize: 36,
+        fontWeight: 'bold',
+    },
+    closeBtn: {
+        padding: 4,
+    },
+
+    // ===== LIST =====
+    listContainer: {
+        flex: 1,
+    },
+    listContent: {
+        padding: 20,
+        paddingBottom: 40,
+    },
+    sectionTitle: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#666',
+        letterSpacing: 1,
+        marginBottom: 12,
+        marginTop: 8,
+    },
+
+    // ===== QUESTION ROW (glassButton style) =====
+    questionRow: {
+        flexDirection: 'row',
+        backgroundColor: 'rgba(255, 255, 255, 0.7)',
+        padding: 16,
+        borderRadius: 14,
+        alignItems: 'center',
+        marginBottom: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(0, 0, 0, 0.06)',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.03,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    questionText: {
+        flex: 1,
+        fontSize: 15,
+        color: '#333',
+        fontWeight: '500',
+        marginRight: 12,
+    },
+    scoreIndicator: {
+        width: 44,
+        height: 28,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    scoreIndicatorText: {
+        fontSize: 13,
         fontWeight: 'bold',
         color: '#FFF',
     },
-    averageScore: {
-        fontSize: 14,
-        color: '#999',
-        marginTop: 4,
+
+    // ===== SUMMARY =====
+    summaryBlock: {
+        marginTop: 20,
+        backgroundColor: 'rgba(0, 0, 0, 0.02)',
+        padding: 16,
+        borderRadius: 14,
     },
-    scrollView: {
+    summaryText: {
+        fontSize: 15,
+        color: '#333',
+        lineHeight: 24,
+    },
+
+    // ===== DETAIL VIEW (Overlay) =====
+    detailOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(255, 255, 255, 0.98)',
+        borderRadius: 25,
+    },
+    detailCard: {
         flex: 1,
-        backgroundColor: 'rgba(255, 0, 0, 0.1)',  // DEBUG: Red background to verify ScrollView has space
     },
-    scrollContent: {
-        padding: 20,
-        paddingBottom: 10,
+    detailCloseBtn: {
+        position: 'absolute',
+        top: 16,
+        left: 16,
+        zIndex: 10,
+        padding: 4,
     },
-    card: {
-        borderRadius: 15,
-        borderWidth: 1,
-        padding: 15,
-        marginBottom: 15,
+    detailScroll: {
+        flex: 1,
     },
-    cardHeader: {
+    detailScrollContent: {
+        padding: 24,
+        paddingTop: 60,
+        paddingBottom: 40,
+    },
+    detailHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'flex-start',
-        marginBottom: 12,
+        marginBottom: 16,
     },
-    cardHeaderLeft: {
-        flexDirection: 'row',
+    detailQuestion: {
         flex: 1,
-        alignItems: 'flex-start',
-    },
-    scoreBadge: {
-        width: 50,
-        height: 50,
-        borderRadius: 10,
-        borderWidth: 2,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginRight: 12,
-    },
-    scoreBadgeText: {
         fontSize: 20,
         fontWeight: 'bold',
+        color: '#000',
+        lineHeight: 28,
+        marginRight: 12,
     },
-    topicContainer: {
-        flex: 1,
-    },
-    topicText: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#FFF',
-        marginBottom: 4,
-    },
-    scoreLabel: {
-        fontSize: 12,
-        fontWeight: '600',
-    },
-    favoriteButton: {
+    favButton: {
         padding: 4,
     },
-    feedbackSection: {
-        marginBottom: 15,
+    detailScoreRow: {
+        marginBottom: 24,
     },
-    feedbackLabel: {
-        fontSize: 10,
-        color: '#666',
+    detailScore: {
+        fontSize: 28,
         fontWeight: 'bold',
-        marginBottom: 6,
+    },
+
+    // ===== METRICS BLOCK =====
+    metricsBlock: {
+        marginBottom: 24,
+    },
+    metricsTitle: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#666',
         letterSpacing: 1,
+        marginBottom: 12,
     },
-    feedbackText: {
-        fontSize: 14,
-        color: '#CCC',
-        lineHeight: 20,
-        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    metricsContainer: {
+    metricsRow: {
         flexDirection: 'row',
-        justifyContent: 'space-around',
+        justifyContent: 'space-between',
+        gap: 10,
     },
     metricPill: {
-        backgroundColor: 'rgba(255, 255, 255, 0.05)',
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        borderRadius: 20,
+        flex: 1,
+        paddingVertical: 12,
+        paddingHorizontal: 8,
+        borderRadius: 12,
         alignItems: 'center',
     },
     metricLabel: {
-        fontSize: 10,
-        color: '#999',
-        marginBottom: 2,
+        fontSize: 11,
+        color: '#666',
+        fontWeight: '500',
+        marginBottom: 4,
     },
     metricValue: {
-        fontSize: 14,
-        fontWeight: 'bold',
-        color: '#FFF',
-    },
-    summaryFooter: {
-        borderTopWidth: 1,
-        borderTopColor: 'rgba(255, 255, 255, 0.1)',
-        padding: 20,
-        maxHeight: 150,
-    },
-    summaryLabel: {
-        fontSize: 12,
-        color: '#666',
-        fontWeight: 'bold',
-        marginBottom: 10,
-        letterSpacing: 1,
-    },
-    summaryScrollView: {
-        maxHeight: 100,
-    },
-    summaryText: {
-        fontSize: 14,
-        color: '#CCC',
-        lineHeight: 20,
-    },
-    emptyState: {
-        padding: 40,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    emptyStateText: {
         fontSize: 16,
-        color: '#999',
-        textAlign: 'center',
+        fontWeight: 'bold',
+    },
+
+    // ===== FEEDBACK =====
+    feedbackBlock: {
+        marginBottom: 24,
+    },
+    feedbackTitle: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#666',
+        letterSpacing: 1,
+        marginBottom: 12,
+    },
+    feedbackText: {
+        fontSize: 15,
+        color: '#333',
+        lineHeight: 24,
+    },
+
+    // ===== ANSWER =====
+    answerBlock: {
+        backgroundColor: 'rgba(0, 0, 0, 0.03)',
+        padding: 16,
+        borderRadius: 12,
+    },
+    answerTitle: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#666',
+        letterSpacing: 1,
+        marginBottom: 8,
+    },
+    answerText: {
+        fontSize: 14,
+        color: '#555',
+        lineHeight: 22,
+        fontStyle: 'italic',
     },
 });

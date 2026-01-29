@@ -6,12 +6,13 @@ import {
     TouchableOpacity,
     ScrollView,
     Modal,
-    LayoutAnimation,
     Platform,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { FinalInterviewReport, QuestionResult } from '../../types';
+import { getFavoriteIds, toggleFavorite, FavoriteQuestion } from '../../services/favorites-storage';
 
 interface ResultsModalProps {
     visible: boolean;
@@ -55,11 +56,12 @@ const getScoreColor = (score: number): ScoreColors => {
 interface QuestionCardProps {
     question: QuestionResult;
     index: number;
-    onDelete: () => void;
+    isFavorite: boolean;
+    onToggleFavorite: () => void;
 }
 
 // Sub-component for individual question cards
-const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, onDelete }) => {
+const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, isFavorite, onToggleFavorite }) => {
     const colors = getScoreColor(question.score);
 
     // Safely access metrics with fallback
@@ -114,13 +116,17 @@ const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, onDelete }
                     </View>
                 </View>
 
-                {/* Delete Button */}
+                {/* Favorite Button */}
                 <TouchableOpacity
-                    onPress={onDelete}
+                    onPress={onToggleFavorite}
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    style={styles.deleteButton}
+                    style={styles.favoriteButton}
                 >
-                    <Ionicons name="trash-outline" size={20} color="rgba(255, 255, 255, 0.6)" />
+                    <Ionicons
+                        name={isFavorite ? "star" : "star-outline"}
+                        size={22}
+                        color={isFavorite ? "#FFD700" : "rgba(255, 255, 255, 0.5)"}
+                    />
                 </TouchableOpacity>
             </View>
 
@@ -153,43 +159,67 @@ const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, onDelete }
 
 export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, report }) => {
     const [localQuestions, setLocalQuestions] = useState<QuestionResult[]>([]);
+    const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
 
-    // DEBUG: Log on every render
-    console.log("🎨 [RESULTS MODAL RENDER]");
-    console.log("   - visible:", visible);
-    console.log("   - report exists:", !!report);
-    console.log("   - report.questions:", report?.questions?.length || 0);
-    console.log("   - localQuestions.length:", localQuestions.length);
+    // Generate unique ID for a question
+    const getQuestionId = (question: QuestionResult, index: number): string => {
+        return `q_${question.topic.replace(/\s+/g, '_').substring(0, 20)}_${index}_${question.score}`;
+    };
+
+    // Load favorites when modal opens
+    useEffect(() => {
+        if (visible) {
+            console.log("⭐ [RESULTS MODAL] Loading favorites...");
+            getFavoriteIds().then(ids => {
+                console.log("⭐ [RESULTS MODAL] Loaded favorite IDs:", ids.size);
+                setFavoriteIds(ids);
+            });
+        }
+    }, [visible]);
 
     // Sync local questions when modal opens or report changes
     useEffect(() => {
         console.log("🔍 [RESULTS MODAL] useEffect triggered");
-        console.log("   - visible:", visible);
-        console.log("   - report:", !!report);
-        console.log("   - report.questions:", report?.questions?.length);
-
         if (visible && report?.questions && report.questions.length > 0) {
             console.log("✅ [RESULTS MODAL] Setting localQuestions:", report.questions.length);
-            console.log("   - First question:", JSON.stringify(report.questions[0], null, 2));
             setLocalQuestions([...report.questions]);
-        } else {
-            console.log("⚠️ [RESULTS MODAL] NOT setting localQuestions - conditions not met");
         }
     }, [visible, report?.questions]);
 
-    // Handle delete with animation
-    const handleDeleteQuestion = (questionId: string) => {
-        // Configure animation before state change
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    // Handle favorite toggle with haptic feedback
+    const handleToggleFavorite = async (question: QuestionResult, index: number) => {
+        const questionId = getQuestionId(question, index);
+        console.log("⭐ [RESULTS MODAL] Toggle favorite:", questionId);
 
-        // Filter out the deleted question
-        setLocalQuestions((prev) =>
-            prev.filter((q, index) => {
-                // Use index as ID since QuestionResult doesn't have an id field
-                const itemId = `${q.topic}-${index}`;
-                return itemId !== questionId;
-            })
-        );
+        // Haptic feedback
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+        // Optimistic UI update
+        setFavoriteIds(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(questionId)) {
+                newSet.delete(questionId);
+            } else {
+                newSet.add(questionId);
+            }
+            return newSet;
+        });
+
+        // Create favorite question object
+        const favoriteQuestion: FavoriteQuestion = {
+            id: questionId,
+            topic: question.topic,
+            score: question.score,
+            feedback: question.feedback,
+            userAnswer: question.userAnswer || '',
+            metrics: (question as any).metrics,
+            timestamp: Date.now(),
+        };
+
+        // Persist to storage (in background)
+        toggleFavorite(favoriteQuestion).then(result => {
+            console.log(`⭐ [RESULTS MODAL] ${result.added ? 'Added to' : 'Removed from'} favorites`);
+        });
     };
 
     // Handle empty state
@@ -251,15 +281,14 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, re
                                 </View>
                             ) : (
                                 localQuestions.map((question, index) => {
-                                    console.log(`📦 [RESULTS MODAL] Rendering card ${index}: ${question.topic}`);
+                                    const questionId = getQuestionId(question, index);
                                     return (
                                         <QuestionCard
-                                            key={`${question.topic}-${index}`}
+                                            key={questionId}
                                             question={question}
                                             index={index}
-                                            onDelete={() =>
-                                                handleDeleteQuestion(`${question.topic}-${index}`)
-                                            }
+                                            isFavorite={favoriteIds.has(questionId)}
+                                            onToggleFavorite={() => handleToggleFavorite(question, index)}
                                         />
                                     );
                                 })
@@ -370,7 +399,7 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: '600',
     },
-    deleteButton: {
+    favoriteButton: {
         padding: 4,
     },
     feedbackSection: {

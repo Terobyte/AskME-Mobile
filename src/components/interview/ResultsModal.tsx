@@ -61,7 +61,7 @@ interface QuestionCardProps {
 // Sub-component for individual question cards
 const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, onDelete }) => {
     const colors = getScoreColor(question.score);
-    
+
     // Safely access metrics with fallback
     const metrics = (question as any).metrics || { accuracy: 0, depth: 0, structure: 0 };
 
@@ -154,12 +154,28 @@ const QuestionCard: React.FC<QuestionCardProps> = ({ question, index, onDelete }
 export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, report }) => {
     const [localQuestions, setLocalQuestions] = useState<QuestionResult[]>([]);
 
+    // DEBUG: Log on every render
+    console.log("🎨 [RESULTS MODAL RENDER]");
+    console.log("   - visible:", visible);
+    console.log("   - report exists:", !!report);
+    console.log("   - report.questions:", report?.questions?.length || 0);
+    console.log("   - localQuestions.length:", localQuestions.length);
+
     // Sync local questions when modal opens or report changes
     useEffect(() => {
-        if (visible && report?.questions) {
+        console.log("🔍 [RESULTS MODAL] useEffect triggered");
+        console.log("   - visible:", visible);
+        console.log("   - report:", !!report);
+        console.log("   - report.questions:", report?.questions?.length);
+
+        if (visible && report?.questions && report.questions.length > 0) {
+            console.log("✅ [RESULTS MODAL] Setting localQuestions:", report.questions.length);
+            console.log("   - First question:", JSON.stringify(report.questions[0], null, 2));
             setLocalQuestions([...report.questions]);
+        } else {
+            console.log("⚠️ [RESULTS MODAL] NOT setting localQuestions - conditions not met");
         }
-    }, [visible, report]);
+    }, [visible, report?.questions]);
 
     // Handle delete with animation
     const handleDeleteQuestion = (questionId: string) => {
@@ -217,31 +233,39 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({ visible, onClose, re
                         </TouchableOpacity>
                     </View>
 
-                    {/* ScrollView with Question Cards */}
-                    <ScrollView
-                        style={styles.scrollView}
-                        contentContainerStyle={styles.scrollContent}
-                        showsVerticalScrollIndicator={false}
-                    >
-                        {localQuestions.length === 0 ? (
-                            <View style={styles.emptyState}>
-                                <Text style={styles.emptyStateText}>
-                                    No questions remaining
-                                </Text>
-                            </View>
-                        ) : (
-                            localQuestions.map((question, index) => (
-                                <QuestionCard
-                                    key={`${question.topic}-${index}`}
-                                    question={question}
-                                    index={index}
-                                    onDelete={() =>
-                                        handleDeleteQuestion(`${question.topic}-${index}`)
-                                    }
-                                />
-                            ))
-                        )}
-                    </ScrollView>
+                    {/* ScrollView with Question Cards - wrapped in flex View */}
+                    <View style={{ flex: 1 }}>
+                        <ScrollView
+                            style={styles.scrollView}
+                            contentContainerStyle={styles.scrollContent}
+                            showsVerticalScrollIndicator={false}
+                        >
+                            {localQuestions.length === 0 ? (
+                                <View style={styles.emptyState}>
+                                    <Text style={styles.emptyStateText}>
+                                        DEBUG: localQuestions is empty
+                                    </Text>
+                                    <Text style={styles.emptyStateText}>
+                                        report.questions: {report?.questions?.length || 0}
+                                    </Text>
+                                </View>
+                            ) : (
+                                localQuestions.map((question, index) => {
+                                    console.log(`📦 [RESULTS MODAL] Rendering card ${index}: ${question.topic}`);
+                                    return (
+                                        <QuestionCard
+                                            key={`${question.topic}-${index}`}
+                                            question={question}
+                                            index={index}
+                                            onDelete={() =>
+                                                handleDeleteQuestion(`${question.topic}-${index}`)
+                                            }
+                                        />
+                                    );
+                                })
+                            )}
+                        </ScrollView>
+                    </View>
 
                     {/* Summary Footer */}
                     <View style={styles.summaryFooter}>
@@ -267,7 +291,7 @@ const styles = StyleSheet.create({
     },
     modalContainer: {
         width: '90%',
-        maxHeight: '85%',
+        height: '85%',  // FIXED: Changed from maxHeight to height
         backgroundColor: 'rgba(20, 20, 20, 0.95)',
         borderRadius: 25,
         borderWidth: 1,
@@ -297,6 +321,7 @@ const styles = StyleSheet.create({
     },
     scrollView: {
         flex: 1,
+        backgroundColor: 'rgba(255, 0, 0, 0.1)',  // DEBUG: Red background to verify ScrollView has space
     },
     scrollContent: {
         padding: 20,

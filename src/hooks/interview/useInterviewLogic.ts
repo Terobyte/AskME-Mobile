@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import { Alert, LayoutAnimation } from 'react-native';
-import { 
-  InterviewPlan, 
-  EvaluationMetrics, 
-  QuestionResult, 
+import {
+  InterviewPlan,
+  EvaluationMetrics,
+  QuestionResult,
   FinalInterviewReport,
   InterviewMode,
-  ChatMessage 
+  ChatMessage
 } from '../../types';
 import { GeminiAgentService } from '../../services/gemini-agent';
 import { generateInterviewPlan } from '../../interview-planner';
@@ -21,7 +21,7 @@ interface UseInterviewLogicConfig {
   // Audio coordination (dependency injection)
   onAIStart?: () => void;         // Called when AI starts speaking
   onAIEnd?: () => void;           // Called when AI finishes speaking
-  
+
   // Optional callbacks
   onInterviewComplete?: (results: FinalInterviewReport) => void;
 }
@@ -33,37 +33,38 @@ interface UseInterviewLogicReturn {
   currentTopic: string;
   isProcessing: boolean;
   isFinished: boolean;
-  
+
   // Metrics
   metrics: EvaluationMetrics | null;
   topicSuccess: number;
   topicPatience: number;
-  
+
   // Interview state
   plan: InterviewPlan | null;
   currentTopicIndex: number;
   isLobbyPhase: boolean;
   isPlanReady: boolean;
   finalReport: FinalInterviewReport | null;
-  
+
   // Functions
   initializeInterview: (resume: string, jobDescription: string, mode: InterviewMode) => Promise<void>;
   processUserInput: (text: string) => Promise<void>;
   forceFinish: () => Promise<void>;
   restart: () => void;
-  
+  simulateAnswer: (intentType: string) => Promise<string | null>;  // NEW
+
   // Computed
   progress: number;
 }
 
 const INITIAL_PLAN: InterviewPlan = {
   meta: { mode: 'short', total_estimated_time: '5m' },
-  queue: [{ 
-    id: 'intro', 
-    topic: 'Introduction', 
-    type: 'Intro', 
-    estimated_time: '5m', 
-    context: "The user is introducing themselves. Ask them to describe their background and experience briefly." 
+  queue: [{
+    id: 'intro',
+    topic: 'Introduction',
+    type: 'Intro',
+    estimated_time: '5m',
+    context: "The user is introducing themselves. Ask them to describe their background and experience briefly."
   }]
 };
 
@@ -104,7 +105,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     ? plan.queue[Math.min(currentTopicIndex, plan.queue.length - 1)].topic
     : "Introduction";
 
-  const progress = plan 
+  const progress = plan
     ? Math.min((currentTopicIndex / plan.queue.length) * 100, 100)
     : 0;
 
@@ -124,7 +125,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       // Force speaker mode before TTS playback
       console.log("🔊 Forcing speaker output for TTS...");
       await safeAudioModeSwitch('playback');
-      
+
       // Small delay to ensure audio mode is applied
       await new Promise(resolve => setTimeout(resolve, 100));
 
@@ -505,8 +506,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   };
 
   const initializeInterview = async (
-    resume: string, 
-    jobDescription: string, 
+    resume: string,
+    jobDescription: string,
     mode: InterviewMode
   ): Promise<void> => {
     try {
@@ -568,12 +569,58 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       console.error("Force Finish Audio Stop Error:", e);
     }
 
+    const timestamp = Date.now();
+    const mockQuestions: QuestionResult[] = [
+      {
+        topic: "React Native Performance Optimization",
+        userAnswer: "I would use FlatList with proper optimization props like getItemLayout, remove console.logs, and use Hermes engine.",
+        score: 8.5,
+        feedback: "Excellent understanding of performance bottlenecks. You correctly identified FlatList vs ScrollView trade-offs and explained VirtualizedList internals. Could improve by mentioning Hermes engine optimizations.",
+        metrics: { accuracy: 9, depth: 8, structure: 8, reasoning: "Strong technical foundation" }
+      },
+      {
+        topic: "State Management Patterns",
+        userAnswer: "I prefer Redux Toolkit for large apps, Context for simple state, and Zustand for medium complexity.",
+        score: 9.0,
+        feedback: "Strong knowledge of Redux, Context API, and Zustand. Your explanation of Redux Toolkit vs classic Redux was spot-on. Great example using real-world use cases.",
+        metrics: { accuracy: 9, depth: 9, structure: 9, reasoning: "Comprehensive understanding" }
+      },
+      {
+        topic: "Native Module Development",
+        userAnswer: "I create native modules by bridging iOS and Android code, exposing methods through the bridge.",
+        score: 7.2,
+        feedback: "Good foundation in bridging iOS/Android native code. You understand the basics of TurboModules but missed some advanced concepts like JSI threading. Practice building more complex native modules.",
+        metrics: { accuracy: 7, depth: 7, structure: 8, reasoning: "Needs JSI knowledge" }
+      },
+      {
+        topic: "Memory Management & Leaks",
+        userAnswer: "I clean up timers and listeners in useEffect cleanup, and avoid closures that capture large objects.",
+        score: 6.5,
+        feedback: "You know the common pitfalls (listeners, timers, closures) but struggled to explain WeakMap/WeakRef usage. Your debugging approach using Performance Monitor was correct. Study Hermes memory profiling tools.",
+        metrics: { accuracy: 6, depth: 6, structure: 7, reasoning: "Basic understanding" }
+      },
+      {
+        topic: "Advanced Animation Techniques",
+        userAnswer: "I use Animated API for simple animations and try to use native driver when possible.",
+        score: 4.0,
+        feedback: "Basic knowledge of Animated API but lacked understanding of Reanimated 2 worklets. Couldn't explain the difference between UI thread and JS thread execution. Needs more hands-on practice with complex animations.",
+        metrics: { accuracy: 4, depth: 3, structure: 5, reasoning: "Needs significant improvement" }
+      }
+    ];
+
+    const averageScore = Number((mockQuestions.reduce((sum, q) => sum + q.score, 0) / mockQuestions.length).toFixed(1));
+
     const mockReport: FinalInterviewReport = {
-      questions: [],
-      averageScore: 8.7,
-      overallSummary: "Interview ended via debug mode. You showed great potential in your responses. Keep practicing to improve your technical communication skills!",
-      timestamp: Date.now()
+      questions: mockQuestions,
+      averageScore,
+      overallSummary: "You demonstrated solid fundamentals in React Native development, particularly excelling in performance optimization and state management patterns. Your understanding of native module basics is good, though advanced concepts like JSI and Reanimated worklets need more practice. Focus on deepening your knowledge of memory profiling and modern animation libraries.",
+      timestamp
     };
+
+    console.log("📊 [DEBUG] Mock Report Created:");
+    console.log("📊 [DEBUG] Questions Count:", mockQuestions.length);
+    console.log("📊 [DEBUG] Average Score:", averageScore);
+    console.log("📊 [DEBUG] Full Report:", JSON.stringify(mockReport, null, 2));
 
     setTimeout(() => {
       setFinalReport(mockReport);
@@ -600,6 +647,45 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   };
 
   // ============================================
+  // SIMULATE ANSWER (for DEV Tools)
+  // ============================================
+
+  const simulateAnswer = async (intentType: string): Promise<string | null> => {
+    console.log("⚡ [SIMULATE] Called with intentType:", intentType);
+    console.log("⚡ [SIMULATE] Current state:");
+    console.log("   - plan:", !!plan);
+    console.log("   - currentTopicIndex:", currentTopicIndex);
+    console.log("   - resumeText length:", resumeText.length);
+
+    if (!agentRef.current) {
+      console.error("❌ [SIMULATE] Agent not initialized");
+      return null;
+    }
+
+    if (!plan || !plan.queue[currentTopicIndex]) {
+      console.error("❌ [SIMULATE] No current topic available");
+      return null;
+    }
+
+    const currentTopicData = plan.queue[currentTopicIndex];
+    console.log("⚡ [SIMULATE] Topic:", currentTopicData.topic);
+
+    try {
+      const simulatedAnswer = await agentRef.current.generateSimulatedAnswer(
+        currentTopicData,
+        intentType,
+        resumeText
+      );
+
+      console.log("✅ [SIMULATE] Generated answer:", simulatedAnswer.substring(0, 100) + "...");
+      return simulatedAnswer;
+    } catch (error) {
+      console.error("❌ [SIMULATE] Failed:", error);
+      return null;
+    }
+  };
+
+  // ============================================
   // CLEANUP
   // ============================================
 
@@ -621,25 +707,26 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     currentTopic,
     isProcessing,
     isFinished,
-    
+
     // Metrics
     metrics: currentMetrics,
     topicSuccess,
     topicPatience,
-    
+
     // Interview state
     plan,
     currentTopicIndex,
     isLobbyPhase,
     isPlanReady,
     finalReport,
-    
+
     // Functions
     initializeInterview,
     processUserInput,
     forceFinish,
     restart,
-    
+    simulateAnswer,  // NEW: For DEV tools smart simulation
+
     // Computed
     progress,
   };

@@ -105,6 +105,7 @@ export default function VoiceInterviewScreen() {
         forceFinish,
         restart,
         progress,
+        simulateAnswer,  // NEW: For smart AI simulation
     } = useInterviewLogic({
         onAIStart: async () => {
             // Stop recording when AI starts speaking
@@ -242,26 +243,43 @@ export default function VoiceInterviewScreen() {
         if (isSimulating) return;
 
         setIsSimulating(true);
-        console.log(`⚡ [DEV] Simulating answer: ${debugValue}`);
+        console.log(`⚡ [DEV] Simulating answer with level: ${debugValue}`);
+        console.log(`⚡ [DEV] Current topic: ${currentTopic}`);
 
         try {
-            // For simulation, we'll inject a pre-made text based on the debug value
-            let simText = "";
+            // Special case: "I_AM_READY" is a simple text injection
             if (debugValue === "I_AM_READY") {
-                simText = "I am ready.";
-            } else {
-                // For simplicity, just use a mock response
-                simText = `This is a simulated ${debugValue}-level response to the current question.`;
+                const simText = "I am ready.";
+                console.log(`🤖 [DEV] Using quick text: ${simText}`);
+                setLiveTranscript(simText);
+                await processUserInput(simText);
+                setLiveTranscript("");
+                return;
             }
 
-            console.log(`🤖 [DEV] Simulated Text: ${simText}`);
+            // Use AI to generate a smart, contextual answer
+            console.log(`🤖 [DEV] Generating AI answer for level: ${debugValue}...`);
+            const aiGeneratedAnswer = await simulateAnswer(debugValue);
+
+            if (!aiGeneratedAnswer) {
+                console.error("❌ [DEV] AI returned null, falling back to template");
+                const fallback = `I would approach this ${currentTopic} question by focusing on best practices and my experience.`;
+                setLiveTranscript(fallback);
+                await processUserInput(fallback);
+                setLiveTranscript("");
+                return;
+            }
+
+            console.log(`✅ [DEV] AI Generated Answer: ${aiGeneratedAnswer.substring(0, 100)}...`);
 
             // Inject into system as if user spoke it
-            setLiveTranscript(simText);
-            await processUserInput(simText);
+            setLiveTranscript(aiGeneratedAnswer);
+            await processUserInput(aiGeneratedAnswer);
             setLiveTranscript("");
+
         } catch (e) {
-            console.error("Simulation Failed", e);
+            console.error("❌ Simulation Failed:", e);
+            Alert.alert("Simulation Error", "Could not generate AI answer. Check console.");
         } finally {
             setIsSimulating(false);
         }
@@ -446,7 +464,7 @@ export default function VoiceInterviewScreen() {
             </View>
 
             {/* SCORE REVEAL OVERLAY */}
-            <Modal visible={isFinished} transparent animationType="fade">
+            <Modal visible={isFinished && !showResultsModal} transparent animationType="fade">
                 <BlurView intensity={90} tint="dark" style={styles.blurContainer}>
                     <ScoreReveal
                         score={finalReport ? finalReport.averageScore : 0}

@@ -3,37 +3,37 @@ const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL!
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
 export class GeminiAgentService {
-  private apiKey: string;
-  private history: any[] = [];
-  private resume: string = "";
-  private role: string = "";
-  
-  private baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
-  constructor() {
-    // Prefer environment variable
-    this.apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY || ""; 
-    if (!this.apiKey) console.error("API Key missing! Check .env file.");
-  }
+    private apiKey: string;
+    private history: any[] = [];
+    private resume: string = "";
+    private role: string = "";
 
-  async startInterview(resume: string, role: string, initialContext: InterviewContext): Promise<AiResponse | string> {
-    this.resume = resume;
-    this.role = role;
-    this.history = []; // Reset History
+    private baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
+    constructor() {
+        // Prefer environment variable
+        this.apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY || "";
+        if (!this.apiKey) console.error("API Key missing! Check .env file.");
+    }
 
-    // Send First Trigger (Uses Voice Generation logic for Intro)
-    const introContext: VoiceGenerationContext = {
-        currentTopic: initialContext.currentTopic,
-        nextTopic: null,
-        transitionMode: 'STAY' // Normal flow for intro
-    };
-    
-    // Hack: We simulate the "Intro" prompt as a voice generation task
-    return await this.generateVoiceResponse(introContext, "Start the interview. Introduce yourself as AskME and ask me to introduce myself.");
-  }
+    async startInterview(resume: string, role: string, initialContext: InterviewContext): Promise<AiResponse | string> {
+        this.resume = resume;
+        this.role = role;
+        this.history = []; // Reset History
 
-  // --- 1. ANALYSIS JUDGE ---
-  async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic, lastAiQuestion: string): Promise<AnalysisResponse | string> {
-      const prompt = `
+        // Send First Trigger (Uses Voice Generation logic for Intro)
+        const introContext: VoiceGenerationContext = {
+            currentTopic: initialContext.currentTopic,
+            nextTopic: null,
+            transitionMode: 'STAY' // Normal flow for intro
+        };
+
+        // Hack: We simulate the "Intro" prompt as a voice generation task
+        return await this.generateVoiceResponse(introContext, "Start the interview. Introduce yourself as AskME and ask me to introduce myself.");
+    }
+
+    // --- 1. ANALYSIS JUDGE ---
+    async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic, lastAiQuestion: string): Promise<AnalysisResponse | string> {
+        const prompt = `
       ROLE: Analytical Judge (JSON ONLY)
       TASK: Evaluate the candidate's answer.
       
@@ -43,54 +43,65 @@ export class GeminiAgentService {
       - ACTUAL QUESTION ASKED TO CANDIDATE: "${lastAiQuestion}"
       - User Input: "${userText}"
       
-      INTENT CLASSIFICATION RULES:
+      ===== INTENT CLASSIFICATION RULES =====
       - "GIVE_UP": User says "I don't know", "Skip", "Next", "Pass".
       - "SHOW_ANSWER": User asks "Tell me the answer", "What is it?", "How would you answer?".
-      - "CLARIFICATION": User asks "Can you repeat?", "Rephrase please?".
+      - "CLARIFICATION": User asks "Can you repeat?", "Rephrase please?", "What do you mean?", "I don't understand the question".
       - "READY_CONFIRM": User says "I'm ready", "Let's start", "Go ahead", "I am prepared".
       - "NONSENSE": The user is trolling, speaking gibberish, repeating words mindlessly (e.g., "blah blah", "yes yes yes"), or referencing pop culture/irrelevant topics (e.g., "I live in Bikini Bottom") that have nothing to do with the interview.
-      - "ATTEMPT": User tries to answer (even if wrong).
+        ⚠️ CRITICAL: NONSENSE is the ONLY intent that triggers anger increase!
+      - "ATTEMPT": User tries to answer (even if wrong or poor quality).
 
-      TASK:
+      ===== CLARIFICATION SPECIAL HANDLING =====
+      If intent = "CLARIFICATION":
+        - This means user is asking for help understanding
+        - Metrics should be: { "accuracy": 0, "depth": 0, "structure": 0, "reasoning": "User requested clarification" }
+        - This does NOT count as a bad answer
+        - System will STAY on current topic and rephrase question
+
+      ===== TASK =====
       Evaluate the answer based on the ACTUAL QUESTION ASKED.
       If the question was a follow-up (e.g., about specific metrics), grade based on that, not the generic topic.
       
-      SCORING (0-10):
+      ===== SCORING (0-10) =====
       - 10: Perfect, deep, expert.
+      - 7-9: Good understanding, correct approach.
+      - 5-6: Basic understanding, some gaps.
       - 1-4: Vague, wrong, or short.
+      - 0: Complete failure or nonsense.
       
-      OUTPUT JSON SCHEMA:
+      ===== OUTPUT JSON SCHEMA =====
       {
         "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" },
         "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER" | "READY_CONFIRM" | "NONSENSE"
       }
       `;
-      
-      const payload = {
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-            temperature: 0.1, // Strict logic
-            responseMimeType: "application/json"
-        }
-      };
-      
-      try {
-          const raw = await this.callGemini(payload);
-          const clean = this.cleanJson(raw);
-          return JSON.parse(clean) as AnalysisResponse;
-      } catch (e) {
-          console.error("Analysis Error:", e);
-          // Fallback
-          return {
-              metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" },
-              intent: "ATTEMPT"
-          };
-      }
-  }
 
-  // --- 3. BATCH EVALUATOR (N-1 Questions) ---
-  async evaluateBatch(history: ChatMessage[]): Promise<QuestionResult[]> {
-      const prompt = `
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+                temperature: 0.1, // Strict logic
+                responseMimeType: "application/json"
+            }
+        };
+
+        try {
+            const raw = await this.callGemini(payload);
+            const clean = this.cleanJson(raw);
+            return JSON.parse(clean) as AnalysisResponse;
+        } catch (e) {
+            console.error("Analysis Error:", e);
+            // Fallback
+            return {
+                metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" },
+                intent: "ATTEMPT"
+            };
+        }
+    }
+
+    // --- 3. BATCH EVALUATOR (N-1 Questions) ---
+    async evaluateBatch(history: ChatMessage[]): Promise<QuestionResult[]> {
+        const prompt = `
       ROLE: Technical Evaluator (JSON ONLY)
       TASK: Analyze these User Answers from a technical interview.
       
@@ -115,25 +126,25 @@ export class GeminiAgentService {
         ...
       ]
       `;
-      
-      const payload = {
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
-      };
-      
-      try {
-          const raw = await this.callGemini(payload);
-          const clean = this.cleanJsonArray(raw); // Use specialized cleaner for Arrays
-          return JSON.parse(clean) as QuestionResult[];
-      } catch (e) {
-          console.error("Batch Eval Error:", e);
-          return [];
-      }
-  }
 
-  // --- 4. FINAL EVALUATOR (Last Question + Summary) ---
-  async evaluateFinal(lastHistoryItem: ChatMessage, previousResults: QuestionResult[]): Promise<{ finalQuestion: QuestionResult, overallSummary: string }> {
-      const prompt = `
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
+        };
+
+        try {
+            const raw = await this.callGemini(payload);
+            const clean = this.cleanJsonArray(raw); // Use specialized cleaner for Arrays
+            return JSON.parse(clean) as QuestionResult[];
+        } catch (e) {
+            console.error("Batch Eval Error:", e);
+            return [];
+        }
+    }
+
+    // --- 4. FINAL EVALUATOR (Last Question + Summary) ---
+    async evaluateFinal(lastHistoryItem: ChatMessage, previousResults: QuestionResult[]): Promise<{ finalQuestion: QuestionResult, overallSummary: string }> {
+        const prompt = `
       ROLE: Lead Interviewer (JSON ONLY)
       TASK: Evaluate the FINAL answer and generate an Overall Summary.
       
@@ -159,34 +170,34 @@ export class GeminiAgentService {
         "overallSummary": "string (3-4 sentences summarizing strengths/weaknesses)"
       }
       `;
-      
-      const payload = {
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, responseMimeType: "application/json" }
-      };
-      
-      try {
-          const raw = await this.callGemini(payload);
-          const clean = this.cleanJson(raw);
-          return JSON.parse(clean);
-      } catch (e) {
-          console.error("Final Eval Error:", e);
-          return {
-              finalQuestion: { 
-                  topic: "Final", 
-                  userAnswer: "", 
-                  score: 0, 
-                  feedback: "Error",
-                  metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" }
-              },
-              overallSummary: "Failed to generate summary."
-          };
-      }
-  }
 
-  // --- 5. DEV TOOLS: SIMULATED CANDIDATE ---
-  async generateSimulatedAnswer(topic: InterviewTopic, intentType: string, resumeText: string): Promise<string> {
-      const prompt = `
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.2, responseMimeType: "application/json" }
+        };
+
+        try {
+            const raw = await this.callGemini(payload);
+            const clean = this.cleanJson(raw);
+            return JSON.parse(clean);
+        } catch (e) {
+            console.error("Final Eval Error:", e);
+            return {
+                finalQuestion: {
+                    topic: "Final",
+                    userAnswer: "",
+                    score: 0,
+                    feedback: "Error",
+                    metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" }
+                },
+                overallSummary: "Failed to generate summary."
+            };
+        }
+    }
+
+    // --- 5. DEV TOOLS: SIMULATED CANDIDATE ---
+    async generateSimulatedAnswer(topic: InterviewTopic, intentType: string, resumeText: string): Promise<string> {
+        const prompt = `
       You are a candidate participating in a technical voice interview.
 
       **YOUR IDENTITY (Rooted in Resume):**
@@ -217,80 +228,80 @@ export class GeminiAgentService {
 
       **CONSTRAINT:** Keep it under 3-5 sentences. Be human.
       `;
-      
-      const payload = {
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.9 } // High creativity for simulation
-      };
-      
-      try {
-          return await this.callGemini(payload);
-      } catch (e) {
-          return "Simulation Error: Could not generate answer.";
-      }
-  }
 
-  // --- 2. VOICE ACTOR ---
-  async generateVoiceResponse(context: VoiceGenerationContext, overridePrompt?: string, history?: ChatMessage[]): Promise<string> {
-      // Build Prompt based on Transition Mode
-      let behaviorInstruction = "";
-      
-      // Inject "No Greeting" Constraint for Intro Topic
-      let greetingConstraint = "";
-      if (context.currentTopic?.id === 'intro' || context.currentTopic?.type === 'Intro') {
-          greetingConstraint = `
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.9 } // High creativity for simulation
+        };
+
+        try {
+            return await this.callGemini(payload);
+        } catch (e) {
+            return "Simulation Error: Could not generate answer.";
+        }
+    }
+
+    // --- 2. VOICE ACTOR ---
+    async generateVoiceResponse(context: VoiceGenerationContext, overridePrompt?: string, history?: ChatMessage[]): Promise<string> {
+        // Build Prompt based on Transition Mode
+        let behaviorInstruction = "";
+
+        // Inject "No Greeting" Constraint for Intro Topic
+        let greetingConstraint = "";
+        if (context.currentTopic?.id === 'intro' || context.currentTopic?.type === 'Intro') {
+            greetingConstraint = `
           CONTEXT: You have ALREADY introduced yourself in the lobby. The user just said "Ready".
           CONSTRAINT: Do NOT say "Hello", "Hi", or state your name again. Simply acknowledge the user's readiness and ask them to introduce themselves.
           `;
-      }
+        }
 
-      // Question Logic Injection
-      let questionLogic = "";
-      if (context.nextTopic) {
-          if (context.nextTopic.type === 'SoftSkill') {
-               questionLogic = `
+        // Question Logic Injection
+        let questionLogic = "";
+        if (context.nextTopic) {
+            if (context.nextTopic.type === 'SoftSkill') {
+                questionLogic = `
                NEXT QUESTION STRATEGY (Soft Skill: "${context.nextTopic.topic}"):
                - Constraint: Do NOT ask generic definition questions (e.g., "What is flexibility?").
                - Instruction: Generate a Situational Question specifically related to the Candidate's Role.
                - Example: "As a Senior Engineer, how do you handle disagreements about code quality?"
                `;
-          } else {
-               questionLogic = `
+            } else {
+                questionLogic = `
                NEXT QUESTION STRATEGY (Technical: "${context.nextTopic.topic}"):
                - Instruction: Randomly choose (50/50) between:
                  A) Scenario: "Imagine you face [Problem] in [Topic]. How do you solve it?"
                  B) Experience: "Tell me about a time you used [Topic] in a complex project."
                `;
-          }
-      }
+            }
+        }
 
-      if (overridePrompt) {
-          behaviorInstruction = `INSTRUCTION: ${overridePrompt}`;
-      } else {
-          switch (context.transitionMode) {
-              case 'STAY':
-                  behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
-                  break;
-              case 'NEXT_FAIL':
-                  behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
-                  break;
-              case 'NEXT_PASS':
-                  behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
-                  break;
-              case 'NEXT_EXPLAIN':
-                  behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
-                  break;
-              case 'FINISH_INTERVIEW':
-                  const mood = (context.angerLevel || 0) > 50 ? "cold and brief" : "warm and encouraging";
-                  behaviorInstruction = `The interview is over. You are ${mood}. Briefly thank the candidate. Give a very short, 1-sentence overall feedback based on the final Anger level (${context.angerLevel}). Say goodbye.`;
-                  break;
-              case 'TERMINATE_ANGER':
-                  behaviorInstruction = `You are furious. The candidate has wasted your time with poor answers. Harshly terminate the interview immediately. Say something like "That's enough. We are done here." and hang up.`;
-                  break;
-          }
-      }
-      
-      const prompt = `
+        if (overridePrompt) {
+            behaviorInstruction = `INSTRUCTION: ${overridePrompt}`;
+        } else {
+            switch (context.transitionMode) {
+                case 'STAY':
+                    behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
+                    break;
+                case 'NEXT_FAIL':
+                    behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
+                    break;
+                case 'NEXT_PASS':
+                    behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
+                    break;
+                case 'NEXT_EXPLAIN':
+                    behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
+                    break;
+                case 'FINISH_INTERVIEW':
+                    const mood = (context.angerLevel || 0) > 50 ? "cold and brief" : "warm and encouraging";
+                    behaviorInstruction = `The interview is over. You are ${mood}. Briefly thank the candidate. Give a very short, 1-sentence overall feedback based on the final Anger level (${context.angerLevel}). Say goodbye.`;
+                    break;
+                case 'TERMINATE_ANGER':
+                    behaviorInstruction = `You are furious. The candidate has wasted your time with poor answers. Harshly terminate the interview immediately. Say something like "That's enough. We are done here." and hang up.`;
+                    break;
+            }
+        }
+
+        const prompt = `
       You are Victoria, a Principal Software Engineer.
       Tone: Professional, slightly strict but fair.
       
@@ -299,74 +310,74 @@ export class GeminiAgentService {
       
       Constraint: Speak naturally as Victoria. Do not repeat robotic phrases. Keep it spoken-word friendly. No markdown. Short and clear.
       `;
-      
-      // Convert history to Gemini format
-      const historyParts = (history || []).map(msg => ({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }]
-      }));
-      
-      const payload = {
-        contents: [
-            ...historyParts, 
-            { role: "user", parts: [{ text: prompt }] }
-        ],
-        generationConfig: { temperature: 0.7 } // Creative for voice
-      };
-      
-      try {
-          const text = await this.callGemini(payload);
-          return text;
-      } catch (e) {
-          return "I'm having trouble speaking right now. Let's move on.";
-      }
-  }
 
-  private async callGemini(payload: any): Promise<string> {
-      const response = await fetch(`${this.baseUrl}?key=${this.apiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-      });
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message);
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  }
+        // Convert history to Gemini format
+        const historyParts = (history || []).map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: [{ text: msg.content }]
+        }));
 
-  private cleanJson(text: string): string {
-    // 1. Remove Markdown Code Blocks (```json ... ```)
-    let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
-    
-    // 2. Trim whitespace
-    cleaned = cleaned.trim();
-    
-    // 3. (Optional) Remove any text before the first '{' or after the last '}'
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-    
-    if (firstBrace !== -1 && lastBrace !== -1) {
-        // Ensure we are slicing correctly even if there is trailing garbage
-        cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+        const payload = {
+            contents: [
+                ...historyParts,
+                { role: "user", parts: [{ text: prompt }] }
+            ],
+            generationConfig: { temperature: 0.7 } // Creative for voice
+        };
+
+        try {
+            const text = await this.callGemini(payload);
+            return text;
+        } catch (e) {
+            return "I'm having trouble speaking right now. Let's move on.";
+        }
     }
-    
-    return cleaned;
-  }
 
-  private cleanJsonArray(text: string): string {
-    // 1. Remove Markdown Code Blocks
-    let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
-    
-    // 2. Trim whitespace
-    cleaned = cleaned.trim();
-    
-    // 3. Find Array bounds (robustness)
-    const firstBracket = cleaned.indexOf('[');
-    const lastBracket = cleaned.lastIndexOf(']');
-    
-    if (firstBracket !== -1 && lastBracket !== -1) {
-        cleaned = cleaned.substring(firstBracket, lastBracket + 1);
+    private async callGemini(payload: any): Promise<string> {
+        const response = await fetch(`${this.baseUrl}?key=${this.apiKey}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error.message);
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
-    
-    return cleaned;
-  }
+
+    private cleanJson(text: string): string {
+        // 1. Remove Markdown Code Blocks (```json ... ```)
+        let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+
+        // 2. Trim whitespace
+        cleaned = cleaned.trim();
+
+        // 3. (Optional) Remove any text before the first '{' or after the last '}'
+        const firstBrace = cleaned.indexOf('{');
+        const lastBrace = cleaned.lastIndexOf('}');
+
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            // Ensure we are slicing correctly even if there is trailing garbage
+            cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+        }
+
+        return cleaned;
+    }
+
+    private cleanJsonArray(text: string): string {
+        // 1. Remove Markdown Code Blocks
+        let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+
+        // 2. Trim whitespace
+        cleaned = cleaned.trim();
+
+        // 3. Find Array bounds (robustness)
+        const firstBracket = cleaned.indexOf('[');
+        const lastBracket = cleaned.lastIndexOf(']');
+
+        if (firstBracket !== -1 && lastBracket !== -1) {
+            cleaned = cleaned.substring(firstBracket, lastBracket + 1);
+        }
+
+        return cleaned;
+    }
 }

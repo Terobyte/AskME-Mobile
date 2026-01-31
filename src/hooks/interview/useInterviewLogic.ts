@@ -51,7 +51,7 @@ interface UseInterviewLogicReturn {
   processUserInput: (text: string) => Promise<void>;
   forceFinish: () => Promise<void>;
   restart: () => void;
-  simulateAnswer: (intentType: string) => Promise<string | null>;  // NEW
+  simulateAnswer: (intentType: string | number) => Promise<string | null>;  // Updated: now accepts number for score
 
   // Computed
   progress: number;
@@ -255,28 +255,11 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
           // --- SPECIAL CASE: INTRO (Index 0) ---
           if (currentTopicIndex === 0) {
-            // 1. NONSENSE CHECK
-            if (analysis.intent === 'NONSENSE') {
-              console.log("🤡 [INTRO] Nonsense detected -> STAY.");
-              setCurrentMetrics(analysis.metrics);
-
-              // Punishment
-              setTopicPatience(prev => Math.min(100, prev + 50));
-              setAnger(prev => Math.min(100, prev + 35));
-
-              const speech = await agentRef.current.generateVoiceResponse({
-                currentTopic: currentTopic,
-                nextTopic: null,
-                transitionMode: 'STAY',
-                angerLevel: anger + 10
-              }, undefined, historyBuffer.current);
-              await playSynchronizedResponse(speech);
-              return;
-            }
-
-            // 2. CLARIFICATION CHECK (Stay if confused)
+            console.log("🎯 [INTRO] Special handling activated");
+            
+            // EXCEPTION: Clarification on Intro should stay
             if (analysis.intent === 'CLARIFICATION') {
-              console.log("🤔 [INTRO] Clarification requested -> STAY.");
+              console.log("🤔 [INTRO] Clarification requested - staying on intro");
               const speech = await agentRef.current.generateVoiceResponse({
                 currentTopic: currentTopic,
                 nextTopic: null,
@@ -285,21 +268,26 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
               await playSynchronizedResponse(speech);
               return;
             }
-
-            // 3. VALID INPUT -> MOVE NEXT
-            console.log("✅ [INTRO] Valid input -> MOVING NEXT.");
-
-            // Reset Stats for Topic 1
-            setTopicSuccess(0);
-            setTopicPatience(0);
-
+            
+            // RULE: All other responses on Intro auto-advance
+            console.log("✅ [INTRO] Auto-advancing to Topic 1");
+            
+            // Apply metrics
             setCurrentMetrics(analysis.metrics);
-
-            // Transition to Topic 1
-            const nextIndex = 1;
-            setCurrentTopicIndex(nextIndex);
-            const nextTopic = plan.queue[nextIndex];
-
+            
+            // Handle NONSENSE - still applies anger penalty but advances
+            if (analysis.intent === 'NONSENSE') {
+              console.log("🤡 [INTRO] Nonsense detected - advancing with anger penalty");
+              setAnger(prev => Math.min(100, prev + 35));
+            }
+            
+            // Force transition to next topic
+            setCurrentTopicIndex(1);
+            setTopicSuccess(0); // Reset for new topic
+            setTopicPatience(0); // Reset for new topic
+            // Anger carries forward (don't reset)
+            
+            const nextTopic = plan.queue[1];
             const speech = await agentRef.current.generateVoiceResponse({
               currentTopic: currentTopic,
               nextTopic: nextTopic,
@@ -307,12 +295,17 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             }, undefined, historyBuffer.current);
 
             await playSynchronizedResponse(speech);
-            return; // EXIT EARLY
+            console.log(`🔄 [INTRO] Transitioned. Anger: ${anger}`);
+            return; // Exit early
           }
 
           // --- BLOCKING CLARIFICATION CHECK ---
           if (analysis.intent === 'CLARIFICATION') {
-            console.log("🛑 [LOGIC] CLARIFICATION DETECTED -> FORCE STAY & RETURN");
+            console.log("🤔 [CLARIFICATION] User asked for clarification");
+            console.log("✅ [CLARIFICATION] State preserved:");
+            console.log(`   Success: ${topicSuccess} (unchanged)`);
+            console.log(`   Patience: ${topicPatience} (unchanged)`);
+            console.log(`   Anger: ${anger} (unchanged)`);
 
             const speech = await agentRef.current.generateVoiceResponse({
               currentTopic: currentTopic,
@@ -361,15 +354,34 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             setCurrentMetrics({ accuracy: 0, depth: 0, structure: 0, reasoning: "Response was identified as nonsense/irrelevant." });
           }
           else {
-            // ATTEMPT -> Normal Scoring
+            // ATTEMPT -> Normal Scoring (ANGER REMOVED FROM FORMULAS PER RULE 2)
             const { accuracy, depth, structure } = analysis.metrics;
             const overall = (accuracy + depth + structure) / 3;
 
             console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`);
 
-            if (overall < 5) newPatience += ((10 - overall) * 7);
-            else if (overall < 7) { newSuccess += (overall * 7); newPatience += 10; }
-            else { newSuccess += (overall * 13); newPatience -= (overall * 3); }
+            // Rule 2: Anger does NOT increase on poor attempts (only NONSENSE or NEXT_FAIL)
+            if (overall < 5) {
+              // E. Poor answer - only patience grows, NO anger
+              newPatience += ((10 - overall) * 7);
+              console.log(`📉 [SCORE] Poor (${overall.toFixed(1)}) - Patience +${((10 - overall) * 7).toFixed(0)}, Anger unchanged`);
+            } else if (overall < 7) {
+              // F. Mediocre answer
+              newSuccess += (overall * 7);
+              newPatience += 10;
+              console.log(`📊 [SCORE] Mediocre (${overall.toFixed(1)}) - Success +${(overall * 7).toFixed(0)}, Patience +10`);
+            } else if (overall <= 8) {
+              // G. Good answer
+              newSuccess += (overall * 13);
+              newPatience -= (overall * 3);
+              console.log(`📈 [SCORE] Good (${overall.toFixed(1)}) - Success +${(overall * 13).toFixed(0)}, Patience -${(overall * 3).toFixed(0)}`);
+            } else {
+              // H. Excellent answer (>8) - ONLY case where anger reduces
+              newSuccess += (overall * 13);
+              newPatience -= (overall * 3);
+              newAnger -= 5; // ⬅️ ONLY REDUCTION for excellent answers
+              console.log(`🌟 [SCORE] Excellent (${overall.toFixed(1)}) - Success +${(overall * 13).toFixed(0)}, Anger -5`);
+            }
           }
 
           // Clamp
@@ -402,25 +414,68 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             return;
           }
           else if (newSuccess >= 100) {
+            console.log("➡️ [TRANSITION] Moving to next topic (SUCCESS)");
             transitionMode = 'NEXT_PASS';
             nextIndex++;
             setPreviousTopicResult("PASSED_SUCCESS");
+            
+            // ⚠️ CRITICAL: Reset per-topic metrics
             setTopicSuccess(0);
             setTopicPatience(0);
-            setAnger(prev => Math.max(0, prev - 5));
+            // ⚠️ CRITICAL: Anger is NOT reset (carries through entire interview)
+            
+            console.log("🔄 [RESET] Success and Patience reset to 0");
+            console.log(`💢 [CARRY] Anger remains at ${newAnger}`);
           }
           else if (newPatience >= 100) {
-            if (transitionMode !== 'NEXT_EXPLAIN') transitionMode = 'NEXT_FAIL';
-
-            nextIndex++;
-            setPreviousTopicResult("FAILED_PATIENCE");
-            setTopicSuccess(0);
-            setTopicPatience(0);
-
-            if (shouldPenalizeAnger) {
-              setAnger(prev => Math.min(100, prev + 35));
+            console.log("➡️ [TRANSITION] Moving to next topic (PATIENCE LIMIT)");
+            
+            // SHOW_ANSWER mercy rule
+            if (transitionMode === 'NEXT_EXPLAIN') {
+              console.log("😇 [MERCY] SHOW_ANSWER - No anger penalty");
+              nextIndex++;
+              setPreviousTopicResult("EXPLAINED");
+              setTopicSuccess(0);
+              setTopicPatience(0);
+              // ⚠️ NO anger penalty (mercy rule)
             } else {
-              console.log("😇 Mercy Rule: Anger saved.");
+              // Regular patience fail - PRE-FLIGHT CHECK for termination
+              const tempAnger = newAnger + 35;
+              console.log(`⚠️ [PRE-FLIGHT] Checking anger: ${newAnger} + 35 = ${tempAnger}`);
+              
+              if (tempAnger >= 100) {
+                // ABORT! This would terminate!
+                console.log("🤬 [ABORT] Anger would exceed 100! Terminating instead.");
+                transitionMode = 'TERMINATE_ANGER';
+                newAnger = 100;
+                setAnger(100);
+                
+                const terminationSpeech = await agentRef.current.generateVoiceResponse({
+                  currentTopic: currentTopic,
+                  nextTopic: null,
+                  transitionMode: 'TERMINATE_ANGER',
+                  angerLevel: 100
+                }, undefined, historyBuffer.current);
+                
+                await playSynchronizedResponse(terminationSpeech);
+                setIsFinished(true);
+                return;
+              } else {
+                // Safe to proceed with NEXT_FAIL
+                transitionMode = 'NEXT_FAIL';
+                nextIndex++;
+                setPreviousTopicResult("FAILED_PATIENCE");
+                
+                // ⬅️ ANGER PENALTY APPLIED HERE!
+                newAnger += 35;
+                setAnger(newAnger);
+                console.log(`💢 [ANGER] Patience fail penalty: Anger is now ${newAnger}`);
+                
+                // Reset per-topic metrics
+                setTopicSuccess(0);
+                setTopicPatience(0);
+                console.log("🔄 [RESET] Success and Patience reset to 0");
+              }
             }
           }
 
@@ -650,7 +705,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   // SIMULATE ANSWER (for DEV Tools)
   // ============================================
 
-  const simulateAnswer = async (intentType: string): Promise<string | null> => {
+  const simulateAnswer = async (intentType: string | number): Promise<string | null> => {
     console.log("⚡ [SIMULATE] Called with intentType:", intentType);
     console.log("⚡ [SIMULATE] Current state:");
     console.log("   - plan:", !!plan);
@@ -670,10 +725,37 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     const currentTopicData = plan.queue[currentTopicIndex];
     console.log("⚡ [SIMULATE] Topic:", currentTopicData.topic);
 
+    // ⚠️ FIX: Properly handle score 0 with typeof check
+    let simulatedLevel: string;
+    
+    if (typeof intentType === 'number' || !isNaN(Number(intentType))) {
+      const numScore = typeof intentType === 'number' ? intentType : Number(intentType);
+      
+      // Numeric score from debug menu
+      if (numScore === 0) {
+        simulatedLevel = '0';  // Explicitly handle 0
+        console.log("🎮 [SIMULATE] Score 0 detected - generating poor answer");
+      } else if (numScore >= 1 && numScore <= 3) {
+        simulatedLevel = String(numScore);
+      } else if (numScore >= 4 && numScore <= 6) {
+        simulatedLevel = String(numScore);
+      } else if (numScore >= 7 && numScore <= 8) {
+        simulatedLevel = String(numScore);
+      } else if (numScore >= 9) {
+        simulatedLevel = String(numScore);
+      } else {
+        console.error("❌ Invalid score:", intentType);
+        return null;
+      }
+    } else {
+      // String intent type (NONSENSE, CLARIFICATION, etc.)
+      simulatedLevel = intentType;
+    }
+
     try {
       const simulatedAnswer = await agentRef.current.generateSimulatedAnswer(
         currentTopicData,
-        intentType,
+        simulatedLevel,
         resumeText
       );
 
@@ -683,6 +765,52 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       console.error("❌ [SIMULATE] Failed:", error);
       return null;
     }
+  };
+
+  // ============================================
+  // VALIDATION FUNCTION
+  // ============================================
+
+  const validateStateTransition = (
+    before: { success: number; patience: number; anger: number },
+    after: { success: number; patience: number; anger: number },
+    intent: string,
+    overall: number,
+    decision: string
+  ): boolean => {
+    let isValid = true;
+    
+    // Rule: CLARIFICATION should not change state
+    if (intent === 'CLARIFICATION') {
+      if (after.success !== before.success || 
+          after.patience !== before.patience || 
+          after.anger !== before.anger) {
+        console.error("❌ VALIDATION FAILED: CLARIFICATION changed state!");
+        isValid = false;
+      }
+    }
+    
+    // Rule: Anger should only grow on NONSENSE or NEXT_FAIL
+    if (after.anger > before.anger) {
+      if (intent !== 'NONSENSE' && decision !== 'NEXT_FAIL') {
+        console.error(`❌ VALIDATION FAILED: Anger grew illegally! Intent: ${intent}, Decision: ${decision}`);
+        isValid = false;
+      }
+    }
+    
+    // Rule: All values must be 0-100
+    if (after.success < 0 || after.success > 100 ||
+        after.patience < 0 || after.patience > 100 ||
+        after.anger < 0 || after.anger > 100) {
+      console.error("❌ VALIDATION FAILED: State values out of bounds!");
+      isValid = false;
+    }
+    
+    if (isValid) {
+      console.log("✅ VALIDATION PASSED: State transition is valid");
+    }
+    
+    return isValid;
   };
 
   // ============================================

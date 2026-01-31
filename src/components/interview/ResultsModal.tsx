@@ -190,6 +190,7 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
     const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
     const [selectedQuestion, setSelectedQuestion] = useState<QuestionResult | null>(null);
     const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+    const [isLoading, setIsLoading] = useState(false);  // ✅ FIX: Track loading state
 
     // Track if this session has been saved (prevent duplicate saves)
     const sessionSavedRef = useRef<boolean>(false);
@@ -208,9 +209,29 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
         }
     }, [visible]);
 
-    // AUTO-SAVE: Save session to history when modal first opens
+    // ✅ FIX BUG 3: Safe initialization with timeout failsafe
     useEffect(() => {
-        if (visible && report && !sessionSavedRef.current) {
+        if (!visible) {
+            sessionSavedRef.current = false;
+            setIsLoading(false);
+            return;
+        }
+
+        // Handle case where report is null or empty
+        if (!report) {
+            console.log("⚠️ [RESULTS] No report available");
+            setIsLoading(false);
+            return;
+        }
+
+        // Handle early termination with empty questions
+        if (!report.questions || report.questions.length === 0) {
+            console.log("⚠️ [RESULTS] No questions in report, using summary only");
+            setIsLoading(false);
+        }
+
+        // Save session (prevent duplicates)
+        if (!sessionSavedRef.current) {
             sessionSavedRef.current = true;
 
             // Save in background (non-blocking)
@@ -224,11 +245,6 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
             }).catch(error => {
                 console.error('❌ [RESULTS] Failed to auto-save session:', error);
             });
-        }
-
-        // Reset saved flag when modal closes (for next session)
-        if (!visible) {
-            sessionSavedRef.current = false;
         }
     }, [visible, report, roleTitle]);
 
@@ -263,14 +279,53 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
         toggleFavorite(favoriteQuestion).catch(console.error);
     };
 
-    // Handle empty state
+    // ✅ FIX BUG 3: Show fallback UI if no report is available
     if (!report) {
-        return null;
+        return (
+            <Modal visible={visible} transparent animationType="fade">
+                <View style={styles.blurContainer}>
+                    <View style={styles.modalCard}>
+                        <View style={styles.header}>
+                            <View style={styles.headerLeft}>
+                                <Text style={styles.roleTitle}>No Results Available</Text>
+                                <Text style={styles.dateText}>
+                                    The interview ended before results could be generated.
+                                </Text>
+                            </View>
+                            <View style={styles.headerRight}>
+                                <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+                                    <Ionicons name="close" size={28} color="#333" />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                            <Ionicons name="alert-circle-outline" size={64} color="#999" />
+                            <Text style={{ fontSize: 16, color: '#666', marginTop: 16, textAlign: 'center', paddingHorizontal: 24 }}>
+                                No interview data was recorded. Please try again.
+                            </Text>
+                            <TouchableOpacity
+                                onPress={onClose}
+                                style={{
+                                    marginTop: 24,
+                                    backgroundColor: '#333',
+                                    paddingHorizontal: 32,
+                                    paddingVertical: 12,
+                                    borderRadius: 12,
+                                }}
+                            >
+                                <Text style={{ color: '#FFF', fontWeight: '600' }}>Close</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+        );
     }
 
     const totalScore = report.averageScore;
     const totalScoreColor = getScoreColor(totalScore);
     const sessionDate = formatDate(report.timestamp || Date.now());
+    const hasQuestions = report.questions && report.questions.length > 0;
 
     return (
         <Modal visible={visible} transparent animationType="fade">
@@ -298,20 +353,32 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
                         contentContainerStyle={styles.listContent}
                         showsVerticalScrollIndicator={false}
                     >
-                        <Text style={styles.sectionTitle}>QUESTIONS ({report.questions.length})</Text>
+                        {/* ✅ FIX: Handle empty questions array gracefully */}
+                        {hasQuestions ? (
+                            <>
+                                <Text style={styles.sectionTitle}>QUESTIONS ({report.questions.length})</Text>
 
-                        {report.questions.map((question, index) => (
-                            <QuestionRow
-                                key={getQuestionId(question, index)}
-                                question={question}
-                                onPress={() => {
-                                    setSelectedQuestion(question);
-                                    setSelectedIndex(index);
-                                }}
-                            />
-                        ))}
+                                {report.questions.map((question, index) => (
+                                    <QuestionRow
+                                        key={getQuestionId(question, index)}
+                                        question={question}
+                                        onPress={() => {
+                                            setSelectedQuestion(question);
+                                            setSelectedIndex(index);
+                                        }}
+                                    />
+                                ))}
+                            </>
+                        ) : (
+                            <View style={{ paddingVertical: 32, alignItems: 'center' }}>
+                                <Ionicons name="information-circle-outline" size={48} color="#999" />
+                                <Text style={{ fontSize: 14, color: '#666', marginTop: 12, textAlign: 'center' }}>
+                                    No questions were answered during this session.
+                                </Text>
+                            </View>
+                        )}
 
-                        {/* Summary */}
+                        {/* Summary - Always show */}
                         <View style={styles.summaryBlock}>
                             <Text style={styles.sectionTitle}>OVERALL SUMMARY</Text>
                             <Text style={styles.summaryText}>{report.overallSummary}</Text>

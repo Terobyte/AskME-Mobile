@@ -164,12 +164,29 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     }
   };
 
+  // Track last processed input to prevent duplicate processing
+  const lastProcessedInput = useRef<string>('');
+
   const processUserInput = async (text: string): Promise<void> => {
     const textToFinalize = text.trim();
+
+    // ✅ FIX: Guard against processing the same text twice (prevents infinite loop)
+    if (textToFinalize === lastProcessedInput.current && textToFinalize.length > 0) {
+      console.log(`⚠️ [PROCESS] Duplicate input detected, ignoring: "${textToFinalize.substring(0, 30)}..."`);
+      return;
+    }
+
+    // ⏱️ DEBUG TIMING: Track Victoria's response time (declared at function scope for finally access)
+    const startTime = Date.now();
 
     if (isProcessing) return;
 
     if (textToFinalize.length > 0) {
+      // Mark this input as being processed
+      lastProcessedInput.current = textToFinalize;
+
+      console.log(`⏱️ [TIMING] Victoria response cycle STARTED at ${new Date(startTime).toISOString()}`);
+
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setMessages(prev => [...prev, { id: Date.now().toString(), text: textToFinalize, sender: 'user' }]);
 
@@ -608,6 +625,11 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           console.error("Agent Error:", error);
           Alert.alert("Error", "An error occurred during the interview. Please try again.");
         } finally {
+          // ⏱️ DEBUG TIMING: Log total response time
+          const endTime = Date.now();
+          const duration = endTime - startTime;
+          console.log(`⏱️ [TIMING] Victoria response cycle COMPLETED in ${duration}ms (${(duration / 1000).toFixed(2)}s)`);
+
           setIsProcessing(false);
         }
       }
@@ -758,6 +780,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   // ============================================
   // SIMULATE ANSWER (for DEV Tools)
   // ============================================
+  // 
+  // REFACTORED: Now uses semantic type system instead of numeric levels.
+  // Maps incoming intent types to either:
+  // - QualityLevel: 'excellent' | 'good' | 'average' | 'poor' | 'fail'
+  // - SpecialAction: 'nonsense' | 'give_up' | 'clarify' | 'show_answer'
+  // ============================================
 
   const simulateAnswer = async (intentType: string | number): Promise<string | null> => {
     console.log("⚡ [SIMULATE] Called with intentType:", intentType);
@@ -780,55 +808,101 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     const currentTopicData = plan.queue[currentTopicIndex];
     console.log("⚡ [SIMULATE] Topic:", currentTopicData.topic);
 
-    // ✅ FIX BUG 2: Properly handle numeric scores including 0
-    let normalizedIntentType: string;
+    // ============================================
+    // INTENT TYPE MAPPING (Old → New)
+    // ============================================
+    // This mapping converts the old numeric/string system to the new semantic types.
+    // 
+    // QUALITY LEVELS (attempts to answer):
+    //   9, 10 → 'excellent' (expected score 9-10)
+    //   7, 8  → 'good'      (expected score 7-8)
+    //   5, 6  → 'average'   (expected score 5-6)
+    //   3, 4  → 'poor'      (expected score 3-4)
+    //   0, 1, 2, 'poor_0' → 'fail' (expected score 0-2) ⚠️ NOT nonsense!
+    //
+    // SPECIAL ACTIONS (non-answers):
+    //   'NONSENSE' → generateSpecialAction('nonsense') → triggers anger
+    //   'GIVE_UP'  → generateSpecialAction('give_up')  → no anger
+    //   'CLARIFICATION' → generateSpecialAction('clarify') → stays on topic
+    //   'SHOW_ANSWER'   → generateSpecialAction('show_answer') → educational
+    // ============================================
 
-    if (typeof intentType === 'number') {
-      console.log(`⚡ [SIMULATE] Numeric score detected: ${intentType}`);
+    // Check for special action strings first
+    if (typeof intentType === 'string') {
+      const upperIntent = intentType.toUpperCase();
 
-      // ⚠️ CRITICAL: Special handling for score 0
-      if (intentType === 0) {
-        normalizedIntentType = 'poor_0';
-        console.log("⚡ [SIMULATE] Score 0 → Using 'poor_0' intent (NOT nonsense)");
-      } else if (intentType >= 1 && intentType <= 10) {
-        normalizedIntentType = String(intentType);
-        console.log(`⚡ [SIMULATE] Score ${intentType} → Using '${normalizedIntentType}' intent`);
-      } else {
-        console.error("❌ [SIMULATE] Invalid score:", intentType);
-        return null;
+      // Special actions use the new generateSpecialAction function
+      if (upperIntent === 'NONSENSE') {
+        console.log("⚡ [SIMULATE] Special action: NONSENSE → generateSpecialAction('nonsense')");
+        return await agentRef.current.generateSpecialAction('nonsense', currentTopicData);
       }
-    } else if (typeof intentType === 'string') {
-      // Check if it's a string representation of a number
-      const numericValue = Number(intentType);
-
-      if (!isNaN(numericValue)) {
-        // String "0" should also map to poor_0
-        if (numericValue === 0) {
-          normalizedIntentType = 'poor_0';
-          console.log("⚡ [SIMULATE] String '0' → Using 'poor_0' intent (NOT nonsense)");
-        } else if (numericValue >= 1 && numericValue <= 10) {
-          normalizedIntentType = intentType;
-          console.log(`⚡ [SIMULATE] String score '${intentType}' → Using '${normalizedIntentType}' intent`);
-        } else {
-          console.error("❌ [SIMULATE] Invalid string score:", intentType);
-          return null;
-        }
-      } else {
-        // String intent type (NONSENSE, CLARIFICATION, etc.)
-        normalizedIntentType = intentType;
-        console.log(`⚡ [SIMULATE] String intent '${intentType}' → Using directly`);
+      if (upperIntent === 'GIVE_UP') {
+        console.log("⚡ [SIMULATE] Special action: GIVE_UP → generateSpecialAction('give_up')");
+        return await agentRef.current.generateSpecialAction('give_up', currentTopicData);
       }
-    } else {
-      console.error("❌ [SIMULATE] Invalid intentType type:", typeof intentType);
-      return null;
+      if (upperIntent === 'CLARIFICATION') {
+        console.log("⚡ [SIMULATE] Special action: CLARIFICATION → generateSpecialAction('clarify')");
+        return await agentRef.current.generateSpecialAction('clarify', currentTopicData);
+      }
+      if (upperIntent === 'SHOW_ANSWER') {
+        console.log("⚡ [SIMULATE] Special action: SHOW_ANSWER → generateSpecialAction('show_answer')");
+        return await agentRef.current.generateSpecialAction('show_answer', currentTopicData);
+      }
+
+      // Check for new semantic quality levels (direct usage)
+      const validQualityLevels = ['excellent', 'good', 'average', 'poor', 'fail'];
+      const lowerIntent = intentType.toLowerCase();
+      if (validQualityLevels.includes(lowerIntent)) {
+        console.log(`⚡ [SIMULATE] Semantic quality level: '${lowerIntent}'`);
+        return await agentRef.current.generateSimulatedAnswer(
+          currentTopicData,
+          lowerIntent as 'excellent' | 'good' | 'average' | 'poor' | 'fail',
+          resumeText
+        );
+      }
     }
 
-    console.log(`⚡ [SIMULATE] Final normalized intent: '${normalizedIntentType}'`);
+    // Convert numeric intent to semantic quality level
+    let qualityLevel: 'excellent' | 'good' | 'average' | 'poor' | 'fail';
+
+    // Parse numeric value (handles both number and string numbers)
+    const numericValue = typeof intentType === 'number' ? intentType : Number(intentType);
+
+    if (!isNaN(numericValue)) {
+      // Map numeric score to semantic quality level
+      if (numericValue >= 9) {
+        qualityLevel = 'excellent';
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'excellent' (9-10)`);
+      } else if (numericValue >= 7) {
+        qualityLevel = 'good';
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'good' (7-8)`);
+      } else if (numericValue >= 5) {
+        qualityLevel = 'average';
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'average' (5-6)`);
+      } else if (numericValue >= 3) {
+        qualityLevel = 'poor';
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'poor' (3-4)`);
+      } else {
+        // 0, 1, 2 → 'fail' (trying but completely wrong, NOT nonsense)
+        qualityLevel = 'fail';
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'fail' (0-2) ⚠️ Attempting but wrong, NOT nonsense`);
+      }
+    } else if (typeof intentType === 'string' && intentType.toLowerCase() === 'poor_0') {
+      // Legacy 'poor_0' intent maps to 'fail'
+      qualityLevel = 'fail';
+      console.log("⚡ [SIMULATE] Legacy 'poor_0' → 'fail'");
+    } else {
+      // Unknown intent - default to average
+      qualityLevel = 'average';
+      console.warn(`⚠️ [SIMULATE] Unknown intentType '${intentType}', defaulting to 'average'`);
+    }
+
+    console.log(`⚡ [SIMULATE] Final quality level: '${qualityLevel}'`);
 
     try {
       const simulatedAnswer = await agentRef.current.generateSimulatedAnswer(
         currentTopicData,
-        normalizedIntentType,
+        qualityLevel,
         resumeText
       );
 

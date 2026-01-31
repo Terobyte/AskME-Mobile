@@ -53,6 +53,9 @@ export default function VoiceInterviewScreen() {
     const [displayTranscript, setDisplayTranscript] = useState("");
     const targetTranscript = useRef("");
 
+    // ✅ FIX: Use ref to track latest transcript for closure-safe access in callbacks
+    const liveTranscriptRef = useRef("");
+
     // Audio Recording Hook
     const {
         isRecording,
@@ -67,17 +70,28 @@ export default function VoiceInterviewScreen() {
                 LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                 setLiveTranscript(prev => {
                     const spacer = prev.length > 0 ? " " : "";
-                    return prev + spacer + text.trim();
+                    const newValue = prev + spacer + text.trim();
+                    // ✅ FIX: Keep ref in sync with state
+                    liveTranscriptRef.current = newValue;
+                    return newValue;
                 });
             }
         },
         onRecordingStop: () => {
-            // When recording stops, process the transcript
-            if (liveTranscript.trim().length > 0) {
-                processUserInput(liveTranscript);
+            // ✅ FIX: Read from ref instead of state to avoid stale closure
+            const currentTranscript = liveTranscriptRef.current;
+            console.log(`🎙️ [RECORDING_STOP] Transcript to process: "${currentTranscript.substring(0, 50)}..."`);
+
+            if (currentTranscript.trim().length > 0) {
+                processUserInput(currentTranscript);
+
+                // Clear both state and ref
                 setLiveTranscript("");
+                liveTranscriptRef.current = "";
                 targetTranscript.current = "";
                 setDisplayTranscript("");
+            } else {
+                console.log("⚠️ [RECORDING_STOP] Empty transcript, skipping processUserInput");
             }
         },
         onStatusChange: (newStatus) => {
@@ -251,9 +265,9 @@ export default function VoiceInterviewScreen() {
             if (debugValue === "I_AM_READY") {
                 const simText = "I am ready.";
                 console.log(`🤖 [DEV] Using quick text: ${simText}`);
-                setLiveTranscript(simText);
+                // ✅ FIX: Don't set liveTranscript - processUserInput adds to messages directly
+                // Setting liveTranscript causes ghost duplication (shows in live bubble then messages)
                 await processUserInput(simText);
-                setLiveTranscript("");
                 return;
             }
 
@@ -264,18 +278,16 @@ export default function VoiceInterviewScreen() {
             if (!aiGeneratedAnswer) {
                 console.error("❌ [DEV] AI returned null, falling back to template");
                 const fallback = `I would approach this ${currentTopic} question by focusing on best practices and my experience.`;
-                setLiveTranscript(fallback);
+                // ✅ FIX: Don't set liveTranscript - avoids ghost duplication
                 await processUserInput(fallback);
-                setLiveTranscript("");
                 return;
             }
 
             console.log(`✅ [DEV] AI Generated Answer: ${aiGeneratedAnswer.substring(0, 100)}...`);
 
-            // Inject into system as if user spoke it
-            setLiveTranscript(aiGeneratedAnswer);
+            // ✅ FIX: Inject directly into processUserInput without live bubble
+            // This avoids ghost duplication where message appears in live bubble then messages
             await processUserInput(aiGeneratedAnswer);
-            setLiveTranscript("");
 
         } catch (e) {
             console.error("❌ Simulation Failed:", e);

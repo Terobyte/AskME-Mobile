@@ -24,7 +24,7 @@ interface UseInterviewAudioReturn {
   isSendingData: boolean;
   error: string | null;
   permissionGranted: boolean;
-  
+
   // Methods
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
@@ -51,10 +51,10 @@ export const safeAudioModeSwitch = async (mode: 'recording' | 'playback'): Promi
         allowsRecording: false,
       });
     }
-    
+
     console.log(`✅ Audio Mode: ${mode}`);
     return true;
-    
+
   } catch (err) {
     console.error(`❌ Audio Mode Switch Failed:`, err);
     throw err;
@@ -98,7 +98,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
   const connectToDeepgram = async (): Promise<void> => {
     const API_KEY = process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY || '';
     const cleanKey = API_KEY.trim();
-    
+
     if (!cleanKey) {
       const error = new Error('Deepgram API Key is missing');
       setError(error.message);
@@ -108,7 +108,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
     }
 
     const socketUrl = `wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&filler_words=true&encoding=linear16&sample_rate=16000&container=wav&interim_results=true`;
-    
+
     try {
       const socket = new WebSocket(socketUrl, ['token', cleanKey]);
       ws.current = socket;
@@ -124,10 +124,10 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
         try {
           if (typeof event.data === 'string') {
             const msg = JSON.parse(event.data);
-            
+
             if (msg.channel?.alternatives?.[0]?.transcript) {
               const text = msg.channel.alternatives[0].transcript;
-              
+
               if (text.trim().length > 0) {
                 if (msg.is_final) {
                   setLiveTranscript(prev => {
@@ -236,7 +236,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
 
       // 10. Prepare recorder with valid 16kHz config for Deepgram
       console.log('🎙️ Preparing recorder...');
-      
+
       await recorder.prepareToRecordAsync({
         extension: '.wav',
         sampleRate: 16000,
@@ -303,7 +303,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
       console.error('❌ Recording failed:', error);
       setError(error.message);
       onError?.(error);
-      
+
       Alert.alert(
         'Microphone Error',
         `Could not start recording: ${error.message}. Try restarting the app.`
@@ -316,6 +316,12 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
   // ============================================
 
   const stopRecording = async (): Promise<void> => {
+    // ✅ FIX: Guard against double calls (prevent infinite loop)
+    if (!isRecording && !recorder.isRecording && !ws.current) {
+      console.log('⚠️ [STOP] Already stopped, ignoring duplicate call');
+      return;
+    }
+
     console.log('🛑 Stopping recording...');
 
     try {
@@ -351,7 +357,16 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
       await new Promise(resolve => setTimeout(resolve, 200));
       console.log('✅ Audio device fully released');
 
-      // 6. Notify parent that recording stopped (for finalizeMessage)
+      // 6. Capture current transcript before clearing
+      const transcriptToProcess = latestTranscriptRef.current;
+      console.log(`🎙️ [STOP] Transcript captured: "${transcriptToProcess.substring(0, 50)}..."`);
+
+      // 7. Clear internal transcript state BEFORE notifying parent
+      // This prevents the same transcript from being processed again
+      setLiveTranscript('');
+      latestTranscriptRef.current = '';
+
+      // 8. Notify parent that recording stopped (for finalizeMessage)
       onRecordingStop?.();
 
     } catch (error) {
@@ -420,7 +435,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
         // Request permissions
         const status = await AudioModule.requestRecordingPermissionsAsync();
         setPermissionGranted(status.granted);
-        
+
         if (!status.granted) {
           const error = new Error('Microphone permission denied');
           setError(error.message);
@@ -494,7 +509,7 @@ export const useInterviewAudio = (options: UseInterviewAudioOptions = {}): UseIn
     isSendingData,
     error,
     permissionGranted,
-    
+
     // Methods
     startRecording,
     stopRecording,

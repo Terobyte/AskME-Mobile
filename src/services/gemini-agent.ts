@@ -8,6 +8,7 @@ export class GeminiAgentService {
   private systemInstruction: string = "";
   private agenda: InterviewTopic[] = []; // Store agenda in class
   private currentTopicIndex: number = 0; // Track progress
+  private resume: string = ""; // Store resume for state-aware prompts
   private baseUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
   constructor() {
     // Prefer environment variable
@@ -17,6 +18,7 @@ export class GeminiAgentService {
 
   async startInterview(agenda: InterviewTopic[], resume: string, role: string) {
     this.agenda = agenda;
+    this.resume = resume; // Store for later use in state-aware calls
     this.currentTopicIndex = 0; // Reset index
 
     // 1. Build System Context with RAW JSON
@@ -42,22 +44,265 @@ export class GeminiAgentService {
     return await this.sendUserResponse("Start the interview. Introduce yourself as AskME and ask me to introduce myself.");
   }
 
-  async sendUserResponse(userText: string) {
+  // Simple version for lobby/intro (legacy compatibility)
+  async sendUserResponse(userText: string): Promise<string | null>;
+  // State-aware version for interview phase
+  async sendUserResponse(
+    userText: string,
+    currentState: { success: number; patience: number; anger: number },
+    currentTopic: string,
+    topicIndex: number,
+    totalTopics: number
+  ): Promise<string>;
+  
+  async sendUserResponse(
+    userText: string,
+    currentState?: { success: number; patience: number; anger: number },
+    currentTopic?: string,
+    topicIndex?: number,
+    totalTopics?: number
+  ): Promise<string | null> {
     if (!userText) return null;
+
+    // Determine if this is a state-aware call (interview phase)
+    const isStateAware = currentState !== undefined && currentTopic !== undefined;
 
     // Add User Message to History
     this.history.push({ role: "user", parts: [{ text: userText }] });
 
+    let systemPrompt = this.systemInstruction;
+    let maxTokens = 250;
+    let responseFormat: string | undefined = undefined;
+
+    // Build state-aware prompt if we're in interview phase
+    if (isStateAware && currentState && currentTopic !== undefined && topicIndex !== undefined && totalTopics !== undefined) {
+      maxTokens = 800;
+      responseFormat = "application/json";
+      
+      const nextTopicIndex = topicIndex + 1;
+      const nextTopic = nextTopicIndex < this.agenda.length ? this.agenda[nextTopicIndex].topic : null;
+      
+      systemPrompt = `You are Victoria, a strict but fair technical interviewer conducting a live voice interview.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 CONTEXT (Dynamic)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Candidate Resume: "${this.resume.substring(0, 1500)}..."
+
+Interview Agenda: ${JSON.stringify(this.agenda)}
+
+Current Topic: ${currentTopic}
+Topic Index: ${topicIndex + 1} / ${totalTopics}
+
+Current State:
+  - Success: ${currentState.success}/100
+  - Patience: ${currentState.patience}/100
+  - Anger: ${currentState.anger}/100
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 YOUR MISSION (Single Response)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Return a JSON object containing:
+1. Evaluation of answer (accuracy, depth, structure)
+2. New state values after applying formulas
+3. Transition decision
+4. Spoken response text
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 STEP 1: EVALUATE ANSWER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Rate on three dimensions (0-10):
+- Accuracy: Correctness of technical facts
+- Depth: Level of detail and understanding
+- Structure: Clarity and organization
+
+Overall = (Accuracy + Depth + Structure) / 3
+
+Intent Detection:
+- Nonsense/trolling → "NONSENSE", Overall = 0
+- "I don't know"/"Skip"/"Give up" → "GIVE_UP"
+- "What's the answer?"/"Explain" → "SHOW_ANSWER"
+- Asks clarification → "CLARIFICATION"
+- Otherwise → "ATTEMPT"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧮 STEP 2: CALCULATE NEW STATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Start with:
+  newSuccess = ${currentState.success}
+  newPatience = ${currentState.patience}
+  newAnger = ${currentState.anger}
+
+Apply formulas:
+
+A. If intent = "GIVE_UP":
+   newPatience = 110
+
+B. If intent = "SHOW_ANSWER":
+   newPatience = 110
+
+C. If intent = "CLARIFICATION":
+   No state changes
+
+D. If intent = "NONSENSE" OR Overall = 0:
+   newPatience += 50
+   newAnger += 35
+
+E. If intent = "ATTEMPT" and Overall < 5:
+   newPatience += ((10 - Overall) × 7)
+
+F. If intent = "ATTEMPT" and Overall >= 5 and Overall < 7:
+   newSuccess += (Overall × 7)
+   newPatience += 10
+
+G. If intent = "ATTEMPT" and Overall >= 7 and Overall <= 8:
+   newSuccess += (Overall × 13)
+   newPatience -= (Overall × 3)
+
+H. If intent = "ATTEMPT" and Overall > 8:
+   newSuccess += (Overall × 13)
+   newPatience -= (Overall × 3)
+   newAnger -= 5
+
+Clamp all values to 0-100:
+  newSuccess = max(0, min(100, newSuccess))
+  newPatience = max(0, min(100, newPatience))
+  newAnger = max(0, min(100, newAnger))
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ STEP 3: DECIDE TRANSITION (Priority Order - CRITICAL!)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. ⛔ IMMEDIATE TERMINATION (Highest Priority)
+   If newAnger >= 100:
+     decision = "TERMINATE"
+     nextTopic = null
+     text = "That's it. This interview is over. Your performance was completely unacceptable."
+
+2. ✅ SUCCESS TRANSITION
+   Else if newSuccess >= 100:
+     decision = "NEXT_SUCCESS"
+     nextTopic = "${nextTopic || 'end'}"
+     Reset: newSuccess = 0, newPatience = 0
+     newAnger -= 5 (bonus)
+     text = "Excellent work on ${currentTopic}. You clearly understand [brief praise]. Now let's discuss ${nextTopic || 'wrapping up'}."
+
+3. 😤 PATIENCE LIMIT (WITH PRE-FLIGHT CHECK!)
+   Else if newPatience >= 100:
+   
+     A. If intent = "SHOW_ANSWER":
+        decision = "NEXT_EXPLAIN"
+        nextTopic = "${nextTopic || 'end'}"
+        Reset: newSuccess = 0, newPatience = 0
+        Don't add anger (mercy rule)
+        text = "Alright, here's the answer: [brief 1-sentence]. Let's move to ${nextTopic || 'the next topic'}."
+     
+     B. Else (regular fail):
+        ⚠️ PRE-FLIGHT CHECK:
+        tempAnger = newAnger + 35
+        
+        If tempAnger >= 100:
+          ⚠️ ABORT TRANSITION!
+          decision = "TERMINATE"
+          nextTopic = null
+          newAnger = 100
+          text = "I've completely lost my patience with these vague answers. This interview is over."
+        
+        Else:
+          decision = "NEXT_FAIL"
+          nextTopic = "${nextTopic || 'end'}"
+          newAnger += 35
+          Reset: newSuccess = 0, newPatience = 0
+          text = "Let's move on to ${nextTopic || 'the next topic'}. I hope you're better prepared." (disappointed tone)
+
+4. 🔄 STAY ON CURRENT TOPIC
+   Else:
+     decision = "STAY"
+     nextTopic = null
+     
+     Adjust tone based on anger:
+     - If newAnger >= 90: "This is your last chance. [question]"
+     - Else if newAnger >= 80: "I'm running out of patience. [question]"
+     - Else if newAnger >= 60: "Okay, but [follow-up question]"
+     - Else: "[neutral follow-up]"
+
+5. 🤔 CLARIFICATION
+   If intent = "CLARIFICATION":
+     decision = "STAY"
+     nextTopic = null
+     No state changes
+     text = "Let me rephrase. [clarify question]"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎭 VOICE RESPONSE GUIDELINES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Maximum 2-3 sentences (voice interview)
+- Match emotional tone to anger level
+- Use actual topic names from agenda (no placeholders)
+- Natural conversational language
+
+Tone by Anger Level:
+- 0-30: Professional, warm, encouraging
+- 30-60: Neutral, slightly skeptical
+- 60-80: Impatient, sarcastic
+- 80-90: Harsh, dismissive
+- 90-100: Final warning / termination
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📤 OUTPUT FORMAT (Strict JSON - No Markdown!)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{
+  "evaluation": {
+    "accuracy": 7,
+    "depth": 6,
+    "structure": 8,
+    "overall": 7.0,
+    "reasoning": "Good foundation but missed edge cases"
+  },
+  "state": {
+    "success": 45,
+    "patience": 25,
+    "anger": 10
+  },
+  "decision": "STAY",
+  "nextTopic": null,
+  "text": "That's decent. Now explain how you'd handle race conditions.",
+  "intent": "ATTEMPT"
+}
+
+⚠️ CRITICAL RULES:
+1. ALWAYS return valid JSON (no markdown blocks)
+2. ALWAYS apply formulas exactly as specified
+3. ALWAYS check termination in priority order
+4. ALWAYS perform pre-flight anger check before NEXT_FAIL
+5. ALWAYS clamp state values to 0-100
+6. ALWAYS keep text under 3 sentences
+7. NEVER use placeholders - use actual names
+8. ALWAYS match tone to anger level
+
+Now analyze the user's response and return JSON.`;
+    }
+
     // Construct Payload
-    // Note: Gemini REST API expects 'contents' array with history
-    const payload = {
+    const payload: any = {
       contents: this.history,
-      systemInstruction: { parts: [{ text: this.systemInstruction }] },
+      systemInstruction: { parts: [{ text: systemPrompt }] },
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 250,
+        maxOutputTokens: maxTokens,
       }
     };
+
+    // Add JSON format requirement for state-aware calls
+    if (responseFormat) {
+      payload.generationConfig.responseMimeType = responseFormat;
+    }
 
     const MAX_RETRIES = 3;
     let retryCount = 0;
@@ -108,9 +353,11 @@ export class GeminiAgentService {
                 // Add AI Response to History so it remembers context
                 this.history.push({ role: "model", parts: [{ text: aiText }] });
                 
-                // Increment Topic Index
-                if (this.currentTopicIndex < this.agenda.length) {
-                    this.currentTopicIndex++;
+                // Only increment topic index for non-state-aware calls (legacy lobby flow)
+                if (!isStateAware) {
+                  if (this.currentTopicIndex < this.agenda.length) {
+                      this.currentTopicIndex++;
+                  }
                 }
 
                 // --- 📊 HUMAN READABLE DASHBOARD 📊 --- 
@@ -118,12 +365,24 @@ export class GeminiAgentService {
                 console.log("📊 INTERVIEW PROGRESS DASHBOARD"); 
                 console.log("=".repeat(60)); 
                 
+                if (isStateAware && currentState) {
+                  console.log("\n📈 STATE TRACKING:");
+                  console.log(`   Success: ${currentState.success}/100`);
+                  console.log(`   Patience: ${currentState.patience}/100`);
+                  console.log(`   Anger: ${currentState.anger}/100`);
+                }
+                
                 console.log("\n📋 PLAN (Agenda):"); 
                 if (this.agenda && this.agenda.length > 0) { 
                     this.agenda.forEach((item, index) => { 
                     let statusIcon = "[⏳ Pending]"; 
-                    if (index < this.currentTopicIndex) statusIcon = "[✅ Passed]"; 
-                    if (index === this.currentTopicIndex) statusIcon = "[🔄 IN PROCESS]"; 
+                    if (isStateAware && topicIndex !== undefined) {
+                      if (index < topicIndex) statusIcon = "[✅ Passed]"; 
+                      if (index === topicIndex) statusIcon = "[🔄 IN PROCESS]"; 
+                    } else {
+                      if (index < this.currentTopicIndex) statusIcon = "[✅ Passed]"; 
+                      if (index === this.currentTopicIndex) statusIcon = "[🔄 IN PROCESS]"; 
+                    }
                     
                     console.log(`   ${statusIcon} ${item.topic} (${item.category || 'General'})`); 
                     }); 

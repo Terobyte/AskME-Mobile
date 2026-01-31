@@ -60,6 +60,14 @@ export default function VoiceInterviewScreen() {
   // Chat History
   const [messages, setMessages] = useState<{id: string, text: string, sender: 'user' | 'ai'}[]>([]);
   
+  // Interview State Tracking (for state-aware Gemini calls)
+  const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
+  const [topicSuccess, setTopicSuccess] = useState(0);
+  const [topicPatience, setTopicPatience] = useState(0);
+  const [anger, setAnger] = useState(0);
+  const [isFinished, setIsFinished] = useState(false);
+  const [currentMetrics, setCurrentMetrics] = useState<any>(null);
+  
   // Get latest AI message text for Typewriter
   const latestAiMessage = messages.length > 0 && messages[messages.length - 1].sender === 'ai' 
     ? messages[messages.length - 1].text 
@@ -154,6 +162,12 @@ export default function VoiceInterviewScreen() {
           return;
       }
       
+      // Guard: Don't process if interview is finished
+      if (isFinished) {
+          console.log("⚠️ Interview is finished. Ignoring further input.");
+          return;
+      }
+      
       if (textToFinalize.trim().length > 0) {
           console.log('🔥 TRIGGERING GEMINI API CALL for:', textToFinalize.substring(0, 20) + "...");
           
@@ -167,10 +181,72 @@ export default function VoiceInterviewScreen() {
           setIsFinalChunk(false);
 
           // Trigger AI Response
-          if (agentRef.current) {
+          if (agentRef.current && plan) {
             setIsAgentThinking(true); // LOCK
             try {
-                const reply = await agentRef.current.sendUserResponse(textToFinalize.trim());
+                // Determine if we're in state-aware mode (actual interview started)
+                // We're in state-aware mode if we have more than 1 message (after initial greeting)
+                const isInterviewPhase = messages.length > 0;
+                
+                let reply: string | null = null;
+                
+                if (isInterviewPhase && currentTopicIndex < plan.queue.length) {
+                  // STATE-AWARE CALL for interview phase
+                  const currentTopic = plan.queue[currentTopicIndex].topic;
+                  
+                  const responseJson = await agentRef.current.sendUserResponse(
+                    textToFinalize.trim(),
+                    {
+                      success: topicSuccess,
+                      patience: topicPatience,
+                      anger: anger
+                    },
+                    currentTopic,
+                    currentTopicIndex,
+                    plan.queue.length
+                  );
+                  
+                  // Parse JSON response
+                  try {
+                    const response = JSON.parse(responseJson);
+                    console.log("📊 Parsed Gemini Response:", response);
+                    
+                    // Apply new state from Gemini
+                    setTopicSuccess(response.state.success);
+                    setTopicPatience(response.state.patience);
+                    setAnger(response.state.anger);
+                    setCurrentMetrics(response.evaluation);
+                    
+                    // Handle decision
+                    if (response.decision === 'TERMINATE') {
+                      console.log("⛔ Interview TERMINATED");
+                      setIsFinished(true);
+                      reply = response.text;
+                    } else if (response.decision === 'NEXT_SUCCESS' || response.decision === 'NEXT_FAIL' || response.decision === 'NEXT_EXPLAIN') {
+                      console.log(`➡️ Moving to next topic: ${response.decision}`);
+                      setCurrentTopicIndex(prev => prev + 1);
+                      setTopicSuccess(0);
+                      setTopicPatience(0);
+                      reply = response.text;
+                    } else if (response.decision === 'STAY') {
+                      console.log("🔄 Staying on current topic");
+                      reply = response.text;
+                    } else {
+                      // Unknown decision, just use the text
+                      reply = response.text;
+                    }
+                    
+                  } catch (e) {
+                    console.error("Failed to parse Gemini JSON:", e);
+                    console.error("Raw response:", responseJson);
+                    Alert.alert("Error", "Invalid AI response format. Please try again.");
+                    setIsAgentThinking(false);
+                    return;
+                  }
+                } else {
+                  // SIMPLE CALL for lobby/intro or after interview ends
+                  reply = await agentRef.current.sendUserResponse(textToFinalize.trim());
+                }
                 
                 // Speak & Update UI
                 if (reply) {
@@ -180,6 +256,7 @@ export default function VoiceInterviewScreen() {
                 }
             } catch (error) {
                 console.error("Agent Error:", error);
+                Alert.alert("Error", "Something went wrong. Please try again.");
             } finally {
                 setIsAgentThinking(false); // UNLOCK
             }
@@ -222,6 +299,14 @@ export default function VoiceInterviewScreen() {
   const handleSaveAndRestart = async () => {
       setIsGenerating(true);
       try {
+          // Reset interview state
+          setCurrentTopicIndex(0);
+          setTopicSuccess(0);
+          setTopicPatience(0);
+          setAnger(0);
+          setIsFinished(false);
+          setCurrentMetrics(null);
+          
           // 1. Generate Plan
           const generatedPlan = await generateInterviewPlan(resumeText, jdText, mode);
           setPlan(generatedPlan);

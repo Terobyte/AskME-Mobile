@@ -1,7 +1,44 @@
 import { InterviewTopic } from "../types";
+
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
+
+// Constants for state-aware prompting
+const MAX_RESUME_LENGTH = 1500; // Truncate resume to fit within token limits while preserving key information
+
+// Types for Gemini API payload and responses
+interface GeminiPayload {
+  contents: any[];
+  systemInstruction: { parts: { text: string }[] };
+  generationConfig: {
+    temperature: number;
+    maxOutputTokens: number;
+    responseMimeType?: string;
+  };
+}
+
+export interface EvaluationMetrics {
+  accuracy: number;
+  depth: number;
+  structure: number;
+  overall: number;
+  reasoning: string;
+}
+
+export interface GeminiInterviewResponse {
+  evaluation: EvaluationMetrics;
+  state: {
+    success: number;
+    patience: number;
+    anger: number;
+  };
+  decision: 'STAY' | 'NEXT_SUCCESS' | 'NEXT_FAIL' | 'NEXT_EXPLAIN' | 'TERMINATE';
+  nextTopic: string | null;
+  text: string;
+  intent: 'ATTEMPT' | 'GIVE_UP' | 'SHOW_ANSWER' | 'CLARIFICATION' | 'NONSENSE';
+}
+
 export class GeminiAgentService {
   private apiKey: string;
   private history: any[] = [];
@@ -25,7 +62,7 @@ export class GeminiAgentService {
     this.systemInstruction = `You are AskME, a professional AI Interviewer.
     
     CONTEXT DATA:
-    - Candidate Resume: "${resume.substring(0, 1500)}..."
+    - Candidate Resume: "${resume.substring(0, MAX_RESUME_LENGTH)}..."
     - Interview Agenda (JSON): ${JSON.stringify(agenda)}
     
     PROTOCOL:
@@ -88,7 +125,7 @@ export class GeminiAgentService {
 📋 CONTEXT (Dynamic)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Candidate Resume: "${this.resume.substring(0, 1500)}..."
+Candidate Resume: "${this.resume.substring(0, MAX_RESUME_LENGTH)}..."
 
 Interview Agenda: ${JSON.stringify(this.agenda)}
 
@@ -290,7 +327,7 @@ Now analyze the user's response and return JSON.`;
     }
 
     // Construct Payload
-    const payload: any = {
+    const payload: GeminiPayload = {
       contents: this.history,
       systemInstruction: { parts: [{ text: systemPrompt }] },
       generationConfig: {

@@ -10,7 +10,7 @@ import Slider from '@react-native-community/slider';
 import * as FileSystem from 'expo-file-system';
 import { InterviewMode, InterviewPlan } from '../types';
 
-import { GeminiAgentService } from '../services/gemini-agent';
+import { GeminiAgentService, EvaluationMetrics, GeminiInterviewResponse } from '../services/gemini-agent';
 import { generateInterviewPlan } from '../interview-planner';
 import { TTSService } from '../services/tts-service';
 import { useTypewriter } from '../hooks/useTypewriter';
@@ -66,7 +66,8 @@ export default function VoiceInterviewScreen() {
   const [topicPatience, setTopicPatience] = useState(0);
   const [anger, setAnger] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
-  const [currentMetrics, setCurrentMetrics] = useState<any>(null);
+  const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
+  const [isInterviewPhaseActive, setIsInterviewPhaseActive] = useState(false); // Explicit flag for interview phase
   
   // Get latest AI message text for Typewriter
   const latestAiMessage = messages.length > 0 && messages[messages.length - 1].sender === 'ai' 
@@ -184,13 +185,9 @@ export default function VoiceInterviewScreen() {
           if (agentRef.current && plan) {
             setIsAgentThinking(true); // LOCK
             try {
-                // Determine if we're in state-aware mode (actual interview started)
-                // We're in state-aware mode if we have more than 1 message (after initial greeting)
-                const isInterviewPhase = messages.length > 0;
-                
                 let reply: string | null = null;
                 
-                if (isInterviewPhase && currentTopicIndex < plan.queue.length) {
+                if (isInterviewPhaseActive && currentTopicIndex < plan.queue.length) {
                   // STATE-AWARE CALL for interview phase
                   const currentTopic = plan.queue[currentTopicIndex].topic;
                   
@@ -208,7 +205,7 @@ export default function VoiceInterviewScreen() {
                   
                   // Parse JSON response
                   try {
-                    const response = JSON.parse(responseJson);
+                    const response: GeminiInterviewResponse = JSON.parse(responseJson);
                     console.log("📊 Parsed Gemini Response:", response);
                     
                     // Apply new state from Gemini
@@ -232,20 +229,29 @@ export default function VoiceInterviewScreen() {
                       console.log("🔄 Staying on current topic");
                       reply = response.text;
                     } else {
-                      // Unknown decision, just use the text
+                      // Unknown decision type - log warning
+                      console.warn('⚠️ Unknown decision type:', response.decision);
                       reply = response.text;
                     }
                     
-                  } catch (e) {
+                  } catch (e: any) {
                     console.error("Failed to parse Gemini JSON:", e);
                     console.error("Raw response:", responseJson);
-                    Alert.alert("Error", "Invalid AI response format. Please try again.");
+                    const errorMsg = e.message || 'Unknown error';
+                    const preview = responseJson.substring(0, 100);
+                    Alert.alert("Error", `Invalid AI response format: ${errorMsg}\n\nPreview: ${preview}...`);
                     setIsAgentThinking(false);
                     return;
                   }
                 } else {
                   // SIMPLE CALL for lobby/intro or after interview ends
                   reply = await agentRef.current.sendUserResponse(textToFinalize.trim());
+                  
+                  // After first response in lobby, activate interview phase
+                  if (!isInterviewPhaseActive && messages.length >= 1) {
+                    console.log("🎬 Activating interview phase");
+                    setIsInterviewPhaseActive(true);
+                  }
                 }
                 
                 // Speak & Update UI
@@ -306,6 +312,7 @@ export default function VoiceInterviewScreen() {
           setAnger(0);
           setIsFinished(false);
           setCurrentMetrics(null);
+          setIsInterviewPhaseActive(false); // Reset phase flag
           
           // 1. Generate Plan
           const generatedPlan = await generateInterviewPlan(resumeText, jdText, mode);

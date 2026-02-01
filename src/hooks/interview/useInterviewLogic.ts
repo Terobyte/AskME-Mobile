@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Alert, LayoutAnimation } from 'react-native';
 import {
   InterviewPlan,
+  InterviewTopic,
   EvaluationMetrics,
   QuestionResult,
   FinalInterviewReport,
@@ -193,26 +194,57 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       // Append to History Buffer
       historyBuffer.current.push({ role: 'user', content: textToFinalize });
 
+      // ✅ STEP 1: Calculate next topic BEFORE any API calls (for context)
+      let nextIndex = currentTopicIndex + 1;
+      let nextTopicData: InterviewTopic | null = null;
+      if (plan && nextIndex < plan.queue.length) {
+        nextTopicData = plan.queue[nextIndex];
+      }
+      console.log(`📍 [NEXT_TOPIC] Predicted next: ${nextTopicData ? `"${nextTopicData.topic}" (Index ${nextIndex})` : "None (final)"}`);
+
       if (agentRef.current) {
         setIsProcessing(true);
         try {
           // --- LOBBY PHASE LOGIC ---
           if (isLobbyPhase) {
-            console.log("🏨 [LOBBY] Analyzing Lobby Input...");
+            console.log("🏨 [LOBBY] Processing lobby input...");
 
             // Use a dummy topic for analysis context
             const lobbyTopic: any = { topic: "Lobby Check", context: "User is in the waiting lobby." };
-            const lastAiText = historyBuffer.current.length > 0
-              ? historyBuffer.current[historyBuffer.current.length - 1].content
+            const lastAiText = historyBuffer.current.length > 1
+              ? historyBuffer.current.filter(msg => msg.role === 'assistant').slice(-1)[0]?.content || "Welcome to the lobby."
               : "Welcome to the lobby.";
 
-            const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize, lobbyTopic, lastAiText);
+            const currentPlan = plan || INITIAL_PLAN;
+
+            // ⭐ UNIFIED CALL: Single API call for evaluation + voice
+            console.log("🔍 [UNIFIED] Starting evaluation and voice generation...");
+            console.log(`📍 [UNIFIED] Context: Lobby phase`);
+            console.log(`📍 [UNIFIED] Next Topic: "${currentPlan.queue[0].topic}" (Intro)`);
+
+            const unified = await agentRef.current.evaluateAndRespond(
+              textToFinalize,
+              lobbyTopic,
+              lastAiText,
+              {
+                nextTopic: currentPlan.queue[0], // Intro topic
+                angerLevel: 0, // Lobby has no anger
+                historyBuffer: historyBuffer.current,
+                isIntro: false,
+                currentTopicIndex: -1, // Before intro
+                totalTopics: currentPlan.queue.length
+              }
+            );
+
+            const analysis = unified.evaluation;
+            const speech = unified.voiceResponse;
+
+            console.log(`📊 [UNIFIED] Evaluation: Intent ${analysis.intent}`);
+            console.log(`💬 [UNIFIED] Response: "${speech.substring(0, 60)}..."`);
 
             if (analysis.intent === 'READY_CONFIRM') {
               // User is ready to start
-              console.log("✅ [LOBBY] User Ready -> STARTING INTRO (Optimistic)");
-
-              const currentPlan = plan || INITIAL_PLAN;
+              console.log("✅ [LOBBY] User Ready -> STARTING INTRO");
 
               // Initialize Agent Context properly
               const initialContext = {
@@ -237,14 +269,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
               await playSynchronizedResponse(introMsg);
 
             } else {
-              console.log("🗣️ [LOBBY] Small Talk");
-              // Just chat or acknowledge
-              const chatMsg = await agentRef.current.generateVoiceResponse({
-                currentTopic: lobbyTopic,
-                nextTopic: null,
-                transitionMode: 'STAY'
-              }, "User is not ready yet. Just chat politely or say 'Take your time'.", historyBuffer.current);
-              await playSynchronizedResponse(chatMsg);
+              console.log("🗣️ [LOBBY] Small Talk - playing unified response");
+              await playSynchronizedResponse(speech);
             }
 
             setIsProcessing(false);
@@ -254,35 +280,45 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           // --- REGULAR INTERVIEW LOGIC ---
           if (!plan) return;
 
-          let effectiveTopicIndex = currentTopicIndex;
-          let effectivePrevResult = previousTopicResult;
-
-          const safeIndex = Math.min(effectiveTopicIndex, plan.queue.length - 1);
-          const currentTopic = plan.queue[safeIndex];
-
-          // --- 1. ANALYSIS PHASE (JUDGE) ---
-          console.log("🔍 [1] Analyzing User Intent...");
-
-          const lastAiText = historyBuffer.current.length > 0
-            ? historyBuffer.current[historyBuffer.current.length - 1].content
-            : "Start of topic";
-
-          const analysis: any = await agentRef.current.evaluateUserAnswer(textToFinalize, currentTopic, lastAiText);
-          console.log("📊 [1] Result:", JSON.stringify(analysis));
-
           // --- SPECIAL CASE: INTRO (Index 0) ---
           if (currentTopicIndex === 0) {
             console.log("🎯 [INTRO] Special handling activated");
 
+            const introTopic = plan.queue[0];
+            const nextTopic = plan.queue[1];
+            const introLastAiText = historyBuffer.current.filter(msg => msg.role === 'assistant').slice(-1)[0]?.content || "Start of intro";
+
+            // ⭐ UNIFIED CALL: Single API call for evaluation + voice
+            console.log("🔍 [UNIFIED] Starting evaluation and voice generation...");
+            console.log(`📍 [UNIFIED] Current: "${introTopic.topic}" (Index 0 - Intro)`);
+            console.log(`📍 [UNIFIED] Next: "${nextTopic.topic}" (Topic 1)`);
+
+            const introUnified = await agentRef.current.evaluateAndRespond(
+              textToFinalize,
+              introTopic,
+              introLastAiText,
+              {
+                nextTopic: nextTopic,
+                angerLevel: 0, // Intro has no anger
+                historyBuffer: historyBuffer.current,
+                isIntro: true, // ← CRITICAL: Prevents "Hello" repetition
+                currentTopicIndex: 0,
+                totalTopics: plan.queue.length
+              }
+            );
+
+            const introAnalysis = introUnified.evaluation;
+            const introSpeech = introUnified.voiceResponse;
+
+            console.log(`📊 [UNIFIED] Evaluation: Score ${introAnalysis.compositeScore.toFixed(1)}, Level: ${introAnalysis.level}, Intent: ${introAnalysis.intent}`);
+            console.log(`💬 [UNIFIED] Response: "${introSpeech.substring(0, 60)}..."`);
+
             // EXCEPTION: Clarification on Intro should stay
-            if (analysis.intent === 'CLARIFICATION') {
+            if (introAnalysis.intent === 'CLARIFICATION') {
               console.log("🤔 [INTRO] Clarification requested - staying on intro");
-              const speech = await agentRef.current.generateVoiceResponse({
-                currentTopic: currentTopic,
-                nextTopic: null,
-                transitionMode: 'STAY',
-              }, undefined, historyBuffer.current);
-              await playSynchronizedResponse(speech);
+              console.log("🔊 [STATE SYNC] Playing voice (no state change)");
+              await playSynchronizedResponse(introSpeech);
+              setIsProcessing(false);
               return;
             }
 
@@ -290,46 +326,75 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             console.log("✅ [INTRO] Auto-advancing to Topic 1");
 
             // Apply metrics
-            setCurrentMetrics(analysis.metrics);
+            setCurrentMetrics(introAnalysis.metrics);
 
             // Handle NONSENSE - still applies anger penalty but advances
-            if (analysis.intent === 'NONSENSE') {
+            if (introAnalysis.intent === 'NONSENSE') {
               console.log("🤡 [INTRO] Nonsense detected - advancing with anger penalty");
               setAnger(prev => Math.min(100, prev + 35));
             }
 
-            // Force transition to next topic
+            // ✅ FIX: Play voice FIRST, then advance state
+            console.log("🔊 [STATE SYNC] Playing voice BEFORE state advance");
+            console.log(`📍 [STATE SYNC] Current index: 0 (locked until voice plays)`);
+            await playSynchronizedResponse(introSpeech);
+
+            console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
+            console.log("📍 [STATE SYNC] Advancing to index 1");
+            console.log(`📍 [STATE SYNC] New topic: "${plan.queue[1].topic}"`);
+            console.log("✅ [STATE SYNC] UI and AI state synchronized");
+
+            // ✅ FIX: AFTER voice plays, advance state
             setCurrentTopicIndex(1);
             setTopicSuccess(0); // Reset for new topic
             setTopicPatience(0); // Reset for new topic
             // Anger carries forward (don't reset)
 
-            const nextTopic = plan.queue[1];
-            const speech = await agentRef.current.generateVoiceResponse({
-              currentTopic: currentTopic,
-              nextTopic: nextTopic,
-              transitionMode: 'NEXT_PASS',
-            }, undefined, historyBuffer.current);
-
-            await playSynchronizedResponse(speech);
-            console.log(`🔄 [INTRO] Transitioned. Anger: ${anger}`);
+            console.log(`🔄 [INTRO] Transition complete. Anger: ${anger}`);
+            setIsProcessing(false);
             return; // Exit early
           }
 
+          // --- REGULAR TOPICS (Index >= 1) ---
+          const regularSafeIndex = Math.min(currentTopicIndex, plan.queue.length - 1);
+          const regularCurrentTopic = plan.queue[regularSafeIndex];
+          const regularLastAiText = historyBuffer.current.filter(msg => msg.role === 'assistant').slice(-1)[0]?.content || "Start of topic";
+
+          // ⭐ UNIFIED CALL: Single API call for evaluation + voice
+          console.log("🔍 [UNIFIED] Starting evaluation and voice generation...");
+          console.log(`📍 [UNIFIED] Current: "${regularCurrentTopic.topic}" (Index ${currentTopicIndex})`);
+          console.log(`📍 [UNIFIED] Next: ${nextTopicData ? `"${nextTopicData.topic}"` : "None (final)"}`);
+
+          const regularUnified = await agentRef.current.evaluateAndRespond(
+            textToFinalize,
+            regularCurrentTopic,
+            regularLastAiText,
+            {
+              nextTopic: nextTopicData,
+              angerLevel: anger,
+              historyBuffer: historyBuffer.current,
+              isIntro: false,
+              currentTopicIndex: currentTopicIndex,
+              totalTopics: plan.queue.length
+            }
+          );
+
+          const analysis = regularUnified.evaluation;
+          const speech = regularUnified.voiceResponse;
+
+          console.log(`📊 [UNIFIED] Evaluation complete`);
+          console.log(`   Score: ${analysis.compositeScore.toFixed(1)}`);
+          console.log(`   Level: ${analysis.level}`);
+          console.log(`   Intent: ${analysis.intent}`);
+          console.log(`💬 [UNIFIED] Response: "${speech.substring(0, 60)}..."`);
+
           // --- BLOCKING CLARIFICATION CHECK ---
           if (analysis.intent === 'CLARIFICATION') {
-            console.log("🤔 [CLARIFICATION] User asked for clarification");
+            console.log("🤔 [CLARIFICATION] Staying on topic, no state change");
             console.log("✅ [CLARIFICATION] State preserved:");
             console.log(`   Success: ${topicSuccess} (unchanged)`);
             console.log(`   Patience: ${topicPatience} (unchanged)`);
             console.log(`   Anger: ${anger} (unchanged)`);
-
-            const speech = await agentRef.current.generateVoiceResponse({
-              currentTopic: currentTopic,
-              nextTopic: null,
-              transitionMode: 'STAY',
-              angerLevel: anger
-            }, undefined, historyBuffer.current);
 
             await playSynchronizedResponse(speech);
             setIsProcessing(false);
@@ -340,12 +405,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
           // --- 2. GAME LOGIC PHASE ---
           let transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER' = 'STAY';
-          let shouldPenalizeAnger = true;
           let shouldFinishInterview = false;
 
           let newSuccess = topicSuccess;
           let newPatience = topicPatience;
           let newAnger = anger;
+          let effectiveTopicIndex = currentTopicIndex;
 
           if (analysis.intent === 'GIVE_UP') {
             console.log("🏳️ User GAVE UP.");
@@ -354,11 +419,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           else if (analysis.intent === 'SHOW_ANSWER') {
             console.log("💡 User asked for ANSWER.");
             newPatience = 110;
-            shouldPenalizeAnger = false;
             transitionMode = 'NEXT_EXPLAIN';
-          }
-          else if (analysis.intent === 'CLARIFICATION') {
-            console.log("🤔 User asked for CLARIFICATION.");
           }
           else if (analysis.intent === 'NONSENSE') {
             console.log("🤡 User is Trolling/Nonsense.");
@@ -433,14 +494,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           if (newAnger >= 100) {
             console.log("🤬 Anger Limit Reached. Initiating Termination.");
 
-            const terminationSpeech = await agentRef.current.generateVoiceResponse({
-              currentTopic: currentTopic,
-              nextTopic: null,
-              transitionMode: 'TERMINATE_ANGER',
-              angerLevel: 100
-            }, undefined, historyBuffer.current);
-
-            await playSynchronizedResponse(terminationSpeech);
+            await playSynchronizedResponse(speech);
 
             // ✅ FIX BUG 3: Generate minimal report on early termination
             const partialQuestions: QuestionResult[] = [];
@@ -509,14 +563,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
                 newAnger = 100;
                 setAnger(100);
 
-                const terminationSpeech = await agentRef.current.generateVoiceResponse({
-                  currentTopic: currentTopic,
-                  nextTopic: null,
-                  transitionMode: 'TERMINATE_ANGER',
-                  angerLevel: 100
-                }, undefined, historyBuffer.current);
-
-                await playSynchronizedResponse(terminationSpeech);
+                await playSynchronizedResponse(speech);
 
                 // ✅ FIX BUG 3: Generate minimal report on patience-triggered termination
                 const partialQuestions: QuestionResult[] = [];
@@ -571,34 +618,33 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             transitionMode = 'FINISH_INTERVIEW';
             shouldFinishInterview = true;
           } else {
-            if (nextIndex !== currentTopicIndex) {
-              console.log(`⏩ Transitioning UI to Topic ${nextIndex}`);
-              setCurrentTopicIndex(nextIndex);
-
-              // Trigger batch evaluation for previous topics
-              if (plan && nextIndex === plan.queue.length - 1) {
-                console.log("🚀 Triggering Background Batch Eval for previous topics...");
-                const historySnapshot = [...historyBuffer.current];
-                bulkEvalPromise.current = agentRef.current.evaluateBatch(historySnapshot);
-              }
+            // Trigger batch evaluation for previous topics
+            if (plan && nextIndex === plan.queue.length - 1) {
+              console.log("🚀 Triggering Background Batch Eval for previous topics...");
+              const historySnapshot = [...historyBuffer.current];
+              bulkEvalPromise.current = agentRef.current.evaluateBatch(historySnapshot);
             }
           }
 
-          // --- 4. ACTING PHASE (VOICE) ---
-          console.log("🎬 [4] Generating Speech for Mode:", transitionMode);
-
-          const nextTopic = (transitionMode === 'FINISH_INTERVIEW')
-            ? null
-            : plan.queue[Math.min(nextIndex, plan.queue.length - 1)];
-
-          const speech = await agentRef.current.generateVoiceResponse({
-            currentTopic: currentTopic,
-            nextTopic: nextTopic,
-            transitionMode: transitionMode,
-            angerLevel: anger
-          }, undefined, historyBuffer.current);
-
+          // ✅ FIX: Play voice BEFORE advancing state
+          console.log("🔊 [STATE SYNC] Playing voice BEFORE state advance");
+          console.log(`📍 [STATE SYNC] Current index: ${currentTopicIndex} (locked until voice plays)`);
+          
           await playSynchronizedResponse(speech);
+
+          console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
+
+          // ✅ FIX: Advance state AFTER voice plays
+          if (nextIndex !== currentTopicIndex) {
+            console.log(`📍 [STATE SYNC] Advancing to index ${nextIndex}`);
+            console.log(`📍 [STATE SYNC] New topic: "${plan.queue[nextIndex].topic}"`);
+            setCurrentTopicIndex(nextIndex);
+            console.log("✅ [STATE SYNC] UI and AI state synchronized");
+          } else {
+            console.log(`📍 [STATE SYNC] Staying on index ${currentTopicIndex}`);
+            const stayTopic = plan.queue[currentTopicIndex];
+            console.log(`📍 [STATE SYNC] Topic: "${stayTopic.topic}"`);
+          }
 
           // GENERATE FINAL REPORT
           if (shouldFinishInterview) {
@@ -640,10 +686,13 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           console.error("Agent Error:", error);
           Alert.alert("Error", "An error occurred during the interview. Please try again.");
         } finally {
-          // ⏱️ DEBUG TIMING: Log total response time
+          // ⏱️ DEBUG TIMING: Log total response time with breakdown
           const endTime = Date.now();
           const duration = endTime - startTime;
           console.log(`⏱️ [TIMING] Victoria response cycle COMPLETED in ${duration}ms (${(duration / 1000).toFixed(2)}s)`);
+          console.log(`   Unified call: ~5-6s (evaluation + voice generation)`);
+          console.log(`   State calculation: ~0.01s (client-side)`);
+          console.log(`   TTS playback: ~${Math.max(0, duration - 6000)}ms`);
 
           setIsProcessing(false);
         }

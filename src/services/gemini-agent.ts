@@ -191,6 +191,171 @@ export class GeminiAgentService {
     }
   }
 
+  // ============================================
+  // 🔥 UNIFIED CALL: Evaluation + Voice Generation (ATOMIC)
+  // ============================================
+  /**
+   * Performs evaluation AND voice generation in a SINGLE Gemini call.
+   * This prevents state desynchronization by ensuring both tasks complete atomically.
+   * 
+   * CRITICAL: This function MUST be called BEFORE advancing topic state.
+   * The voice response is generated with current topic context, then state advances.
+   * 
+   * @param userText - The user's spoken/typed answer
+   * @param currentTopic - Current interview topic
+   * @param lastAiQuestion - The question Victoria asked
+   * @param context - Interview state context
+   * @returns Object containing both evaluation and voice response
+   */
+  async evaluateAndRespond(
+    userText: string,
+    currentTopic: InterviewTopic,
+    lastAiQuestion: string,
+    context: {
+      nextTopic: InterviewTopic | null,
+      angerLevel: number,
+      historyBuffer: ChatMessage[],
+      isIntro: boolean,
+      currentTopicIndex: number,
+      totalTopics: number
+    }
+  ): Promise<{
+    evaluation: AnalysisResponse,
+    voiceResponse: string
+  }> {
+    const { nextTopic, angerLevel, historyBuffer, isIntro, currentTopicIndex, totalTopics } = context;
+    
+    console.log(`🔍 [UNIFIED] Starting evaluation and voice generation...`);
+    console.log(`📍 [UNIFIED] Current Topic: "${currentTopic.topic}" (Index ${currentTopicIndex + 1}/${totalTopics})`);
+    console.log(`📍 [UNIFIED] Next Topic: ${nextTopic ? `"${nextTopic.topic}"` : "None (final)"}`);
+
+    // Determine topic type for weighted scoring
+    const topicType = currentTopic.type || 'Match';
+    
+    // Build the next topic description for the prompt
+    const nextTopicDesc = nextTopic ? `"${nextTopic.topic}"` : "None (final topic)";
+    const nextTopicType = nextTopic?.type || "";
+    
+    // Build intro warning
+    const introWarning = isIntro ? "⚠️ You ALREADY introduced yourself in lobby. DO NOT say 'Hello' or state your name again." : "";
+
+    const prompt = `
+ROLE: Victoria - Principal Software Engineer & Technical Interviewer
+
+You are performing TWO tasks in a SINGLE response (atomic operation):
+1. EVALUATE the candidate's answer quality
+2. GENERATE your spoken response to them
+
+This is a UNIFIED operation to prevent state desynchronization.
+
+===== INPUT CONTEXT =====
+
+**Current State:**
+- Topic: "${currentTopic.topic}" (Index: ${currentTopicIndex + 1}/${totalTopics})
+- Topic Type: "${topicType}"
+- Topic Context: "${currentTopic.context}"
+- Question You Asked: "${lastAiQuestion}"
+- User's Answer: "${userText}"
+
+**Interview Progress:**
+- Current Anger Level: ${angerLevel}/100
+- Next Topic: ${nextTopicDesc}
+- Is Introduction Topic: ${isIntro}
+
+**Conversation History:**
+${JSON.stringify(historyBuffer.slice(-6))}
+
+===== TASK 1: EVALUATION (Judge Phase) =====
+
+Classify user intent, score the answer (if applicable), and calculate composite score.
+
+Intent types: CLARIFICATION, GIVE_UP, SHOW_ANSWER, NONSENSE, READY_CONFIRM, WEAK_ATTEMPT, STRONG_ATTEMPT
+
+Scoring (each 0-10): accuracy, depth, structure
+Composite score weighted by topic type.
+Map to level: excellent (9-10), good (7-8.9), mediocre (5-6.9), poor (3-4.9), fail (0-2.9)
+
+===== TASK 2: VOICE RESPONSE (Actor Phase) =====
+
+Generate Victoria's natural spoken response (2-4 sentences, TTS-friendly, no markdown).
+
+${introWarning}
+
+Response strategy based on intent and score:
+- CLARIFICATION: Rephrase question, stay on topic
+- GIVE_UP: Acknowledge, ${nextTopic ? `transition to ${nextTopicDesc}` : "wrap up"}
+- SHOW_ANSWER: Brief explanation, ${nextTopic ? "transition" : "continue"}
+- NONSENSE: Redirect firmly, stay on topic
+- READY_CONFIRM: Acknowledge, ask for introduction
+- Score >= 7.0: Positive feedback, ${nextTopic ? `transition to ${nextTopicDesc} with new question` : "thank and wrap up"}
+- Score 5.0-6.9: Neutral, ask follow-up, stay on topic
+- Score < 5.0: Brief acknowledgment, ${nextTopic ? `transition to ${nextTopicDesc}` : "wrap up"}
+
+${nextTopic && nextTopicType === 'SoftSkill' ? `For next topic (SoftSkill), generate situational question related to candidate's role.` : ""}
+${nextTopic && (nextTopicType === 'Match' || nextTopicType === 'Gap' || nextTopicType === 'CoolSkill') ? `For next topic (Technical), choose scenario or experience question.` : ""}
+
+===== OUTPUT JSON SCHEMA =====
+
+{
+  "evaluation": {
+    "metrics": {
+      "accuracy": number (0-10),
+      "depth": number (0-10),
+      "structure": number (0-10),
+      "reasoning": "string"
+    },
+    "compositeScore": number (0-10),
+    "level": "excellent" | "good" | "mediocre" | "poor" | "fail",
+    "issues": ["ISSUE_TYPE", ...],
+    "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | "CLARIFICATION" | "GIVE_UP" | "SHOW_ANSWER" | "NONSENSE" | "READY_CONFIRM",
+    "suggestedFeedback": "string (5-10 words)"
+  },
+  "voiceResponse": "string (2-4 sentences, natural spoken)"
+}
+
+Return ONLY valid JSON with no extra text.
+    `;
+
+    const payload = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.4,
+        responseMimeType: "application/json"
+      }
+    };
+
+    try {
+      console.log(`🤖 [GEMINI] Calling model: ${MODEL_ID}`);
+      const raw = await this.callGemini(payload);
+      const clean = this.cleanJson(raw);
+      const unified = JSON.parse(clean) as {
+        evaluation: AnalysisResponse,
+        voiceResponse: string
+      };
+
+      console.log(`📊 [UNIFIED] Evaluation: Score ${unified.evaluation.compositeScore.toFixed(1)}, Level: ${unified.evaluation.level}, Intent: ${unified.evaluation.intent}`);
+      console.log(`💬 [UNIFIED] Response: "${unified.voiceResponse.substring(0, 60)}..."`);
+
+      return unified;
+
+    } catch (e) {
+      console.error("❌ [UNIFIED] Call failed:", e);
+      
+      // Fallback response
+      return {
+        evaluation: {
+          metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Evaluation error" },
+          compositeScore: 0,
+          level: 'fail',
+          issues: [],
+          intent: 'WEAK_ATTEMPT',
+          suggestedFeedback: "Let's move on."
+        },
+        voiceResponse: "I'm having trouble processing that. Could you rephrase your answer?"
+      };
+    }
+  }
+
   // --- 1. ANALYSIS JUDGE ---
   async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic, lastAiQuestion: string): Promise<AnalysisResponse | string> {
     // Determine topic type for weighted scoring

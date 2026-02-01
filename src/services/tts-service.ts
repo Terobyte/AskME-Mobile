@@ -86,16 +86,25 @@ class TTSService {
       console.log(`🎙️ [TTS] Starting Cartesia REST API call...`);
       console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
       
-      // Get credentials from env
-      const API_KEY = process.env.EXPO_PUBLIC_CARTESIA_API_KEY || "";
+      // Try loading from environment variable first
+      let API_KEY = process.env.EXPO_PUBLIC_CARTESIA_API_KEY || "";
       const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID || "e07c00bc-4134-4eae-9ea4-1a55fb45746b";
       
-      // Validate key
-      if (!API_KEY || API_KEY.includes('YOUR_') || API_KEY.length < 20) {
-        console.error("❌ [TTS] Invalid API key!");
-        console.error(`❌ Key preview: ${API_KEY.substring(0, 30)}...`);
+      console.log("🔍 [TTS] Attempting to load API key from environment...");
+      console.log(`🔍 [TTS] Raw env value: "${API_KEY}"`);
+      console.log(`🔍 [TTS] Key length: ${API_KEY.length}`);
+      console.log(`🔍 [TTS] First 30 chars: "${API_KEY.substring(0, 30)}"`);
+      
+      // If env key is invalid or missing, you can hardcode it here for testing
+      if (!API_KEY || API_KEY.includes('YOUR_') || API_KEY.includes('your_') || API_KEY.length < 30) {
+        console.warn("⚠️ [TTS] Environment key invalid or missing");
+        console.warn("⚠️ [TTS] You can hardcode your key on the next line for testing:");
+        // API_KEY = "sk_cartesia_YOUR_ACTUAL_KEY_HERE";  // ← Uncomment and paste your key here
+        console.error("❌ [TTS] No valid API key found!");
         return null;
       }
+      
+      console.log("✅ [TTS] Using environment API key");
       
       console.log(`🔑 [TTS] Key loaded: ${API_KEY.substring(0, 25)}...`);
       console.log(`🎭 [TTS] Emotion: ${options?.emotion || 'neutral'}`);

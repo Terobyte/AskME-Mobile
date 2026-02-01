@@ -226,7 +226,7 @@ export class GeminiAgentService {
     const { nextTopic, angerLevel, historyBuffer, isIntro, currentTopicIndex, totalTopics } = context;
     
     console.log(`🔍 [UNIFIED] Starting evaluation and voice generation...`);
-    console.log(`📍 [UNIFIED] Current Topic: "${currentTopic.topic}" (Index ${currentTopicIndex + 1}/${totalTopics})`);
+    console.log(`📍 [UNIFIED] Current Topic: "${currentTopic.topic}" (Index ${currentTopicIndex}/${totalTopics})`);
     console.log(`📍 [UNIFIED] Next Topic: ${nextTopic ? `"${nextTopic.topic}"` : "None (final)"}`);
 
     // Determine topic type for weighted scoring
@@ -269,7 +269,77 @@ ${JSON.stringify(historyBuffer.slice(-6))}
 
 Classify user intent, score the answer (if applicable), and calculate composite score.
 
-Intent types: CLARIFICATION, GIVE_UP, SHOW_ANSWER, NONSENSE, READY_CONFIRM, WEAK_ATTEMPT, STRONG_ATTEMPT
+Intent types: CLARIFICATION, SHOW_ANSWER, GIVE_UP, NONSENSE, READY_CONFIRM, WEAK_ATTEMPT, STRONG_ATTEMPT
+
+===== INTENT CLASSIFICATION =====
+
+Determine user's PRIMARY intent (critically important for state logic):
+
+**"CLARIFICATION"** - User asks to rephrase/clarify question
+  Examples:
+  - "Could you repeat that?"
+  - "What do you mean by that?"
+  - "I don't understand the question"
+  Indicators: Question words (what, how, could, can you), confusion signals
+
+**"SHOW_ANSWER"** - User explicitly asks for the correct answer or explanation
+  ⚠️ KEY DISTINCTION: User wants YOU to teach them
+  Examples:
+  - "I'm stuck, can you explain the approach?"
+  - "Could you walk me through this?"
+  - "What's the correct way to do this?"
+  - "Tell me how you would solve it"
+  - "I'm stuck on this one. Can you help me understand?"
+  Indicators: "stuck", "explain", "walk through", "tell me", "show me", "how would you", "help me understand"
+
+**"GIVE_UP"** - User admits defeat WITHOUT asking for help
+  ⚠️ KEY DISTINCTION: User wants to skip, not learn
+  Examples:
+  - "I don't know, let's move on"
+  - "Skip this one"
+  - "Pass"
+  - "I have no idea"
+  Indicators: "skip", "pass", "move on", "next question" WITHOUT "explain" or "help"
+
+**"NONSENSE"** - Trolling, gibberish, COMPLETELY off-topic
+  ⚠️ CRITICAL: Only use for TRUE nonsense, not just wrong answers
+  Examples:
+  - "I like turtles and pizza"
+  - "My favorite anime is Naruto" (unrelated to tech)
+  - Random gibberish: "asdfasdf lolol"
+  DO NOT classify as NONSENSE:
+  - Wrong technical answers (use WEAK_ATTEMPT instead)
+  - Answers that mention candidate's name (this is normal)
+  - Answers that are off-base but show effort
+  - Technical content that's confused or incorrect
+  Indicators: Zero technical content, random words, pure trolling
+
+**"READY_CONFIRM"** - User confirms readiness (intro only)
+  Examples: "I'm ready", "Let's start", "Yes"
+
+**"WEAK_ATTEMPT"** - User tries to answer but quality is poor (compositeScore < 5)
+
+**"STRONG_ATTEMPT"** - User tries to answer with decent quality (compositeScore >= 5)
+
+===== DECISION TREE FOR AMBIGUOUS CASES =====
+
+IF user says they're stuck:
+  └─ Does message include "explain", "walk through", "tell me how", "show me", "help"?
+     ├─ YES → SHOW_ANSWER (they want to learn)
+     └─ NO → GIVE_UP (they want to skip)
+
+IF answer is wrong or off-topic:
+  └─ Does answer contain ANY technical content?
+     ├─ YES → WEAK_ATTEMPT (not nonsense, just wrong)
+     └─ NO → Check if pure trolling
+        ├─ Pure trolling (anime, pizza, random) → NONSENSE
+        └─ Confused/rambling → WEAK_ATTEMPT
+
+Example disambiguation:
+- "I'm stuck on this one. Can you explain?" → SHOW_ANSWER (asks for explanation)
+- "I'm stuck. Let's skip it." → GIVE_UP (wants to move on)
+- "Honestly, Temirlan here. FlatList performance..." → WEAK_ATTEMPT (wrong but technical)
+- "I like pizza and anime" → NONSENSE (zero technical content)
 
 Scoring (each 0-10): accuracy, depth, structure
 Composite score weighted by topic type.

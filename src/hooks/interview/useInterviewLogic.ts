@@ -120,6 +120,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     // Notify audio hook to stop recording (prevent echo)
     onAIStart?.();
 
+    // ⏱️ TTS TIMING: Start timing
+    const ttsStart = Date.now();
+    console.log(`🔊 [TTS DEBUG] Starting playback for: "${text.substring(0, 30)}..."`);
+    console.log(`🔊 [TTS DEBUG] Text length: ${text.length} characters`);
+    console.log(`🔊 [TTS DEBUG] Expected duration: ~${Math.ceil(text.length * 100 / 1000)}s (100ms per char)`);
+
     try {
       console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
 
@@ -156,8 +162,21 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         });
       }
 
+      // ⏱️ TTS TIMING: Log completion
+      const ttsEnd = Date.now();
+      const ttsDuration = ttsEnd - ttsStart;
+      console.log(`🔊 [TTS DEBUG] Playback completed in ${ttsDuration}ms (${(ttsDuration / 1000).toFixed(1)}s)`);
+      
+      if (ttsDuration > text.length * 120) {
+        console.error(`⚠️ [TTS DEBUG] ABNORMAL: TTS took ${ttsDuration}ms for ${text.length} chars`);
+        console.error(`⚠️ [TTS DEBUG] Expected: ~${text.length * 100}ms (100ms per char)`);
+      }
+
     } catch (e) {
       console.error("Sync Error:", e);
+      const ttsEnd = Date.now();
+      const ttsDuration = ttsEnd - ttsStart;
+      console.error(`❌ [TTS DEBUG] Failed after ${ttsDuration}ms`);
     } finally {
       setIsProcessing(false);
       // Notify audio hook that AI finished speaking
@@ -636,10 +655,15 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
           // ✅ FIX: Advance state AFTER voice plays
           if (nextIndex !== currentTopicIndex) {
-            console.log(`📍 [STATE SYNC] Advancing to index ${nextIndex}`);
-            console.log(`📍 [STATE SYNC] New topic: "${plan.queue[nextIndex].topic}"`);
-            setCurrentTopicIndex(nextIndex);
-            console.log("✅ [STATE SYNC] UI and AI state synchronized");
+            if (!shouldFinishInterview) {
+              console.log(`📍 [STATE SYNC] Advancing to index ${nextIndex}`);
+              console.log(`📍 [STATE SYNC] New topic: "${plan.queue[nextIndex].topic}"`);
+              setCurrentTopicIndex(nextIndex);
+              console.log("✅ [STATE SYNC] UI and AI state synchronized");
+            } else {
+              console.log("🏁 [STATE] Interview finished, not advancing index");
+              console.log(`📍 [STATE] Final index: ${currentTopicIndex} (last topic completed)`);
+            }
           } else {
             console.log(`📍 [STATE SYNC] Staying on index ${currentTopicIndex}`);
             const stayTopic = plan.queue[currentTopicIndex];
@@ -681,6 +705,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             }
 
             setIsFinished(true);
+            console.log("✅ [FINISH] Interview complete. Report set.");
+            setIsProcessing(false);
+            return;
           }
         } catch (error) {
           console.error("Agent Error:", error);
@@ -916,7 +943,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         console.log("⚡ [SIMULATE] Special action: GIVE_UP → generateSpecialAction('give_up')");
         return await agentRef.current.generateSpecialAction('give_up', currentTopicData);
       }
-      if (upperIntent === 'CLARIFICATION') {
+      if (upperIntent === 'CLARIFICATION' || upperIntent === 'CLARIFY') {
         console.log("⚡ [SIMULATE] Special action: CLARIFICATION → generateSpecialAction('clarify')");
         return await agentRef.current.generateSpecialAction('clarify', currentTopicData);
       }

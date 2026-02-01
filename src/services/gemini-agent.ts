@@ -416,29 +416,67 @@ export class GeminiAgentService {
     }
   }
 
-  // --- 3. BATCH EVALUATOR (N-1 Questions) ---
+  // --- 3. BATCH EVALUATOR (N-1 Questions with Enhanced Feedback) ---
   async evaluateBatch(history: ChatMessage[]): Promise<QuestionResult[]> {
     const prompt = `
-      ROLE: Technical Evaluator (JSON ONLY)
-      TASK: Analyze these User Answers from a technical interview.
+      ROLE: Technical Evaluator & Mentor (JSON ONLY)
+      TASK: Analyze User Answers from a technical interview with detailed feedback.
       
       HISTORY TO ANALYZE:
       ${JSON.stringify(history)}
       
+      ===== EVALUATION METHODOLOGY =====
+      
+      **1. METRICS (each 0-10):**
+      - accuracy: Correctness of technical facts
+      - depth: Level of insight and examples
+      - structure: Clarity and organization
+      
+      **2. COMPOSITE SCORE:**
+      Calculate weighted average (assume Technical if type unknown):
+      compositeScore = (accuracy × 0.5) + (depth × 0.3) + (structure × 0.2)
+      
+      **3. QUALITY LEVEL:**
+      - 9.0-10.0 → "excellent"
+      - 7.0-8.9 → "good"
+      - 5.0-6.9 → "mediocre"
+      - 3.0-4.9 → "poor"
+      - 0.0-2.9 → "fail"
+      
+      **4. ISSUES:** Identify problems like NO_EXAMPLE, WRONG_CONCEPT, TOO_VAGUE, etc.
+      
+      **5. INTENT:** STRONG_ATTEMPT, WEAK_ATTEMPT, CLARIFICATION, GIVE_UP, etc.
+      
+      **6. FEEDBACK:**
+      - feedback: Short 2-3 sentences for list view
+      - detailedFeedback: 4-6 sentences with actionable advice
+      - suggestedFeedback: Short phrase (5-10 words)
+      
       INSTRUCTION:
-      - Identify each Q&A pair.
-      - Ignore "System" or "Intro" messages if they don't have a clear Q&A.
-      - For each valid Q&A pair, assign a score (0-10), brief feedback, and metrics.
-      - Return a valid JSON array. Do NOT output trailing commas.
+      - Identify each Q&A pair from the history
+      - Ignore system messages or intro without clear Q&A
+      - For each valid Q&A, evaluate comprehensively
+      - Return valid JSON array (no trailing commas)
       
       OUTPUT JSON SCHEMA:
       [
         { 
-          "topic": "string", 
-          "userAnswer": "string", 
-          "score": number, 
-          "feedback": "string",
-          "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" }
+          "topic": "string",
+          "userAnswer": "string",
+          "score": number (0-10, from compositeScore),
+          "feedback": "string (2-3 sentences)",
+          "detailedFeedback": "string (4-6 sentences with actionable steps)",
+          "metrics": {
+            "accuracy": number,
+            "depth": number,
+            "structure": number,
+            "reasoning": "string"
+          },
+          "compositeScore": number (0-10),
+          "level": "excellent" | "good" | "mediocre" | "poor" | "fail",
+          "issues": ["ISSUE_TYPE", ...],
+          "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | etc.,
+          "suggestedFeedback": "string (5-10 words)"
         },
         ...
       ]
@@ -446,51 +484,147 @@ export class GeminiAgentService {
 
     const payload = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
+      generationConfig: { 
+        temperature: 0.3,  // Slightly higher for creative feedback
+        responseMimeType: "application/json" 
+      }
     };
 
     try {
       const raw = await this.callGemini(payload);
-      const clean = this.cleanJsonArray(raw); // Use specialized cleaner for Arrays
+      const clean = this.cleanJsonArray(raw);
       return JSON.parse(clean) as QuestionResult[];
     } catch (e) {
-      console.error("Batch Eval Error:", e);
+      console.error("❌ [BATCH EVAL] Error:", e);
       return [];
     }
   }
 
-  // --- 4. FINAL EVALUATOR (Last Question + Summary) ---
+  // --- 4. FINAL EVALUATOR (Gemini 2.0 Flash with Flash Logic + Enhanced Feedback) ---
   async evaluateFinal(lastHistoryItem: ChatMessage, previousResults: QuestionResult[]): Promise<{ finalQuestion: QuestionResult, overallSummary: string }> {
     const prompt = `
-      ROLE: Lead Interviewer (JSON ONLY)
-      TASK: Evaluate the FINAL answer and generate an Overall Summary.
+      ROLE: Senior Technical Evaluator & Mentor (JSON ONLY)
+      TASK: Perform comprehensive evaluation with detailed, actionable feedback.
       
-      CONTEXT - PREVIOUS RESULTS:
-      ${JSON.stringify(previousResults)}
+      CONTEXT - PREVIOUS TOPIC RESULTS:
+      ${JSON.stringify(previousResults, null, 2)}
       
-      FINAL INTERACTION:
+      FINAL TOPIC INTERACTION:
       ${JSON.stringify(lastHistoryItem)}
       
-      INSTRUCTION:
-      1. Evaluate the final interaction (Score 0-10 + Feedback + Metrics).
-      2. Review ALL results (Previous + Final) to generate a "comprehensive_summary" of the candidate's performance.
+      ===== EVALUATION METHODOLOGY (MATCH FLASH JUDGE) =====
       
-      OUTPUT JSON SCHEMA:
+      Use the SAME multi-dimensional analysis as the live judge:
+      
+      **1. METRICS (each 0-10):**
+      - accuracy: Correctness of technical facts (9-10: perfect, 0-2: fundamentally wrong)
+      - depth: Level of insight and examples (9-10: expert with trade-offs, 0-2: surface only)
+      - structure: Clarity and organization (9-10: clear and organized, 0-2: incoherent)
+      
+      **2. COMPOSITE SCORE:**
+      Calculate weighted average:
+      - For Technical topics (Match/Gap/CoolSkill): compositeScore = (accuracy × 0.5) + (depth × 0.3) + (structure × 0.2)
+      - For SoftSkill topics: compositeScore = (accuracy × 0.3) + (depth × 0.3) + (structure × 0.4)
+      - For Intro/Outro: compositeScore = (accuracy × 0.2) + (depth × 0.2) + (structure × 0.6)
+      
+      **3. QUALITY LEVEL:**
+      Map compositeScore to semantic level:
+      - 9.0-10.0 → "excellent"
+      - 7.0-8.9  → "good"
+      - 5.0-6.9  → "mediocre"
+      - 3.0-4.9  → "poor"
+      - 0.0-2.9  → "fail"
+      
+      **4. INTENT CLASSIFICATION:**
+      - "STRONG_ATTEMPT": compositeScore >= 5
+      - "WEAK_ATTEMPT": compositeScore < 5 but tried
+      - "CLARIFICATION": Asked to rephrase
+      - "GIVE_UP": "I don't know"
+      - "SHOW_ANSWER": "Tell me the answer"
+      - "NONSENSE": Off-topic gibberish
+      
+      **5. ISSUES ARRAY:**
+      - "NO_EXAMPLE": Lacks concrete example
+      - "WRONG_CONCEPT": Fundamental misunderstanding
+      - "TOO_VAGUE": Not specific enough
+      - "OFF_TOPIC": Doesn't answer question
+      - "RAMBLING": Unfocused
+      - "INCOMPLETE": Didn't finish thought
+      - "SHALLOW": Surface-level only
+      
+      **6. ✨ ENHANCED DETAILED FEEDBACK:**
+      Generate TWO types of feedback:
+      
+      A) suggestedFeedback: Short phrase (5-10 words) for Victoria
+      
+      B) detailedFeedback: Comprehensive analysis (4-6 sentences) covering:
+         1. What they got right (if anything)
+         2. Specific gaps or errors identified
+         3. Why these gaps matter in real-world context
+         4. Concrete action items to improve (with resources/examples)
+         5. Positive reinforcement or encouragement
+      
+      **DETAILED FEEDBACK EXAMPLES:**
+      
+      Example (Good Performance):
+      "You demonstrated strong understanding of React Native performance optimization with specific examples like FlatList optimization and Reanimated. Your mention of getItemLayout and windowSize shows practical experience. To reach expert level, dive deeper into profiling tools like Flipper's Performance Monitor and Hermes Inspector. Study memory leak detection patterns, particularly with event listeners and timers. Practice explaining trade-offs between different optimization strategies (e.g., when to use FlashList vs FlatList). Overall excellent foundation—keep building on real-world projects."
+      
+      Example (Mediocre Performance):
+      "You showed basic understanding of Redux but lacked depth in explaining when and why to use it. Your answer mentioned 'state management' generically without concrete examples from your projects. Next steps: (1) Build a medium-sized app using Redux to understand its middleware system and action creators. (2) Study alternatives like Zustand and Context API to understand trade-offs. (3) Practice articulating the 'why' behind architectural decisions—for example, 'we chose Redux because our app had 50+ screens sharing user session state and we needed time-travel debugging.' Focus on real-world scenarios in your next interview prep."
+      
+      Example (Poor Performance):
+      "Your response about Android development showed significant gaps in fundamental concepts. Confusing Gradle with the Android SDK, and mentioning 'CSS optimization' for native performance indicates surface-level understanding. This is a critical area for a React Native role. To improve: (1) Complete Android's official 'Build your first app' course to understand APK structure and build process. (2) Study React Native's Android-specific modules (e.g., ReactActivity, NativeModules). (3) Use Android Studio Profiler to debug a real memory leak—this hands-on experience is crucial. (4) Read 'The New Android Build System' guide by Xavier Ducrohet. Don't be discouraged—everyone starts here. Focus on building one native module end-to-end."
+      
+      **7. OVERALL SUMMARY:**
+      Review ALL topic results and generate comprehensive summary covering:
+      - Opening: Overall performance level with score justification
+      - Strengths: 2-3 specific examples from topics with praise
+      - Weaknesses: 2-3 specific examples with empathy
+      - Growth Areas: 3-4 concrete action items (e.g., "Complete X course", "Build Y project", "Study Z pattern")
+      - Hiring Recommendation: "Strong hire" / "Hire with mentorship" / "Not ready—reapply in 6 months after [specific areas]"
+      - Closing: Encouraging note
+      
+      Keep summary comprehensive: 8-10 sentences.
+      
+      ===== OUTPUT JSON SCHEMA =====
       {
-        "finalQuestion": { 
-          "topic": "Final Topic", 
-          "userAnswer": "string", 
-          "score": number, 
-          "feedback": "string",
-          "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" }
+        "finalQuestion": {
+          "topic": "string",
+          "userAnswer": "string (summary of all attempts)",
+          "score": number (0-10, derived from compositeScore),
+          "feedback": "string (short 2-3 sentences for list view)",
+          "detailedFeedback": "string (4-6 sentences with actionable advice for detail view)",
+          "metrics": {
+            "accuracy": number,
+            "depth": number,
+            "structure": number,
+            "reasoning": "string explaining why these scores"
+          },
+          "compositeScore": number (0-10),
+          "level": "excellent" | "good" | "mediocre" | "poor" | "fail",
+          "issues": ["ISSUE_TYPE", ...],
+          "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | "CLARIFICATION" | "GIVE_UP" | "SHOW_ANSWER" | "NONSENSE",
+          "suggestedFeedback": "string (5-10 words)"
         },
-        "overallSummary": "string (3-4 sentences summarizing strengths/weaknesses)"
+        "overallSummary": "string (8-10 sentences: performance level, strengths with examples, weaknesses with empathy, growth action items, hiring recommendation, encouragement)"
       }
-      `;
+      
+      ===== CRITICAL RULES =====
+      1. Use EXACT same scoring methodology as Flash judge
+      2. Return ONLY valid JSON (no markdown, no code blocks)
+      3. compositeScore MUST align with level (excellent: 9-10, good: 7-8.9, etc.)
+      4. detailedFeedback MUST include actionable steps (courses, projects, resources)
+      5. detailedFeedback MUST be constructive and encouraging even for poor performance
+      6. overallSummary MUST reference specific topics and give clear next steps
+      7. Avoid generic advice like "practice more"—be specific
+    `;
 
     const payload = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.2, responseMimeType: "application/json" }
+      generationConfig: { 
+        temperature: 0.3,  // Slightly higher for creative feedback
+        responseMimeType: "application/json"
+      }
     };
 
     try {
@@ -498,16 +632,22 @@ export class GeminiAgentService {
       const clean = this.cleanJson(raw);
       return JSON.parse(clean);
     } catch (e) {
-      console.error("Final Eval Error:", e);
+      console.error("❌ [FINAL EVAL] Error:", e);
       return {
         finalQuestion: {
           topic: "Final",
           userAnswer: "",
           score: 0,
-          feedback: "Error",
-          metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" }
+          feedback: "Error evaluating final topic",
+          detailedFeedback: "An error occurred during evaluation. Please try again.",
+          metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" },
+          compositeScore: 0,
+          level: 'fail' as QualityLevel,
+          issues: [],
+          intent: 'WEAK_ATTEMPT',
+          suggestedFeedback: "Technical error occurred"
         },
-        overallSummary: "Failed to generate summary."
+        overallSummary: "Failed to generate summary due to technical error. Please try again."
       };
     }
   }

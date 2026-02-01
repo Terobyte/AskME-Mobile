@@ -110,8 +110,8 @@ export class CurriculumService {
       return {
           candidateName: "Candidate",
           plan: [
-              { id: 'fallback_1', topic: 'Introduction', category: 'General', score: 10, type: 'Intro', estimated_time: '5m' },
-              { id: 'fallback_2', topic: 'Experience', category: 'Technical', score: 8, type: 'Match', estimated_time: '5m' }
+              { id: 'fallback_1', topic: 'Introduction', category: 'General', score: 10, type: 'Intro', estimated_time: '5m', context: 'Tell me about yourself and your background.' },
+              { id: 'fallback_2', topic: 'Experience', category: 'Technical', score: 8, type: 'Match', estimated_time: '5m', context: 'Describe your technical experience and key projects.' }
           ],
           welcomeMessage: "Hello! I'm Victoria. Let's start by discussing your background."
       };

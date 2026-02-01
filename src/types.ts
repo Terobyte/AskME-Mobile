@@ -157,7 +157,13 @@ export interface QuestionResult {
   userAnswer: string;
   score: number; // 0-10
   feedback: string;
+  detailedFeedback?: string; // ✨ NEW: Comprehensive 4-6 sentence feedback with actionable advice
   metrics?: EvaluationMetrics; // Optional for backward compatibility
+  compositeScore?: number; // NEW: Weighted average (0-10)
+  level?: QualityLevel; // NEW: Semantic quality level
+  issues?: AnswerIssue[]; // NEW: Specific problems identified
+  intent?: UserIntent; // NEW: User's intent classification
+  suggestedFeedback?: string; // NEW: Short phrase for Victoria (5-10 words)
 }
 
 export interface FinalInterviewReport {

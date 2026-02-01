@@ -416,84 +416,102 @@ export class GeminiAgentService {
     }
   }
 
-  // --- 3. BATCH EVALUATOR (N-1 Questions with Enhanced Feedback) ---
+  // --- 3. BATCH EVALUATOR (Topic-Level Aggregation with Gemini 2.5 Pro) ---
   async evaluateBatch(history: ChatMessage[]): Promise<QuestionResult[]> {
+    console.log("📊 [BATCH EVAL] Starting topic-level aggregation...");
+
     const prompt = `
       ROLE: Technical Evaluator & Mentor (JSON ONLY)
-      TASK: Analyze User Answers from a technical interview with detailed feedback.
+      TASK: Analyze interview history and generate ONE evaluation PER UNIQUE TOPIC with detailed feedback.
       
-      HISTORY TO ANALYZE:
-      ${JSON.stringify(history)}
+      ===== CRITICAL INSTRUCTIONS =====
       
-      ===== EVALUATION METHODOLOGY =====
+      **1. TOPIC IDENTIFICATION:**
+      - Look for Victoria's questions to identify topic boundaries
+      - Example patterns:
+        ✅ "Tell me about React Native performance" → Topic: "React Native Performance"
+        ✅ "Let's move on to iOS development" → Topic: "iOS Development"
       
-      **1. METRICS (each 0-10):**
-      - accuracy: Correctness of technical facts
-      - depth: Level of insight and examples
-      - structure: Clarity and organization
+      **2. GROUPING RULES:**
+      - Group ALL Q&A exchanges about the SAME TOPIC into ONE evaluation
+      - Follow-up questions ("Why?", "Can you elaborate?") belong to SAME topic
+      - Only create a new topic when Victoria explicitly transitions
       
-      **2. COMPOSITE SCORE:**
-      Calculate weighted average (assume Technical if type unknown):
-      compositeScore = (accuracy × 0.5) + (depth × 0.3) + (structure × 0.2)
+      **3. IGNORE NON-ANSWERS:**
+      - Skip CLARIFICATION ("Could you repeat that?")
+      - Skip GIVE_UP ("I don't know")
+      - Only evaluate ACTUAL ATTEMPTS
       
-      **3. QUALITY LEVEL:**
-      - 9.0-10.0 → "excellent"
-      - 7.0-8.9 → "good"
-      - 5.0-6.9 → "mediocre"
-      - 3.0-4.9 → "poor"
-      - 0.0-2.9 → "fail"
+      **4. MULTI-RESPONSE AGGREGATION:**
+      If a topic has multiple answer attempts:
+      - Calculate WEIGHTED AVERAGE of scores (recent answers weighted higher)
+      - Consider IMPROVEMENT over time (score 3 → 5 → 8 shows learning)
+      - Summarize ALL attempts in userAnswer field
+      - Note progression in detailedFeedback
       
-      **4. ISSUES:** Identify problems like NO_EXAMPLE, WRONG_CONCEPT, TOO_VAGUE, etc.
+      **5. EXPECTED OUTPUT COUNT:**
+      - Return exactly as many evaluations as unique topics discussed
+      - If interview covered 5 topics → return 5 evaluations
+      - DO NOT return 10+ evaluations (that means you're evaluating Q&A exchanges, not topics)
       
-      **5. INTENT:** STRONG_ATTEMPT, WEAK_ATTEMPT, CLARIFICATION, GIVE_UP, etc.
+      **6. SCORING METHODOLOGY:**
+      - Calculate metrics: accuracy (0-10), depth (0-10), structure (0-10)
+      - compositeScore = (accuracy × 0.5) + (depth × 0.3) + (structure × 0.2)
+      - Map to level: excellent (9-10) / good (7-8.9) / mediocre (5-6.9) / poor (3-4.9) / fail (0-2.9)
       
-      **6. FEEDBACK:**
-      - feedback: Short 2-3 sentences for list view
-      - detailedFeedback: 4-6 sentences with actionable advice
-      - suggestedFeedback: Short phrase (5-10 words)
+      ===== INPUT HISTORY =====
+      ${JSON.stringify(history, null, 2)}
       
-      INSTRUCTION:
-      - Identify each Q&A pair from the history
-      - Ignore system messages or intro without clear Q&A
-      - For each valid Q&A, evaluate comprehensively
-      - Return valid JSON array (no trailing commas)
-      
-      OUTPUT JSON SCHEMA:
+      ===== OUTPUT JSON SCHEMA =====
       [
-        { 
-          "topic": "string",
-          "userAnswer": "string",
-          "score": number (0-10, from compositeScore),
+        {
+          "topic": "string (unique topic name)",
+          "userAnswer": "string (summary of ALL attempts)",
+          "score": number (0-10),
           "feedback": "string (2-3 sentences)",
-          "detailedFeedback": "string (4-6 sentences with actionable steps)",
-          "metrics": {
-            "accuracy": number,
-            "depth": number,
-            "structure": number,
-            "reasoning": "string"
-          },
+          "detailedFeedback": "string (4-6 sentences with specific advice)",
+          "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" },
           "compositeScore": number (0-10),
           "level": "excellent" | "good" | "mediocre" | "poor" | "fail",
           "issues": ["ISSUE_TYPE", ...],
-          "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | etc.,
+          "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT",
           "suggestedFeedback": "string (5-10 words)"
-        },
-        ...
+        }
       ]
-      `;
+      
+      ===== CRITICAL RULES =====
+      1. ONE evaluation per TOPIC (not per Q&A exchange)
+      2. Aggregate multiple attempts with weighted scoring
+      3. detailedFeedback MUST be actionable
+      4. Return valid JSON array
+    `;
 
     const payload = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { 
-        temperature: 0.3,  // Slightly higher for creative feedback
-        responseMimeType: "application/json" 
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: "application/json"
       }
     };
 
     try {
-      const raw = await this.callGemini(payload);
+      // ✅ Use Gemini 2.5 Pro for deeper analysis
+      console.log("📊 [BATCH EVAL] Using model: gemini-2.5-pro");
+      const raw = await this.callGemini(payload, "gemini-2.5-pro");
       const clean = this.cleanJsonArray(raw);
-      return JSON.parse(clean) as QuestionResult[];
+      const results = JSON.parse(clean) as QuestionResult[];
+
+      console.log(`📊 [BATCH EVAL] Generated ${results.length} topic evaluations (not Q&A exchanges)`);
+
+      // Validate detailedFeedback exists
+      results.forEach(r => {
+        if (!(r as any).detailedFeedback) {
+          console.warn(`⚠️ [BATCH] Missing detailedFeedback for: ${r.topic}`);
+          (r as any).detailedFeedback = r.feedback;
+        }
+      });
+
+      return results;
     } catch (e) {
       console.error("❌ [BATCH EVAL] Error:", e);
       return [];
@@ -621,14 +639,16 @@ export class GeminiAgentService {
 
     const payload = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { 
+      generationConfig: {
         temperature: 0.3,  // Slightly higher for creative feedback
         responseMimeType: "application/json"
       }
     };
 
     try {
-      const raw = await this.callGemini(payload);
+      // ✅ Use Gemini 2.5 Pro for comprehensive final analysis
+      console.log("📊 [FINAL EVAL] Using model: gemini-2.5-pro");
+      const raw = await this.callGemini(payload, "gemini-2.5-pro");
       const clean = this.cleanJson(raw);
       return JSON.parse(clean);
     } catch (e) {
@@ -922,12 +942,30 @@ export class GeminiAgentService {
     }
   }
 
-  private async callGemini(payload: any): Promise<string> {
-    const response = await fetch(`${this.baseUrl}?key=${this.apiKey}`, {
+  /**
+   * Core Gemini API call with optional model override.
+   * 
+   * @param payload - The request payload
+   * @param model - Model to use (default: MODEL_ID which is gemini-2.5-flash)
+   *                Pass "gemini-2.5-pro" for final evaluation and batch processing
+   */
+  private async callGemini(payload: any, model: string = MODEL_ID): Promise<string> {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKey}`;
+
+    console.log(`🤖 [GEMINI] Calling model: ${model}`);
+
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ [GEMINI] API error (${response.status}):`, errorText);
+      throw new Error(`Gemini API error: ${response.status}`);
+    }
+
     const data = await response.json();
     if (data.error) throw new Error(data.error.message);
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "";

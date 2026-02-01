@@ -22,8 +22,16 @@ export const ScoreReveal = React.memo(({ score, summary, loading, onReturnToMenu
     const [displayScore, setDisplayScore] = useState("0.0");
     const [isRevealed, setIsRevealed] = useState(false);
     const [displaySummary, setDisplaySummary] = useState("");
+    const [skipTypewriter, setSkipTypewriter] = useState(false);  // ✅ NEW: Tap-to-skip state
     const animationStartedRef = useRef(false);
     const scrambleIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    const typeIntervalRef = useRef<NodeJS.Timeout | null>(null);  // ✅ NEW: Store interval ref
+
+    // ✅ Character limit for summary display
+    const MAX_SUMMARY_CHARS = 150;
+    const truncatedSummary = summary.length > MAX_SUMMARY_CHARS
+        ? summary.substring(0, MAX_SUMMARY_CHARS) + '...'
+        : summary;
 
     // Scramble Effect - runs continuously until revealed
     useEffect(() => {
@@ -63,23 +71,50 @@ export const ScoreReveal = React.memo(({ score, summary, loading, onReturnToMenu
         }
     }, [loading, score]);
 
-    // Typewriter effect for summary
+    // ✅ ENHANCED: Typewriter effect with tap-to-skip support
     useEffect(() => {
-        if (isRevealed && summary) {
+        if (isRevealed && truncatedSummary) {
+            // If already skipped, show everything immediately
+            if (skipTypewriter) {
+                setDisplaySummary(truncatedSummary);
+                setShowButton(true);
+                return;
+            }
+
             let index = 0;
-            const typeInterval = setInterval(() => {
-                if (index <= summary.length) {
-                    setDisplaySummary(summary.substring(0, index));
+            typeIntervalRef.current = setInterval(() => {
+                // Check if user tapped to skip
+                if (skipTypewriter) {
+                    if (typeIntervalRef.current) clearInterval(typeIntervalRef.current);
+                    setDisplaySummary(truncatedSummary);
+                    setShowButton(true);
+                    return;
+                }
+
+                if (index <= truncatedSummary.length) {
+                    setDisplaySummary(truncatedSummary.substring(0, index));
                     index++;
                 } else {
-                    clearInterval(typeInterval);
+                    if (typeIntervalRef.current) clearInterval(typeIntervalRef.current);
                     // Show button after typewriter completes
                     setTimeout(() => setShowButton(true), 500);
                 }
             }, 30);
-            return () => clearInterval(typeInterval);
+
+            return () => {
+                if (typeIntervalRef.current) clearInterval(typeIntervalRef.current);
+            };
         }
-    }, [isRevealed, summary]);
+    }, [isRevealed, truncatedSummary, skipTypewriter]);
+
+    // ✅ NEW: Handle tap to skip typewriter animation
+    const handleTapSummary = () => {
+        if (!isRevealed || skipTypewriter) return;
+        console.log("⚡ [CASINO] User tapped summary - skipping typewriter");
+        setSkipTypewriter(true);
+        setDisplaySummary(truncatedSummary);
+        setShowButton(true);
+    };
 
     const animatedProps = useAnimatedProps(() => {
         const radius = 120;
@@ -147,16 +182,37 @@ export const ScoreReveal = React.memo(({ score, summary, loading, onReturnToMenu
             </View>
 
             {isRevealed && (
-                <View style={styles.summaryContainer}>
-                    <Text style={styles.summaryText}>{displaySummary}<Text style={{ opacity: displaySummary.length < summary.length ? 1 : 0 }}>|</Text></Text>
-                </View>
+                <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={handleTapSummary}
+                    disabled={skipTypewriter}
+                    style={styles.summaryContainer}
+                >
+                    <Text style={styles.summaryText}>
+                        {displaySummary}
+                        {/* Cursor blink only if typing */}
+                        <Text style={{ opacity: skipTypewriter || displaySummary.length >= truncatedSummary.length ? 0 : 1 }}>|</Text>
+                    </Text>
+
+                    {/* Hint text */}
+                    {!skipTypewriter && displaySummary.length < truncatedSummary.length && (
+                        <Text style={styles.tapHint}>Tap to skip</Text>
+                    )}
+
+                    {/* Results hint when summary is complete */}
+                    {(skipTypewriter || displaySummary.length >= truncatedSummary.length) && summary.length > MAX_SUMMARY_CHARS && (
+                        <Text style={styles.summaryHint}>
+                            Tap "CHECK YOUR RESULTS" for full feedback
+                        </Text>
+                    )}
+                </TouchableOpacity>
             )}
 
             {showButton && (
                 <AnimatedReanimated.View style={styles.resultButtonContainer}>
-                    <TouchableOpacity 
-                        style={styles.resultButton} 
-                        onPress={onShowResults || onReturnToMenu || (() => {})}
+                    <TouchableOpacity
+                        style={styles.resultButton}
+                        onPress={onShowResults || onReturnToMenu || (() => { })}
                     >
                         <Text style={styles.resultButtonText}>CHECK YOUR RESULTS</Text>
                         <Ionicons name="arrow-forward" size={20} color="#000" />
@@ -238,5 +294,19 @@ const styles = StyleSheet.create({
         fontSize: 16,
         marginRight: 10,
         letterSpacing: 1,
+    },
+    tapHint: {
+        color: '#666',
+        fontSize: 11,
+        marginTop: 8,
+        textAlign: 'center',
+        fontStyle: 'italic',
+    },
+    summaryHint: {
+        color: '#888',
+        fontSize: 12,
+        marginTop: 12,
+        textAlign: 'center',
+        fontStyle: 'italic',
     },
 });

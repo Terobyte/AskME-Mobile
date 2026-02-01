@@ -677,13 +677,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       setIsLobbyPhase(true);
       setMessages([]);
 
-      // 4. Play immediate greeting
-      const greeting = "Hello, I'm Victoria. I'll be conducting your technical interview today. I have your details in front of me. Whenever you're ready to begin, just let me know.";
-      await playSynchronizedResponse(greeting);
-
-      // 5. Generate full plan asynchronously
+      // ✅ NEW: Start plan generation IMMEDIATELY (non-blocking)
+      // This runs in background while greeting plays
+      console.log("🎰 [INIT] Starting plan generation in background...");
       generateInterviewPlan(resume, jobDescription, mode)
         .then(generatedPlan => {
+          console.log("✅ [PLAN] Generated:", generatedPlan.queue.length, "topics");
           setPlan(prev => {
             if (!prev) return generatedPlan;
             return {
@@ -692,16 +691,29 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             };
           });
           setIsPlanReady(true);
-          console.log("✅ Plan Ready:", generatedPlan.queue.length, "topics");
         })
         .catch(err => {
-          console.error("Plan Gen Error:", err);
-          Alert.alert("Error", "Failed to generate interview plan.");
+          console.error("❌ [PLAN] Generation failed:", err);
+          console.log("⚠️ [PLAN] Using fallback plan...");
+          // Use fallback plan instead of showing error
+          setPlan({
+            meta: { mode, total_estimated_time: '20m' },
+            queue: [
+              { id: 'intro', topic: 'Introduction', type: 'Intro', estimated_time: '5m', context: 'Tell me about yourself and your background.' },
+              { id: 'tech1', topic: 'Technical Experience', type: 'Match', estimated_time: '10m', context: 'Discuss your main technical skills and projects.' },
+              { id: 'soft1', topic: 'Problem Solving', type: 'SoftSkill', estimated_time: '5m', context: 'How do you approach technical challenges?' }
+            ]
+          });
+          setIsPlanReady(true);
         });
 
+      // 4. Play immediate greeting (don't wait for plan)
+      const greeting = "Hello, I'm Victoria. I'll be conducting your technical interview today. I have your details in front of me. Whenever you're ready to begin, just let me know.";
+      await playSynchronizedResponse(greeting);
+
     } catch (error) {
+      console.error("❌ [INIT] Initialization failed:", error);
       Alert.alert("Error", "Failed to initialize interview.");
-      console.error(error);
       throw error;
     }
   };

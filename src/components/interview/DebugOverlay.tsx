@@ -7,7 +7,7 @@ interface DebugOverlayProps {
     visible: boolean;
     onClose: () => void;
     anger: number;
-    debugValue: string;
+    debugValue: string;  // Now accepts QualityLevel | SpecialAction
     isDebugTtsMuted: boolean;
     isSimulating: boolean;
     setAnger: (value: number) => void;
@@ -16,6 +16,44 @@ interface DebugOverlayProps {
     onSimulate: () => Promise<void>;
     onForceFinish: () => Promise<void>;
 }
+
+// ============================================
+// QUALITY LEVELS & SPECIAL ACTIONS
+// ============================================
+// 
+// NEW DESIGN: Replaces old numeric system (0, 3, 5, 8, 10) with semantic levels
+// that align with the new evaluation system in gemini-agent.ts
+// 
+// Quality Levels map to compositeScore ranges:
+// - excellent: 9.0-10.0 → Green
+// - good: 7.0-8.9 → Blue
+// - mediocre: 5.0-6.9 → Orange
+// - poor: 3.0-4.9 → Orange-Red
+// - fail: 0.0-2.9 → Red
+// 
+// Special Actions are non-quality behaviors:
+// - nonsense: Triggers anger
+// - give_up: Polite skip
+// - clarify: Request rephrasing
+// - show_answer: Request explanation
+// ============================================
+
+// Quality levels with color coding
+const qualityLevels = [
+    { value: 'excellent', label: 'Excellent (9-10)', color: '#30D158' },
+    { value: 'good', label: 'Good (7-8)', color: '#32ADE6' },
+    { value: 'mediocre', label: 'Mediocre (5-6)', color: '#FF9F0A' },
+    { value: 'poor', label: 'Poor (3-4)', color: '#FF6B35' },
+    { value: 'fail', label: 'Fail (0-2)', color: '#FF3B30' }
+];
+
+// Special actions (non-answer behaviors)
+const specialActions = [
+    { value: 'nonsense', label: '💩 Nonsense', color: '#8E8E93' },
+    { value: 'give_up', label: '🏳️ Give Up', color: '#8E8E93' },
+    { value: 'clarify', label: '❓ Clarify', color: '#8E8E93' },
+    { value: 'show_answer', label: '💡 Show Answer', color: '#8E8E93' }
+];
 
 export const DebugOverlay: React.FC<DebugOverlayProps> = ({
     visible,
@@ -32,7 +70,18 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
 }) => {
     if (!visible) return null;
 
-    const options = ["0", "3", "5", "8", "10", "NONSENSE", "CLARIFICATION", "GIVE_UP", "SHOW_ANSWER", "I_AM_READY"];
+    // Helper to determine if a value is a quality level
+    const isQualityLevel = qualityLevels.some(l => l.value === debugValue);
+    const isSpecialAction = specialActions.some(a => a.value === debugValue);
+
+    // Get the color for the currently selected value
+    const getSelectedColor = () => {
+        const quality = qualityLevels.find(l => l.value === debugValue);
+        if (quality) return quality.color;
+        const action = specialActions.find(a => a.value === debugValue);
+        if (action) return action.color;
+        return '#0A84FF';
+    };
 
     return (
         <View style={styles.debugOverlay}>
@@ -43,7 +92,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
                 </TouchableOpacity>
             </View>
 
-            {/* Metrics Control */}
+            {/* Anger Level Control */}
             <View style={styles.debugSection}>
                 <Text style={styles.debugLabel}>Anger Level: {anger.toFixed(0)}%</Text>
                 <Slider
@@ -58,40 +107,80 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
                 />
             </View>
 
-            {/* Simulation Control */}
+            {/* Quality Level Selection */}
             <View style={styles.debugSection}>
-                <Text style={styles.debugLabel}>Simulate Response:</Text>
+                <Text style={styles.debugLabel}>Quality Level:</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
-                    {options.map(opt => (
+                    {qualityLevels.map(level => (
                         <TouchableOpacity
-                            key={opt}
-                            style={[styles.debugChip, debugValue === opt && styles.debugChipActive]}
-                            onPress={() => setDebugValue(opt)}
+                            key={level.value}
+                            style={[
+                                styles.debugChip,
+                                debugValue === level.value && {
+                                    backgroundColor: level.color,
+                                    borderColor: level.color
+                                }
+                            ]}
+                            onPress={() => setDebugValue(level.value)}
                         >
-                            <Text style={[styles.debugChipText, debugValue === opt && styles.debugChipTextActive]}>{opt}</Text>
+                            <Text style={[
+                                styles.debugChipText,
+                                debugValue === level.value && styles.debugChipTextActive
+                            ]}>
+                                {level.label}
+                            </Text>
                         </TouchableOpacity>
                     ))}
                 </ScrollView>
-                <View style={styles.debugRow}>
-                    <TouchableOpacity style={styles.debugButton} onPress={onSimulate} disabled={isSimulating}>
-                        <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]}
-                        onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
-                    >
-                        <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
-                    </TouchableOpacity>
-                </View>
+            </View>
 
-                {/* Force Finish Button */}
+            {/* Special Actions Selection */}
+            <View style={styles.debugSection}>
+                <Text style={styles.debugLabel}>Special Actions:</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
+                    {specialActions.map(action => (
+                        <TouchableOpacity
+                            key={action.value}
+                            style={[
+                                styles.debugChip,
+                                debugValue === action.value && {
+                                    backgroundColor: action.color,
+                                    borderColor: action.color
+                                }
+                            ]}
+                            onPress={() => setDebugValue(action.value)}
+                        >
+                            <Text style={[
+                                styles.debugChipText,
+                                debugValue === action.value && styles.debugChipTextActive
+                            ]}>
+                                {action.label}
+                            </Text>
+                        </TouchableOpacity>
+                    ))}
+                </ScrollView>
+            </View>
+
+            {/* Simulate Row */}
+            <View style={styles.debugRow}>
+                <TouchableOpacity style={styles.debugButton} onPress={onSimulate} disabled={isSimulating}>
+                    <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
-                    style={[styles.debugButton, { backgroundColor: '#FF3B30', marginTop: 15, marginRight: 0 }]}
-                    onPress={onForceFinish}
+                    style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]}
+                    onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
                 >
-                    <Text style={styles.debugButtonText}>🛑 FORCE FINISH</Text>
+                    <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
                 </TouchableOpacity>
             </View>
+
+            {/* Force Finish Button */}
+            <TouchableOpacity
+                style={[styles.debugButton, { backgroundColor: '#FF3B30', marginTop: 15, marginRight: 0 }]}
+                onPress={onForceFinish}
+            >
+                <Text style={styles.debugButtonText}>🛑 FORCE FINISH</Text>
+            </TouchableOpacity>
         </View>
     );
 };

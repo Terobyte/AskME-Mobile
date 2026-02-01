@@ -370,12 +370,27 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
             setCurrentMetrics({ accuracy: 0, depth: 0, structure: 0, reasoning: "Response was identified as nonsense/irrelevant." });
           }
-          else {
-            // ATTEMPT -> Normal Scoring (ANGER REMOVED FROM FORMULAS PER RULE 2)
+          else if (analysis.intent === 'STRONG_ATTEMPT' || analysis.intent === 'WEAK_ATTEMPT') {
+            // ATTEMPT -> Normal Scoring using new compositeScore when available
+            // Fall back to calculated overall for backward compatibility
             const { accuracy, depth, structure } = analysis.metrics;
-            const overall = (accuracy + depth + structure) / 3;
+            const calculatedOverall = (accuracy + depth + structure) / 3;
 
-            console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)}`);
+            // Use compositeScore from new evaluation system if available, else fallback
+            const overall = analysis.compositeScore !== undefined ? analysis.compositeScore : calculatedOverall;
+
+            console.log(`🔹 [MATH] Overall: ${overall.toFixed(1)} (compositeScore: ${analysis.compositeScore?.toFixed(1) || 'N/A'})`);
+
+            // Log new evaluation fields if available
+            if (analysis.level) {
+              console.log(`📊 [LEVEL] Quality Level: ${analysis.level}`);
+            }
+            if (analysis.issues && analysis.issues.length > 0) {
+              console.log(`⚠️ [ISSUES] ${analysis.issues.join(', ')}`);
+            }
+            if (analysis.suggestedFeedback) {
+              console.log(`💬 [FEEDBACK] "${analysis.suggestedFeedback}"`);
+            }
 
             // Rule 2: Anger does NOT increase on poor attempts (only NONSENSE or NEXT_FAIL)
             if (overall < 5) {
@@ -387,13 +402,13 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
               newSuccess += (overall * 7);
               newPatience += 10;
               console.log(`📊 [SCORE] Mediocre (${overall.toFixed(1)}) - Success +${(overall * 7).toFixed(0)}, Patience +10`);
-            } else if (overall <= 8) {
-              // G. Good answer
+            } else if (overall <= 8.9) {
+              // G. Good answer (adjusted threshold to match new quality levels)
               newSuccess += (overall * 13);
               newPatience -= (overall * 3);
               console.log(`📈 [SCORE] Good (${overall.toFixed(1)}) - Success +${(overall * 13).toFixed(0)}, Patience -${(overall * 3).toFixed(0)}`);
             } else {
-              // H. Excellent answer (>8) - ONLY case where anger reduces
+              // H. Excellent answer (>=9) - ONLY case where anger reduces
               newSuccess += (overall * 13);
               newPatience -= (overall * 3);
               newAnger -= 5; // ⬅️ ONLY REDUCTION for excellent answers
@@ -850,20 +865,20 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       }
 
       // Check for new semantic quality levels (direct usage)
-      const validQualityLevels = ['excellent', 'good', 'average', 'poor', 'fail'];
+      const validQualityLevels = ['excellent', 'good', 'mediocre', 'poor', 'fail'];
       const lowerIntent = intentType.toLowerCase();
       if (validQualityLevels.includes(lowerIntent)) {
         console.log(`⚡ [SIMULATE] Semantic quality level: '${lowerIntent}'`);
         return await agentRef.current.generateSimulatedAnswer(
           currentTopicData,
-          lowerIntent as 'excellent' | 'good' | 'average' | 'poor' | 'fail',
+          lowerIntent as 'excellent' | 'good' | 'mediocre' | 'poor' | 'fail',
           resumeText
         );
       }
     }
 
     // Convert numeric intent to semantic quality level
-    let qualityLevel: 'excellent' | 'good' | 'average' | 'poor' | 'fail';
+    let qualityLevel: 'excellent' | 'good' | 'mediocre' | 'poor' | 'fail';
 
     // Parse numeric value (handles both number and string numbers)
     const numericValue = typeof intentType === 'number' ? intentType : Number(intentType);
@@ -875,26 +890,26 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         console.log(`⚡ [SIMULATE] Score ${numericValue} → 'excellent' (9-10)`);
       } else if (numericValue >= 7) {
         qualityLevel = 'good';
-        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'good' (7-8)`);
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'good' (7-8.9)`);
       } else if (numericValue >= 5) {
-        qualityLevel = 'average';
-        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'average' (5-6)`);
+        qualityLevel = 'mediocre';
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'mediocre' (5-6.9)`);
       } else if (numericValue >= 3) {
         qualityLevel = 'poor';
-        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'poor' (3-4)`);
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'poor' (3-4.9)`);
       } else {
         // 0, 1, 2 → 'fail' (trying but completely wrong, NOT nonsense)
         qualityLevel = 'fail';
-        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'fail' (0-2) ⚠️ Attempting but wrong, NOT nonsense`);
+        console.log(`⚡ [SIMULATE] Score ${numericValue} → 'fail' (0-2.9) ⚠️ Attempting but wrong, NOT nonsense`);
       }
     } else if (typeof intentType === 'string' && intentType.toLowerCase() === 'poor_0') {
       // Legacy 'poor_0' intent maps to 'fail'
       qualityLevel = 'fail';
       console.log("⚡ [SIMULATE] Legacy 'poor_0' → 'fail'");
     } else {
-      // Unknown intent - default to average
-      qualityLevel = 'average';
-      console.warn(`⚠️ [SIMULATE] Unknown intentType '${intentType}', defaulting to 'average'`);
+      // Unknown intent - default to mediocre
+      qualityLevel = 'mediocre';
+      console.warn(`⚠️ [SIMULATE] Unknown intentType '${intentType}', defaulting to 'mediocre'`);
     }
 
     console.log(`⚡ [SIMULATE] Final quality level: '${qualityLevel}'`);

@@ -37,39 +37,119 @@ export interface InterviewPlan {
 }
 
 export interface EvaluationMetrics {
-    accuracy: number;
-    depth: number;
-    structure: number;
-    reasoning: string;
+  accuracy: number;
+  depth: number;
+  structure: number;
+  reasoning: string;
 }
 
+// ============================================
+// ENHANCED EVALUATION SYSTEM TYPES
+// ============================================
+
+/**
+ * QualityLevel: Semantic representation of answer quality.
+ * Maps compositeScore to human-readable levels for decision-making.
+ * 
+ * Score Mapping:
+ * - excellent: 9.0-10.0 (expert-level, specific examples, deep understanding)
+ * - good: 7.0-8.9 (solid practical experience, correct terminology)
+ * - mediocre: 5.0-6.9 (textbook understanding, lacks real-world depth)
+ * - poor: 3.0-4.9 (weak/confused understanding, vague)
+ * - fail: 0.0-2.9 (fundamentally wrong but attempting)
+ */
+export type QualityLevel = 'excellent' | 'good' | 'mediocre' | 'poor' | 'fail';
+
+/**
+ * AnswerIssue: Specific problems identified in the candidate's answer.
+ * Used to provide targeted feedback and help Victoria guide the conversation.
+ */
+export type AnswerIssue =
+  | 'NO_EXAMPLE'        // Didn't provide concrete example
+  | 'WRONG_CONCEPT'     // Fundamental misunderstanding
+  | 'TOO_VAGUE'         // Answer lacks specificity
+  | 'OFF_TOPIC'         // Didn't answer the question asked
+  | 'RAMBLING'          // Unfocused, jumping between ideas
+  | 'INCOMPLETE'        // Started well but didn't finish thought
+  | 'SHALLOW';          // Surface-level, no depth
+
+/**
+ * UserIntent: Extended intent types for more granular classification.
+ * Separates quality attempts (STRONG_ATTEMPT vs WEAK_ATTEMPT) from actions.
+ * 
+ * Intent Behavior:
+ * - STRONG_ATTEMPT: Good quality attempt (compositeScore >= 5) → normal flow
+ * - WEAK_ATTEMPT: Poor quality attempt (compositeScore < 5) → patience increases
+ * - CLARIFICATION: Request for rephrasing → metrics zeroed, stay on topic
+ * - GIVE_UP: Admit not knowing → move to next topic, slight patience
+ * - SHOW_ANSWER: Request explanation → educational transition
+ * - NONSENSE: Off-topic trolling → triggers anger increase
+ * - READY_CONFIRM: User says "ready" → intro phase only
+ */
+export type UserIntent =
+  | 'STRONG_ATTEMPT'    // Good quality attempt (score >= 5)
+  | 'WEAK_ATTEMPT'      // Poor quality attempt (score < 5)
+  | 'CLARIFICATION'     // Asking for question to be rephrased
+  | 'GIVE_UP'           // Admitting don't know, skip
+  | 'SHOW_ANSWER'       // Request to reveal correct answer
+  | 'NONSENSE'          // Off-topic trolling
+  | 'READY_CONFIRM';    // User says "ready" (intro only)
+
+/**
+ * AnalysisResponse: Enhanced evaluation result with multi-dimensional analysis.
+ * 
+ * Key improvements over previous version:
+ * - compositeScore: Weighted average for decision-making
+ * - level: Semantic quality level for human-readable feedback
+ * - issues: Specific problems for targeted feedback
+ * - suggestedFeedback: Pre-generated phrase for Victoria's voice
+ */
 export interface AnalysisResponse {
-    metrics: EvaluationMetrics;
-    intent: 'ATTEMPT' | 'GIVE_UP' | 'CLARIFICATION' | 'SHOW_ANSWER' | 'NONSENSE';
+  // Keep existing metrics for transparency and detailed logging
+  metrics: EvaluationMetrics;
+
+  // NEW: Composite score (weighted based on question type)
+  // Technical: accuracy×0.5 + depth×0.3 + structure×0.2
+  // SoftSkill: accuracy×0.3 + depth×0.3 + structure×0.4
+  // Intro: accuracy×0.2 + depth×0.2 + structure×0.6
+  compositeScore: number;  // 0-10, calculated by combining metrics
+
+  // NEW: Semantic quality level
+  level: QualityLevel;
+
+  // NEW: Specific problems identified
+  issues: AnswerIssue[];
+
+  // Intent classification using extended types
+  intent: UserIntent;
+
+  // NEW: Suggested feedback snippet for Victoria
+  // Short phrase (5-10 words) that Victoria should incorporate naturally
+  suggestedFeedback: string;
 }
 
 export interface VoiceGenerationContext {
-    currentTopic: InterviewTopic;
-    nextTopic: InterviewTopic | null;
-    transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER';
-    angerLevel?: number; // Added for final feedback
+  currentTopic: InterviewTopic;
+  nextTopic: InterviewTopic | null;
+  transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER';
+  angerLevel?: number; // Added for final feedback
 }
 
 export interface AiResponse {
-    message: string;
-    metrics: EvaluationMetrics;
+  message: string;
+  metrics: EvaluationMetrics;
 }
 
 export interface ChatMessage {
-    role: 'user' | 'assistant' | 'system';
-    content: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
 }
 
 export interface InterviewContext {
-    currentTopic: InterviewTopic;
-    previousResult: string | null;
-    angerLevel: number;
-    isLastTopic: boolean;
+  currentTopic: InterviewTopic;
+  previousResult: string | null;
+  angerLevel: number;
+  isLastTopic: boolean;
 }
 
 export interface QuestionResult {

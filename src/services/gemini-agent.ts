@@ -1,4 +1,4 @@
-import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage, QuestionResult, FinalInterviewReport } from "../types";
+import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage, QuestionResult, FinalInterviewReport, QualityLevel } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -21,17 +21,14 @@ const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL!
 //   - 'nonsense' (SpecialAction): Candidate is NOT trying, trolling (triggers anger)
 // ============================================
 
-/**
- * QualityLevel: Semantic representation of answer quality.
- * Maps to expected score ranges for consistent evaluation.
- * 
- * Example outputs:
- * - 'excellent': "At Coinbase, we faced severe jank on our portfolio screen. I migrated 
- *    from FlatList to FlashList, implemented MMKV for caching, and reduced TTI by 40%."
- * - 'fail': "React Native performance? I think that's related to CSS optimization, 
- *    like using flexbox properly helps the app run faster on servers."
- */
-type QualityLevel = 'excellent' | 'good' | 'average' | 'poor' | 'fail';
+// QualityLevel is imported from types.ts
+// Maps to expected score ranges for consistent evaluation.
+// 
+// Example outputs:
+// - 'excellent': "At Coinbase, we faced severe jank on our portfolio screen. I migrated 
+//    from FlatList to FlashList, implemented MMKV for caching, and reduced TTI by 40%."
+// - 'fail': "React Native performance? I think that's related to CSS optimization, 
+//    like using flexbox properly helps the app run faster on servers."
 
 /**
  * SpecialAction: Non-answer behaviors that don't represent quality attempts.
@@ -71,7 +68,7 @@ const LEVEL_DESCRIPTIONS: Record<QualityLevel, string> = {
     - Format: "I've used Zustand for state management in my last two projects. It works really well for mid-size apps because the boilerplate is minimal compared to Redux."
     - Sound like a Sr. Developer who knows their craft`,
 
-  average: `Score 5-6 (Textbook Understanding):
+  mediocre: `Score 5-6 (Textbook Understanding):
     - Show correct theoretical understanding without real-world depth
     - Use correct concepts but in generic, impersonal way
     - Could have been copied from documentation or a tutorial
@@ -196,54 +193,197 @@ export class GeminiAgentService {
 
   // --- 1. ANALYSIS JUDGE ---
   async evaluateUserAnswer(userText: string, currentTopic: InterviewTopic, lastAiQuestion: string): Promise<AnalysisResponse | string> {
+    // Determine topic type for weighted scoring
+    const topicType = currentTopic.type || 'Match'; // Default to technical
+
     const prompt = `
       ROLE: Analytical Judge (JSON ONLY)
-      TASK: Evaluate the candidate's answer.
-      
+
+      TASK: Evaluate candidate's answer with multi-dimensional analysis.
+
       CONTEXT:
       - Topic: "${currentTopic.topic}"
+      - Topic Type: "${topicType}"
       - Description: "${currentTopic.context || 'General'}"
-      - ACTUAL QUESTION ASKED TO CANDIDATE: "${lastAiQuestion}"
+      - ACTUAL QUESTION ASKED: "${lastAiQuestion}"
       - User Input: "${userText}"
-      
-      ===== INTENT CLASSIFICATION RULES =====
-      - "GIVE_UP": User says "I don't know", "Skip", "Next", "Pass".
-      - "SHOW_ANSWER": User asks "Tell me the answer", "What is it?", "How would you answer?".
-      - "CLARIFICATION": User asks "Can you repeat?", "Rephrase please?", "What do you mean?", "I don't understand the question".
-      - "READY_CONFIRM": User says "I'm ready", "Let's start", "Go ahead", "I am prepared".
-      - "NONSENSE": The user is trolling, speaking gibberish, repeating words mindlessly (e.g., "blah blah", "yes yes yes"), or referencing pop culture/irrelevant topics (e.g., "I live in Bikini Bottom") that have nothing to do with the interview.
-        ⚠️ CRITICAL: NONSENSE is the ONLY intent that triggers anger increase!
-      - "ATTEMPT": User tries to answer (even if wrong or poor quality).
 
-      ===== CLARIFICATION SPECIAL HANDLING =====
-      If intent = "CLARIFICATION":
-        - This means user is asking for help understanding
-        - Metrics should be: { "accuracy": 0, "depth": 0, "structure": 0, "reasoning": "User requested clarification" }
-        - This does NOT count as a bad answer
-        - System will STAY on current topic and rephrase question
+      ===== INTENT CLASSIFICATION =====
+      Determine user's intent FIRST:
 
-      ===== TASK =====
-      Evaluate the answer based on the ACTUAL QUESTION ASKED.
-      If the question was a follow-up (e.g., about specific metrics), grade based on that, not the generic topic.
-      
-      ===== SCORING (0-10) =====
-      - 10: Perfect, deep, expert.
-      - 7-9: Good understanding, correct approach.
-      - 5-6: Basic understanding, some gaps.
-      - 1-4: Vague, wrong, or short.
-      - 0: Complete failure or nonsense.
-      
+      - "CLARIFICATION": User asks to rephrase/clarify question
+        → Example: "Could you repeat that?", "What do you mean?"
+        → IMPORTANT: If this intent, return metrics as {0,0,0} with reasoning: "User requested clarification"
+        → This is NOT scored, just acknowledged
+
+      - "GIVE_UP": User admits not knowing
+        → Example: "I don't know", "Skip this", "Pass"
+        
+      - "SHOW_ANSWER": User asks for correct answer
+        → Example: "Tell me the answer", "What would you say?"
+        
+      - "NONSENSE": Trolling, gibberish, completely off-topic
+        → Example: "I live in Bikini Bottom", random gibberish
+        → This is the ONLY intent that should trigger anger
+
+      - "READY_CONFIRM": User says ready (intro topic only)
+        → Example: "I'm ready", "Let's start"
+        
+      - "WEAK_ATTEMPT": User tries to answer but quality is poor (compositeScore < 5)
+        
+      - "STRONG_ATTEMPT": User tries to answer with decent quality (compositeScore >= 5)
+
+      ===== SCORING INSTRUCTIONS =====
+
+      IF intent is CLARIFICATION, GIVE_UP, SHOW_ANSWER, or READY_CONFIRM:
+        → Set metrics to {0, 0, 0} with reasoning explaining the intent
+        → Set compositeScore to 0
+        → Set level to "fail"
+        → Skip quality evaluation
+        → Return empty issues array
+
+      IF intent is NONSENSE or WEAK_ATTEMPT or STRONG_ATTEMPT:
+        → Evaluate the answer quality:
+
+      **METRICS (each 0-10):**
+
+      accuracy: 
+        - 9-10: Perfect understanding, correct terminology
+        - 7-8: Mostly correct, minor gaps
+        - 5-6: Basic understanding, some errors
+        - 3-4: Significant errors or confusion
+        - 0-2: Fundamentally wrong
+
+      depth:
+        - 9-10: Expert insight, specific examples, mentions trade-offs
+        - 7-8: Good practical knowledge, real experience shown
+        - 5-6: Textbook level, no real-world detail
+        - 3-4: Very surface-level
+        - 0-2: No depth at all
+
+      structure:
+        - 9-10: Clear, organized, directly answers question
+        - 7-8: Mostly clear, some organization
+        - 5-6: Somewhat rambling but followable
+        - 3-4: Disorganized, hard to follow
+        - 0-2: Incoherent or completely off-topic
+
+      **COMPOSITE SCORE:**
+      Calculate weighted average based on topic type:
+
+      IF topic type is "Match" or "Gap" or "CoolSkill" (Technical):
+        compositeScore = (accuracy × 0.5) + (depth × 0.3) + (structure × 0.2)
+
+      IF topic type is "SoftSkill":
+        compositeScore = (accuracy × 0.3) + (depth × 0.3) + (structure × 0.4)
+
+      IF topic type is "Intro" or "Outro":
+        compositeScore = (accuracy × 0.2) + (depth × 0.2) + (structure × 0.6)
+
+      **QUALITY LEVEL:**
+      Map compositeScore to semantic level:
+        - 9.0-10.0 → "excellent"
+        - 7.0-8.9  → "good"
+        - 5.0-6.9  → "mediocre"
+        - 3.0-4.9  → "poor"
+        - 0.0-2.9  → "fail"
+
+      **ISSUES ARRAY:**
+      Identify specific problems (can be multiple):
+        - "NO_EXAMPLE": Answer lacks concrete example
+        - "WRONG_CONCEPT": Fundamental misunderstanding
+        - "TOO_VAGUE": Not specific enough
+        - "OFF_TOPIC": Doesn't answer the question asked
+        - "RAMBLING": Unfocused, jumping around
+        - "INCOMPLETE": Didn't finish the thought
+        - "SHALLOW": Surface-level only
+
+      **SUGGESTED FEEDBACK:**
+      Generate SHORT phrase (5-10 words) that Victoria should say:
+        - If excellent: "Great answer with solid examples."
+        - If good: "Good understanding, could go deeper."
+        - If mediocre: "Basic answer, needs more detail."
+        - If poor: "This needs more depth and accuracy."
+        - If fail: "That's not quite right."
+        - If CLARIFICATION: "Let me rephrase that question."
+        - If GIVE_UP: "Alright, let's move on."
+        - If NONSENSE: "Please stay focused on the question."
+
       ===== OUTPUT JSON SCHEMA =====
       {
-        "metrics": { "accuracy": number, "depth": number, "structure": number, "reasoning": "string" },
-        "intent": "ATTEMPT" | "GIVE_UP" | "CLARIFICATION" | "SHOW_ANSWER" | "READY_CONFIRM" | "NONSENSE"
+        "metrics": {
+          "accuracy": number,
+          "depth": number,
+          "structure": number,
+          "reasoning": "string explaining why these scores"
+        },
+        "compositeScore": number,
+        "level": "excellent" | "good" | "mediocre" | "poor" | "fail",
+        "issues": ["ISSUE_TYPE", ...],
+        "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | "CLARIFICATION" | "GIVE_UP" | "SHOW_ANSWER" | "NONSENSE" | "READY_CONFIRM",
+        "suggestedFeedback": "string"
+      }
+
+      ===== EXAMPLES =====
+
+      Example 1 - Good Technical Answer:
+      User: "In my last project at Stripe, we used Redux for state management. 
+      We chose it because we needed a single source of truth across 50+ screens."
+
+      Expected Output:
+      {
+        "metrics": { "accuracy": 8, "depth": 7, "structure": 9, "reasoning": "Correct concept, real example, well-structured" },
+        "compositeScore": 7.9,
+        "level": "good",
+        "issues": [],
+        "intent": "STRONG_ATTEMPT",
+        "suggestedFeedback": "Solid answer with practical context."
+      }
+
+      Example 2 - Weak Technical Answer:
+      User: "Um, state is like... when the app remembers stuff?"
+
+      Expected Output:
+      {
+        "metrics": { "accuracy": 4, "depth": 2, "structure": 3, "reasoning": "Very vague, no real understanding shown" },
+        "compositeScore": 3.2,
+        "level": "poor",
+        "issues": ["TOO_VAGUE", "NO_EXAMPLE", "SHALLOW"],
+        "intent": "WEAK_ATTEMPT",
+        "suggestedFeedback": "Too vague. Can you be more specific?"
+      }
+
+      Example 3 - Clarification Request:
+      User: "Could you rephrase that? I didn't quite understand the question."
+
+      Expected Output:
+      {
+        "metrics": { "accuracy": 0, "depth": 0, "structure": 0, "reasoning": "User requested clarification" },
+        "compositeScore": 0,
+        "level": "fail",
+        "issues": [],
+        "intent": "CLARIFICATION",
+        "suggestedFeedback": "Let me rephrase that for you."
+      }
+
+      Example 4 - Nonsense:
+      User: "I like turtles and my favorite anime is Naruto."
+
+      Expected Output:
+      {
+        "metrics": { "accuracy": 0, "depth": 0, "structure": 0, "reasoning": "Completely off-topic, not attempting to answer" },
+        "compositeScore": 0,
+        "level": "fail",
+        "issues": ["OFF_TOPIC"],
+        "intent": "NONSENSE",
+        "suggestedFeedback": "That's not relevant. Please focus."
       }
       `;
 
     const payload = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.1, // Strict logic
+        temperature: 0.1,  // Keep strict for analysis
         responseMimeType: "application/json"
       }
     };
@@ -251,13 +391,27 @@ export class GeminiAgentService {
     try {
       const raw = await this.callGemini(payload);
       const clean = this.cleanJson(raw);
-      return JSON.parse(clean) as AnalysisResponse;
+      const parsed = JSON.parse(clean) as AnalysisResponse;
+
+      // Validation: ensure compositeScore matches level and log results
+      console.log(`📊 [EVALUATION] Score: ${parsed.compositeScore.toFixed(1)}, Level: ${parsed.level}, Intent: ${parsed.intent}`);
+      if (parsed.issues.length > 0) {
+        console.log(`⚠️ [EVALUATION] Issues: ${parsed.issues.join(', ')}`);
+      }
+      console.log(`💬 [EVALUATION] Suggested Feedback: "${parsed.suggestedFeedback}"`);
+
+      return parsed;
+
     } catch (e) {
-      console.error("Analysis Error:", e);
-      // Fallback
+      console.error("❌ [EVALUATION] Failed:", e);
+      // Fallback with new structure
       return {
-        metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Error" },
-        intent: "ATTEMPT"
+        metrics: { accuracy: 0, depth: 0, structure: 0, reasoning: "Evaluation error" },
+        compositeScore: 0,
+        level: 'fail',
+        issues: [],
+        intent: 'WEAK_ATTEMPT',
+        suggestedFeedback: "Let's move on."
       };
     }
   }
@@ -385,10 +539,10 @@ export class GeminiAgentService {
   private getScoreRange(level: QualityLevel): { min: number; max: number; avg: number } {
     const ranges: Record<QualityLevel, { min: number; max: number; avg: number }> = {
       excellent: { min: 9, max: 10, avg: 9.5 },
-      good: { min: 7, max: 8, avg: 7.5 },
-      average: { min: 5, max: 6, avg: 5.5 },
-      poor: { min: 3, max: 4, avg: 3.5 },
-      fail: { min: 0, max: 2, avg: 1.0 },
+      good: { min: 7, max: 8.9, avg: 7.95 },
+      mediocre: { min: 5, max: 6.9, avg: 5.95 },
+      poor: { min: 3, max: 4.9, avg: 3.95 },
+      fail: { min: 0, max: 2.9, avg: 1.45 },
     };
     return ranges[level];
   }

@@ -132,7 +132,9 @@ export interface VoiceGenerationContext {
   currentTopic: InterviewTopic;
   nextTopic: InterviewTopic | null;
   transitionMode: 'STAY' | 'NEXT_FAIL' | 'NEXT_PASS' | 'NEXT_EXPLAIN' | 'FINISH_INTERVIEW' | 'TERMINATE_ANGER';
-  angerLevel?: number; // Added for final feedback
+  angerLevel?: number;           // Added for final feedback
+  engagementLevel?: number;      // NEW: Engagement metric (0-100)
+  vibe?: VibeConfig;             // NEW: Current emotional state
 }
 
 export interface AiResponse {
@@ -171,4 +173,95 @@ export interface FinalInterviewReport {
   averageScore: number;
   overallSummary: string;
   timestamp: number;
+}
+
+// ============================================
+// EMOTION & VIBE SYSTEM TYPES
+// ============================================
+
+/**
+ * CartesiaEmotion: Emotion values supported by Cartesia API
+ * Reference: https://docs.cartesia.ai/api-reference/tts/bytes
+ */
+export type CartesiaEmotion =
+  | 'neutral'
+  | 'positivity:lowest'
+  | 'positivity:low'
+  | 'positivity:high'
+  | 'positivity:highest'
+  | 'anger:lowest'
+  | 'anger:low'
+  | 'anger:high'
+  | 'anger:highest'
+  | 'sadness:lowest'
+  | 'sadness:low'
+  | 'sadness:high'
+  | 'sadness:highest'
+  | 'surprise:lowest'
+  | 'surprise:low'
+  | 'surprise:high'
+  | 'surprise:highest'
+  | 'curiosity:lowest'
+  | 'curiosity:low'
+  | 'curiosity:high'
+  | 'curiosity:highest';
+
+/**
+ * VibeLabel: 15 emotional states for Victoria based on anger/engagement
+ */
+export type VibeLabel =
+  // Positive vibes (low anger, high engagement)
+  | 'Impressed'       // anger 0-10, engagement 80-100
+  | 'Encouraging'     // anger 0-10, engagement 50-79
+  | 'Professional'    // anger 11-25, engagement 60-100
+  
+  // Neutral vibes (medium anger, varying engagement)
+  | 'Neutral'         // anger 11-25, engagement 30-59
+  | 'Curious'         // anger 26-40, engagement 60-100
+  | 'Concerned'       // anger 26-40, engagement 30-59
+  
+  // Negative mild (medium anger, low engagement or special cases)
+  | 'Disappointed'    // anger 26-40, engagement 0-29
+  | 'Skeptical'       // anger 41-60, engagement 40-100
+  | 'Amused'          // anger 41-60, absurd error detected
+  
+  // Negative strong (high anger)
+  | 'Irritated'       // anger 41-60, engagement 0-39
+  | 'Frustrated'      // anger 61-70
+  | 'Hostile'         // anger 71-85
+  | 'Dismissive'      // anger 86-90
+  | 'Furious';        // anger 91-100
+
+/**
+ * VibeConfig: Complete configuration for an emotional state
+ */
+export interface VibeConfig {
+  label: VibeLabel;
+  cartesiaEmotion: CartesiaEmotion;
+  speed: number;                    // Speech rate (0.5 - 1.5)
+  emotionLevel?: string[];          // Cartesia emotion array format
+  promptModifier: string;           // Instructions for Gemini voice generation
+  description: string;              // Human-readable explanation
+}
+
+/**
+ * CartesiaTTSRequest: Cartesia API request structure
+ * Reference: https://docs.cartesia.ai/api-reference/tts/bytes
+ */
+export interface CartesiaTTSRequest {
+  model_id: string;                 // 'sonic-english'
+  transcript: string;               // Text to speak (NOT "text")
+  voice: {
+    mode: 'id';
+    id: string;
+    __experimental_controls?: {
+      speed?: string;               // 'slowest' | 'slow' | 'normal' | 'fast' | 'fastest'
+      emotion?: string[];           // Array of emotion strings
+    };
+  };
+  output_format: {
+    container: 'mp3' | 'wav';
+    encoding: 'mp3' | 'pcm_s16le' | 'pcm_f32le' | 'pcm_mulaw';
+    sample_rate: number;
+  };
 }

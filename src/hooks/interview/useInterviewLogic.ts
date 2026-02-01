@@ -7,12 +7,14 @@ import {
   QuestionResult,
   FinalInterviewReport,
   InterviewMode,
-  ChatMessage
+  ChatMessage,
+  VibeConfig
 } from '../../types';
 import { GeminiAgentService } from '../../services/gemini-agent';
 import { generateInterviewPlan } from '../../interview-planner';
 import { TTSService } from '../../services/tts-service';
 import { safeAudioModeSwitch } from './useInterviewAudio';
+import { VibeCalculator } from '../../services/vibe-calculator';
 
 // ============================================
 // TYPES
@@ -31,6 +33,8 @@ interface UseInterviewLogicReturn {
   // State
   messages: { id: string; text: string; sender: 'user' | 'ai' }[];
   anger: number;
+  engagement: number;                // NEW
+  currentVibe: VibeConfig | null;    // NEW
   currentTopic: string;
   isProcessing: boolean;
   isFinished: boolean;
@@ -53,6 +57,7 @@ interface UseInterviewLogicReturn {
   forceFinish: () => Promise<void>;
   restart: () => void;
   simulateAnswer: (intentType: string | number) => Promise<string | null>;  // Updated: now accepts number for score
+  setEngagement: (value: number) => void;  // NEW: For debug overlay slider
 
   // Computed
   progress: number;
@@ -79,6 +84,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   // Core State
   const [messages, setMessages] = useState<{ id: string; text: string; sender: 'user' | 'ai' }[]>([]);
   const [anger, setAnger] = useState(0);
+  const [engagement, setEngagement] = useState(50);  // NEW: starts at 50 (neutral)
+  const [currentVibe, setCurrentVibe] = useState<VibeConfig | null>(null);  // NEW
   const [topicSuccess, setTopicSuccess] = useState(0);
   const [topicPatience, setTopicPatience] = useState(0);
   const [plan, setPlan] = useState<InterviewPlan | null>(null);
@@ -114,7 +121,14 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   // CORE FUNCTIONS
   // ============================================
 
-  const playSynchronizedResponse = async (text: string): Promise<void> => {
+  const playSynchronizedResponse = async (
+    text: string,
+    options?: {
+      emotion?: string;
+      speed?: number;
+      emotionLevel?: string[];
+    }
+  ): Promise<void> => {
     setIsProcessing(true);
 
     // Notify audio hook to stop recording (prevent echo)
@@ -136,8 +150,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       // Small delay to ensure audio mode is applied
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Prepare audio
-      const player = await TTSService.prepareAudio(text);
+      // Prepare audio with emotion options
+      const player = await TTSService.prepareAudio(text, options);
 
       console.log("💥 Sync: BOOM! Playing.");
 
@@ -248,6 +262,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
               {
                 nextTopic: currentPlan.queue[0], // Intro topic
                 angerLevel: 0, // Lobby has no anger
+                engagementLevel: engagement,           // ← ADD
+                vibe: currentVibe || undefined,        // ← ADD
                 historyBuffer: historyBuffer.current,
                 isIntro: false,
                 currentTopicIndex: -1, // Before intro
@@ -356,7 +372,13 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             // ✅ FIX: Play voice FIRST, then advance state
             console.log("🔊 [STATE SYNC] Playing voice BEFORE state advance");
             console.log(`📍 [STATE SYNC] Current index: 0 (locked until voice plays)`);
-            await playSynchronizedResponse(introSpeech);
+            
+            // Use unified TTSService with emotion options
+            await playSynchronizedResponse(introSpeech, {
+              emotion: currentVibe?.cartesiaEmotion,
+              speed: currentVibe?.speed,
+              emotionLevel: currentVibe?.emotionLevel
+            });
 
             console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
             console.log("📍 [STATE SYNC] Advancing to index 1");
@@ -391,6 +413,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             {
               nextTopic: nextTopicData,
               angerLevel: anger,
+              engagementLevel: engagement,              // ← ADD
+              vibe: currentVibe || undefined,           // ← ADD
               historyBuffer: historyBuffer.current,
               isIntro: false,
               currentTopicIndex: currentTopicIndex,
@@ -407,6 +431,61 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           console.log(`   Intent: ${analysis.intent}`);
           console.log(`💬 [UNIFIED] Response: "${speech.substring(0, 60)}..."`);
 
+          // ============================================
+          // ENGAGEMENT & VIBE SYSTEM
+          // ============================================
+
+          console.log("📊 [EMOTIONS] Calculating engagement delta...");
+
+          // Step 1: Calculate engagement change
+          const engagementDelta = VibeCalculator.calculateEngagementDelta(
+            analysis.compositeScore,
+            analysis.intent
+          );
+
+          // Step 2: Update engagement (clamp 0-100)
+          const oldEngagement = engagement;
+          const newEngagement = Math.max(0, Math.min(100, engagement + engagementDelta));
+          setEngagement(newEngagement);
+
+          console.log(`📊 [EMOTIONS] Engagement: ${oldEngagement} → ${newEngagement} (${engagementDelta >= 0 ? '+' : ''}${engagementDelta})`);
+
+          // Step 3: Detect absurd errors (for Amused vibe)
+          const isAbsurd = VibeCalculator.detectAbsurdError(
+            textToFinalize,
+            analysis.issues
+          );
+
+          if (isAbsurd) {
+            console.log("🤪 [VIBE] Absurd error detected (potential Amused state)");
+          }
+
+          // Step 4: Determine Victoria's emotional state
+          const vibe = VibeCalculator.determineVibe(
+            anger,  // Use existing anger variable
+            newEngagement,
+            { 
+              isAbsurdError: isAbsurd,
+              intent: analysis.intent 
+            }
+          );
+
+          // Step 5: Update vibe state
+          setCurrentVibe(vibe);
+
+          // Step 6: Log vibe details
+          console.log(`🎭 [VIBE] ${vibe.label} (${vibe.cartesiaEmotion})`);
+          console.log(`🎭 [VIBE] Speed: ${vibe.speed}x`);
+          if (vibe.emotionLevel && vibe.emotionLevel.length > 0) {
+            console.log(`🎭 [VIBE] Emotion Levels: ${vibe.emotionLevel.join(', ')}`);
+          }
+          console.log(`🎭 [VIBE] Description: ${vibe.description}`);
+          console.log(`🎭 [VIBE] Prompt Modifier: ${vibe.promptModifier.substring(0, 80)}...`);
+
+          // ============================================
+          // END ENGAGEMENT & VIBE SYSTEM
+          // ============================================
+
           // --- BLOCKING CLARIFICATION CHECK ---
           if (analysis.intent === 'CLARIFICATION') {
             console.log("🤔 [CLARIFICATION] Staying on topic, no state change");
@@ -415,7 +494,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             console.log(`   Patience: ${topicPatience} (unchanged)`);
             console.log(`   Anger: ${anger} (unchanged)`);
 
-            await playSynchronizedResponse(speech);
+            // Use unified TTSService with emotion options
+            await playSynchronizedResponse(speech, {
+              emotion: currentVibe?.cartesiaEmotion,
+              speed: currentVibe?.speed,
+              emotionLevel: currentVibe?.emotionLevel
+            });
             setIsProcessing(false);
             return;
           }
@@ -513,7 +597,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           if (newAnger >= 100) {
             console.log("🤬 Anger Limit Reached. Initiating Termination.");
 
-            await playSynchronizedResponse(speech);
+            // Use unified TTSService with emotion options
+            await playSynchronizedResponse(speech, {
+              emotion: currentVibe?.cartesiaEmotion,
+              speed: currentVibe?.speed,
+              emotionLevel: currentVibe?.emotionLevel
+            });
 
             // ✅ FIX BUG 3: Generate minimal report on early termination
             const partialQuestions: QuestionResult[] = [];
@@ -582,7 +671,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
                 newAnger = 100;
                 setAnger(100);
 
-                await playSynchronizedResponse(speech);
+                // Use unified TTSService with emotion options
+                await playSynchronizedResponse(speech, {
+                  emotion: currentVibe?.cartesiaEmotion,
+                  speed: currentVibe?.speed,
+                  emotionLevel: currentVibe?.emotionLevel
+                });
 
                 // ✅ FIX BUG 3: Generate minimal report on patience-triggered termination
                 const partialQuestions: QuestionResult[] = [];
@@ -649,7 +743,12 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           console.log("🔊 [STATE SYNC] Playing voice BEFORE state advance");
           console.log(`📍 [STATE SYNC] Current index: ${currentTopicIndex} (locked until voice plays)`);
           
-          await playSynchronizedResponse(speech);
+          // Use unified TTSService with emotion options
+          await playSynchronizedResponse(speech, {
+            emotion: currentVibe?.cartesiaEmotion,
+            speed: currentVibe?.speed,
+            emotionLevel: currentVibe?.emotionLevel
+          });
 
           console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
 
@@ -742,6 +841,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       setTopicSuccess(0);
       setTopicPatience(0);
       setAnger(0);
+      setEngagement(50);      // Reset to neutral
+      setCurrentVibe(null);   // Clear vibe
       setIsFinished(false);
       setFinalReport(null);
       historyBuffer.current = [];
@@ -872,6 +973,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     setTopicSuccess(0);
     setTopicPatience(0);
     setAnger(0);
+    setEngagement(50);      // Reset to neutral
+    setCurrentVibe(null);   // Clear vibe
     setCurrentMetrics(null);
     setFinalReport(null);
     setIsLobbyPhase(true);
@@ -1069,6 +1172,20 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   };
 
   // ============================================
+  // VIBE RECALCULATION ON MANUAL ENGAGEMENT CHANGE
+  // ============================================
+  
+  useEffect(() => {
+    // Only recalculate if we have existing vibe data (interview is active)
+    if (currentVibe && !isLobbyPhase) {
+      console.log(`🔄 [VIBE] Manual engagement change detected: ${engagement}`);
+      const newVibe = VibeCalculator.determineVibe(anger, engagement, {});
+      setCurrentVibe(newVibe);
+      console.log(`🎭 [VIBE] Updated to: ${newVibe.label} (${newVibe.cartesiaEmotion})`);
+    }
+  }, [engagement]); // Only trigger on engagement changes
+
+  // ============================================
   // CLEANUP
   // ============================================
 
@@ -1087,6 +1204,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     // State
     messages,
     anger,
+    engagement,                // NEW
+    currentVibe,              // NEW
     currentTopic,
     isProcessing,
     isFinished,
@@ -1109,6 +1228,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     forceFinish,
     restart,
     simulateAnswer,  // NEW: For DEV tools smart simulation
+    setEngagement,   // NEW: For debug overlay slider
 
     // Computed
     progress,

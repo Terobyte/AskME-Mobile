@@ -1,4 +1,4 @@
-import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage, QuestionResult, FinalInterviewReport, QualityLevel } from "../types";
+import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage, QuestionResult, FinalInterviewReport, QualityLevel, VibeConfig } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -214,6 +214,8 @@ export class GeminiAgentService {
     context: {
       nextTopic: InterviewTopic | null,
       angerLevel: number,
+      engagementLevel?: number,      // ← NEW: Optional engagement metric (0-100)
+      vibe?: VibeConfig,             // ← NEW: Optional current emotional state
       historyBuffer: ChatMessage[],
       isIntro: boolean,
       currentTopicIndex: number,
@@ -223,7 +225,7 @@ export class GeminiAgentService {
     evaluation: AnalysisResponse,
     voiceResponse: string
   }> {
-    const { nextTopic, angerLevel, historyBuffer, isIntro, currentTopicIndex, totalTopics } = context;
+    const { nextTopic, angerLevel, engagementLevel, vibe, historyBuffer, isIntro, currentTopicIndex, totalTopics } = context;
     
     console.log(`🔍 [UNIFIED] Starting evaluation and voice generation...`);
     console.log(`📍 [UNIFIED] Current Topic: "${currentTopic.topic}" (Index ${currentTopicIndex}/${totalTopics})`);
@@ -239,6 +241,90 @@ export class GeminiAgentService {
     // Build intro warning
     const introWarning = isIntro ? "⚠️ You ALREADY introduced yourself in lobby. DO NOT say 'Hello' or state your name again." : "";
 
+    // ============================================
+    // BUILD EMOTIONAL CONTEXT (if vibe available)
+    // ============================================
+
+    let emotionalContext = "";
+
+    if (vibe) {
+      emotionalContext = `
+===== VICTORIA'S CURRENT EMOTIONAL STATE =====
+
+**Current Vibe:** ${vibe.label}
+**Description:** ${vibe.description}
+
+**Voice Parameters (for reference):**
+- Cartesia Emotion: ${vibe.cartesiaEmotion}
+- Speech Speed: ${vibe.speed}x ${vibe.speed > 1.0 ? '(faster - impatient)' : vibe.speed < 1.0 ? '(slower - careful)' : '(normal)'}
+- Emotion Levels: ${vibe.emotionLevel?.join(', ') || 'default'}
+
+**Anger Level:** ${angerLevel}/100 ${angerLevel >= 70 ? '(HIGH - very frustrated)' : angerLevel >= 40 ? '(MEDIUM - somewhat annoyed)' : '(LOW - calm)'}
+**Engagement Level:** ${engagementLevel || 50}/100 ${(engagementLevel || 50) >= 70 ? '(HIGH - very interested)' : (engagementLevel || 50) >= 40 ? '(MEDIUM - moderately interested)' : '(LOW - losing interest)'}
+
+===== BEHAVIORAL INSTRUCTIONS FOR THIS RESPONSE =====
+${vibe.promptModifier}
+
+===== CRITICAL REQUIREMENTS =====
+
+**TONE MATCHING:**
+- Your text will be spoken by Cartesia TTS with emotion: "${vibe.cartesiaEmotion}"
+- Your WORD CHOICE must align with this emotion naturally
+- Don't just say you're ${vibe.label.toLowerCase()} - WRITE like you are
+
+**Emotion-Specific Word Choice:**
+
+IF Vibe is "Impressed" or "Encouraging":
+  ✅ Use: "Excellent!", "Great insight!", "That's exactly right!", "I'm impressed"
+  ❌ Avoid: Neutral language, criticism
+
+IF Vibe is "Curious" or "Professional":
+  ✅ Use: "Can you elaborate?", "Walk me through that", "Interesting approach"
+  ❌ Avoid: Overly warm or harsh language
+
+IF Vibe is "Skeptical" or "Concerned":
+  ✅ Use: "I'm not convinced", "Are you sure about that?", "Let's revisit"
+  ❌ Avoid: Praise, encouragement
+
+IF Vibe is "Disappointed":
+  ✅ Use: "I was hoping for more", "That's unfortunate", subdued tone
+  ❌ Avoid: Enthusiasm, anger
+
+IF Vibe is "Frustrated" or "Irritated":
+  ✅ Use: "This isn't working", "Let's move on", terse sentences
+  ❌ Avoid: Warmth, patience, long explanations
+
+IF Vibe is "Hostile" or "Furious":
+  ✅ Use: "That's incorrect", "You should know this", "We're done here"
+  ❌ Avoid: Politeness, patience, encouragement
+
+IF Vibe is "Amused":
+  ✅ Use: "That's... creative", "Interesting take", slight levity
+  ❌ Avoid: Harsh criticism, full anger
+
+**Sentence Structure:**
+- High speed (>1.0x): Use SHORT, DIRECT sentences. Fewer words.
+- Low speed (<1.0x): Use longer, more measured sentences. More pauses.
+- Normal speed (1.0x): Standard conversational length.
+
+**Example Transformations:**
+
+Neutral: "Thank you for that answer. Let's move to the next topic."
+
+→ If Impressed: "Excellent! That was exactly what I wanted to hear. Now, let's discuss iOS development."
+
+→ If Frustrated: "Okay. Moving on. Tell me about iOS."
+
+→ If Furious: "That's incorrect. We're moving on. iOS development - now."
+
+===== END EMOTIONAL CONTEXT =====
+      `;
+    }
+
+    // ============================================
+    // END EMOTIONAL CONTEXT BUILDING
+    // ============================================
+
     const prompt = `
 ROLE: Victoria - Principal Software Engineer & Technical Interviewer
 
@@ -247,6 +333,8 @@ You are performing TWO tasks in a SINGLE response (atomic operation):
 2. GENERATE your spoken response to them
 
 This is a UNIFIED operation to prevent state desynchronization.
+
+${emotionalContext}
 
 ===== INPUT CONTEXT =====
 

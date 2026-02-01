@@ -103,6 +103,8 @@ export default function VoiceInterviewScreen() {
     const {
         messages,
         anger,
+        engagement,              // ← NEW
+        currentVibe,            // ← NEW
         currentTopic,
         isProcessing,
         isFinished,
@@ -120,6 +122,7 @@ export default function VoiceInterviewScreen() {
         restart,
         progress,
         simulateAnswer,  // NEW: For smart AI simulation
+        setEngagement,   // ← NEW: For debug overlay slider
     } = useInterviewLogic({
         onAIStart: async () => {
             // Stop recording when AI starts speaking
@@ -329,10 +332,13 @@ export default function VoiceInterviewScreen() {
                 visible={showDebug}
                 onClose={() => setShowDebug(false)}
                 anger={anger}
+                engagement={engagement}              // ← ADD
+                currentVibe={currentVibe}           // ← ADD
                 debugValue={debugValue}
                 isDebugTtsMuted={isDebugTtsMuted}
                 isSimulating={isSimulating}
                 setAnger={(val) => console.warn("Direct anger setting disabled in refactored version")}
+                setEngagement={setEngagement}       // ← FIXED: Use real setter from hook
                 setDebugValue={setDebugValue}
                 setIsDebugTtsMuted={setIsDebugTtsMuted}
                 onSimulate={handleSimulate}

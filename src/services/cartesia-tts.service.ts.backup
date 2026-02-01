@@ -1,0 +1,169 @@
+import { Audio } from 'expo-av';
+import { File, Paths } from 'expo-file-system';
+import { CartesiaEmotion, CartesiaTTSRequest } from '../types';
+
+/**
+ * CartesiaTTSService: Service to integrate Cartesia API for emotional voice synthesis
+ */
+export class CartesiaTTSService {
+  private apiKey: string | undefined;
+  private voiceId: string | undefined;
+  private baseUrl = 'https://api.cartesia.ai';
+
+  constructor() {
+    this.apiKey = process.env.EXPO_PUBLIC_CARTESIA_API_KEY;
+    this.voiceId = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
+
+    if (!this.apiKey) {
+      console.error('❌ [CARTESIA] Missing EXPO_PUBLIC_CARTESIA_API_KEY in environment');
+    }
+    if (!this.voiceId) {
+      console.error('❌ [CARTESIA] Missing EXPO_PUBLIC_CARTESIA_VOICE_ID in environment');
+    }
+  }
+
+  /**
+   * Map numeric speed to Cartesia categorical speed
+   */
+  private mapSpeedToCartesia(speed: number): string {
+    if (speed >= 1.20) return 'fastest';
+    if (speed >= 1.05) return 'fast';
+    if (speed >= 0.95) return 'normal';
+    if (speed >= 0.90) return 'slow';
+    return 'slowest';
+  }
+
+  /**
+   * Speak text with emotional voice using Cartesia API
+   */
+  async speak(
+    text: string,
+    options: {
+      emotion?: CartesiaEmotion;
+      speed?: number;
+      emotionLevel?: string[];
+    } = {}
+  ): Promise<void> {
+    if (!this.apiKey || !this.voiceId) {
+      throw new Error('Cartesia API key or voice ID not configured');
+    }
+
+    const emotion = options.emotion || 'neutral';
+    const speed = options.speed || 1.0;
+    const emotionLevel = options.emotionLevel || [emotion];
+
+    console.log(`🎙️ [CARTESIA] Speaking with emotion: ${emotion}`);
+    console.log(`🎙️ [CARTESIA] Speed: ${speed} → ${this.mapSpeedToCartesia(speed)}`);
+
+    // Build Cartesia API request
+    const request: CartesiaTTSRequest = {
+      model_id: 'sonic-english',
+      transcript: text,
+      voice: {
+        mode: 'id',
+        id: this.voiceId,
+        __experimental_controls: {
+          speed: this.mapSpeedToCartesia(speed),
+          emotion: emotionLevel
+        }
+      },
+      output_format: {
+        container: 'mp3',
+        encoding: 'mp3',
+        sample_rate: 22050
+      }
+    };
+
+    console.log(`🎙️ [CARTESIA] Request:`, JSON.stringify(request, null, 2));
+
+    try {
+      // Call Cartesia API
+      const response = await fetch(`${this.baseUrl}/tts/bytes`, {
+        method: 'POST',
+        headers: {
+          'X-API-Key': this.apiKey,
+          'Cartesia-Version': '2024-06-10',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(request)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Cartesia API error (${response.status}): ${errorText}`);
+      }
+
+      // Get audio bytes
+      const arrayBuffer = await response.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      
+      console.log(`✅ [CARTESIA] Received audio: ${arrayBuffer.byteLength} bytes`);
+
+      // Save to file system using new File API
+      const filename = `cartesia_${Date.now()}.mp3`;
+      const file = new File(Paths.cache, filename);
+      file.write(uint8Array);
+
+      console.log(`💾 [CARTESIA] Saved to: ${file.uri}`);
+
+      // Play audio
+      await this.playAudio(file.uri);
+
+      // Clean up temp file
+      file.delete();
+
+    } catch (error) {
+      console.error('❌ [CARTESIA] Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Play audio file
+   */
+  private async playAudio(fileUri: string): Promise<void> {
+    console.log('🔊 [CARTESIA] Playing...');
+    
+    const { sound } = await Audio.Sound.createAsync(
+      { uri: fileUri },
+      { shouldPlay: true }
+    );
+
+    return new Promise((resolve, reject) => {
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded) {
+          if (status.didJustFinish) {
+            console.log('✅ [CARTESIA] Playback finished');
+            sound.unloadAsync();
+            resolve();
+          }
+        } else if (status.error) {
+          console.error('❌ [CARTESIA] Playback error:', status.error);
+          sound.unloadAsync();
+          reject(new Error(status.error));
+        }
+      });
+    });
+  }
+
+  /**
+   * Test connection to Cartesia API
+   */
+  async testConnection(): Promise<boolean> {
+    try {
+      console.log('🧪 [CARTESIA] Testing connection...');
+      await this.speak('Testing Cartesia connection', {
+        emotion: 'neutral',
+        speed: 1.0
+      });
+      console.log('✅ [CARTESIA] Connection test successful');
+      return true;
+    } catch (error) {
+      console.error('❌ [CARTESIA] Connection test failed:', error);
+      return false;
+    }
+  }
+}
+
+// Export singleton instance
+export const cartesiaTTS = new CartesiaTTSService();

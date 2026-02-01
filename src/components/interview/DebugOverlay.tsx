@@ -2,15 +2,19 @@ import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
+import { VibeConfig } from '../../types';
 
 interface DebugOverlayProps {
     visible: boolean;
     onClose: () => void;
     anger: number;
+    engagement: number;                // ← NEW
+    currentVibe: VibeConfig | null;   // ← NEW
     debugValue: string;  // Now accepts QualityLevel | SpecialAction
     isDebugTtsMuted: boolean;
     isSimulating: boolean;
     setAnger: (value: number) => void;
+    setEngagement: (value: number) => void;  // ← NEW
     setDebugValue: (value: string) => void;
     setIsDebugTtsMuted: (value: boolean) => void;
     onSimulate: () => Promise<void>;
@@ -59,10 +63,13 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
     visible,
     onClose,
     anger,
+    engagement,        // ← ADD
+    currentVibe,       // ← ADD
     debugValue,
     isDebugTtsMuted,
     isSimulating,
     setAnger,
+    setEngagement,     // ← ADD
     setDebugValue,
     setIsDebugTtsMuted,
     onSimulate,
@@ -92,9 +99,64 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
                 </TouchableOpacity>
             </View>
 
+            {/* NEW: Current Vibe Display */}
+            {currentVibe && (
+                <View style={styles.vibeSection}>
+                    <Text style={styles.vibeSectionTitle}>🎭 Current Vibe</Text>
+                    <View style={styles.vibeCard}>
+                        <View style={styles.vibeHeader}>
+                            <Text style={styles.vibeLabel}>{currentVibe.label}</Text>
+                            <Text style={styles.vibeEmotion}>{currentVibe.cartesiaEmotion}</Text>
+                        </View>
+                        <Text style={styles.vibeDescription}>{currentVibe.description}</Text>
+                        <View style={styles.vibeStats}>
+                            <View style={styles.vibeStatItem}>
+                                <Text style={styles.vibeStatLabel}>Speed:</Text>
+                                <Text style={styles.vibeStatValue}>{currentVibe.speed.toFixed(2)}x</Text>
+                            </View>
+                            {currentVibe.emotionLevel && currentVibe.emotionLevel.length > 0 && (
+                                <View style={styles.vibeStatItem}>
+                                    <Text style={styles.vibeStatLabel}>Emotions:</Text>
+                                    <Text style={styles.vibeStatValue} numberOfLines={1}>
+                                        {currentVibe.emotionLevel.join(', ')}
+                                    </Text>
+                                </View>
+                            )}
+                        </View>
+                    </View>
+                </View>
+            )}
+
+            {!currentVibe && (
+                <View style={styles.vibeSection}>
+                    <Text style={styles.vibeNoData}>No vibe data yet (answer a question first)</Text>
+                </View>
+            )}
+
+            {/* NEW: Engagement Slider */}
+            <View style={styles.debugSection}>
+                <Text style={styles.debugLabel}>⭐ Engagement: {engagement.toFixed(0)}%</Text>
+                <Slider
+                    style={{ width: '100%', height: 40 }}
+                    minimumValue={0}
+                    maximumValue={100}
+                    step={5}
+                    value={engagement}
+                    onValueChange={setEngagement}
+                    minimumTrackTintColor="#30D158"
+                    maximumTrackTintColor="#3A3A3C"
+                    thumbTintColor="#30D158"
+                />
+                <View style={styles.engagementMarkers}>
+                    <Text style={styles.engagementMarker}>Disengaged</Text>
+                    <Text style={styles.engagementMarker}>Neutral</Text>
+                    <Text style={styles.engagementMarker}>Highly Engaged</Text>
+                </View>
+            </View>
+
             {/* Anger Level Control */}
             <View style={styles.debugSection}>
-                <Text style={styles.debugLabel}>Anger Level: {anger.toFixed(0)}%</Text>
+                <Text style={styles.debugLabel}>🔥 Anger: {anger.toFixed(0)}%</Text>
                 <Slider
                     style={{ width: '100%', height: 30 }}
                     minimumValue={0}
@@ -280,5 +342,99 @@ const styles = StyleSheet.create({
     },
     debugToggleText: {
         fontSize: 16,
+    },
+    
+    // NEW: Vibe section styles
+    vibeSection: {
+        marginBottom: 16,
+        padding: 12,
+        backgroundColor: 'rgba(100, 100, 255, 0.08)',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(100, 100, 255, 0.25)',
+    },
+    vibeSectionTitle: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: '#FFFFFF',
+        marginBottom: 10,
+        letterSpacing: 0.5,
+    },
+    vibeCard: {
+        padding: 12,
+        backgroundColor: 'rgba(0, 0, 0, 0.35)',
+        borderRadius: 8,
+    },
+    vibeHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    vibeLabel: {
+        fontSize: 20,
+        fontWeight: 'bold',
+        color: '#FFD700',
+        flex: 1,
+    },
+    vibeEmotion: {
+        fontSize: 12,
+        color: '#87CEEB',
+        backgroundColor: 'rgba(135, 206, 235, 0.15)',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 4,
+        overflow: 'hidden',
+    },
+    vibeDescription: {
+        fontSize: 12,
+        color: '#AAAAAA',
+        fontStyle: 'italic',
+        marginBottom: 10,
+        lineHeight: 16,
+    },
+    vibeStats: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        gap: 12,
+    },
+    vibeStatItem: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+        padding: 6,
+        borderRadius: 4,
+    },
+    vibeStatLabel: {
+        fontSize: 10,
+        color: '#888888',
+        marginRight: 4,
+        fontWeight: '600',
+    },
+    vibeStatValue: {
+        fontSize: 11,
+        color: '#FFFFFF',
+        flex: 1,
+    },
+    vibeNoData: {
+        fontSize: 12,
+        color: '#666666',
+        fontStyle: 'italic',
+        textAlign: 'center',
+        paddingVertical: 12,
+    },
+    
+    // NEW: Engagement slider styles
+    engagementMarkers: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        paddingHorizontal: 8,
+        marginTop: 6,
+    },
+    engagementMarker: {
+        fontSize: 10,
+        color: '#666666',
+        fontWeight: '500',
     },
 });

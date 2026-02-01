@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Alert, Platform, Animated } from 'react-native';
 import { useAudioRecorder, RecordingPresets, AudioModule, setAudioModeAsync, IOSOutputFormat } from 'expo-audio';
-import { TTSService } from '../../services/tts-service';
+import TTSService from '../../services/tts-service';
 
 // ============================================
 // TYPES

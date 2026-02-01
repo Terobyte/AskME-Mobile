@@ -9,6 +9,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@cartesia/cartesia-js": "^2.2.9",
     "@expo/vector-icons": "^15.0.3",
     "@google/genai": "^1.35.0",
     "@react-native-community/slider": "5.0.1",

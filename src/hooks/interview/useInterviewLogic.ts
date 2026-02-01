@@ -12,7 +12,7 @@ import {
 } from '../../types';
 import { GeminiAgentService } from '../../services/gemini-agent';
 import { generateInterviewPlan } from '../../interview-planner';
-import { TTSService } from '../../services/tts-service';
+import TTSService from '../../services/tts-service';
 import { safeAudioModeSwitch } from './useInterviewAudio';
 import { VibeCalculator } from '../../services/vibe-calculator';
 
@@ -163,16 +163,13 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
       if (player) {
         await new Promise<void>((resolve) => {
-          const listener = player.addListener('playbackStatusUpdate', (status: any) => {
-            if (status.didJustFinish) {
-              listener.remove();
-              // @ts-ignore
-              if (typeof player.release === 'function') player.release();
-              else player.remove();
+          player.setOnPlaybackStatusUpdate((status) => {
+            if (status.isLoaded && status.didJustFinish) {
+              player.setOnPlaybackStatusUpdate(null);
               resolve();
             }
           });
-          player.play();
+          player.playAsync();
         });
       }
 

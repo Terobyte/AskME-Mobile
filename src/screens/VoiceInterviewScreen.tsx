@@ -8,14 +8,15 @@ import Slider from '@react-native-community/slider';
 import { InterviewMode } from '../types';
 import * as Haptics from 'expo-haptics';
 import RNShake from 'react-native-shake';
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 import { useTypewriter } from '../hooks/useTypewriter';
 import { useInterviewAudio } from '../hooks/interview/useInterviewAudio';
 import { useInterviewLogic } from '../hooks/interview/useInterviewLogic';
 import { MetricsHud } from '../components/MetricsHud';
-import { ScoreReveal } from '../components/interview/ScoreReveal';
 import { DebugOverlay } from '../components/interview/DebugOverlay';
 import { ResultsModal } from '../components/interview/ResultsModal';
+import { HistoryPanel } from '../components/history/HistoryPanel';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -34,7 +35,8 @@ export default function VoiceInterviewScreen() {
     const [showSettings, setShowSettings] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
     const [showDebug, setShowDebug] = useState(false);
-    const [showResultsModal, setShowResultsModal] = useState(false);
+    const [showDetailedResults, setShowDetailedResults] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
 
     // Settings State
     const [resumeText, setResumeText] = useState(MOCK_RESUME);
@@ -233,12 +235,18 @@ export default function VoiceInterviewScreen() {
     const handleReturnToSettings = () => {
         restart();
         setShowSettings(true);
-        setShowResultsModal(false);
+        setShowDetailedResults(false);
     };
 
-    const handleShowResults = () => {
-        setShowResultsModal(true);
-    };
+    // Swipe left from right edge to open history
+    const swipeGesture = Gesture.Pan()
+        .onEnd((event) => {
+            // Swipe left from right edge (negative velocityX, negative translationX)
+            if (event.velocityX < -500 && event.translationX < -50) {
+                setShowHistory(true);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }
+        });
 
     const toggleRecording = () => {
         if (isProcessing) return;
@@ -324,215 +332,212 @@ export default function VoiceInterviewScreen() {
     };
 
     return (
-        <SafeAreaView style={styles.container}>
-            <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
+        <GestureDetector gesture={swipeGesture}>
+            <SafeAreaView style={styles.container}>
+                <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
 
-            {/* DEV CONSOLE */}
-            <DebugOverlay
-                visible={showDebug}
-                onClose={() => setShowDebug(false)}
-                anger={anger}
-                engagement={engagement}              // ← ADD
-                currentVibe={currentVibe}           // ← ADD
-                debugValue={debugValue}
-                isDebugTtsMuted={isDebugTtsMuted}
-                isSimulating={isSimulating}
-                setAnger={(val) => console.warn("Direct anger setting disabled in refactored version")}
-                setEngagement={setEngagement}       // ← FIXED: Use real setter from hook
-                setDebugValue={setDebugValue}
-                setIsDebugTtsMuted={setIsDebugTtsMuted}
-                onSimulate={handleSimulate}
-                onForceFinish={handleForceFinish}
-            />
-
-            <View style={styles.header}>
-                <Text style={{ fontWeight: 'bold', fontSize: 18 }}>AskME AI</Text>
-                <TouchableOpacity onPress={() => setShowSettings(true)} style={styles.iconButton}>
-                    <Ionicons name="settings-outline" size={24} color="#333" />
-                </TouchableOpacity>
-            </View>
-
-            {/* Metrics HUD - Only visible when debug is OPEN */}
-            {showDebug && (
-                <MetricsHud
-                    metrics={metrics}
-                    success={topicSuccess}
-                    patience={topicPatience}
+                {/* DEV CONSOLE */}
+                <DebugOverlay
+                    visible={showDebug}
+                    onClose={() => setShowDebug(false)}
                     anger={anger}
-                    topicTitle={`${currentTopicIndex}. ${currentTopic}`}
+                    engagement={engagement}              // ← ADD
+                    currentVibe={currentVibe}           // ← ADD
+                    debugValue={debugValue}
+                    isDebugTtsMuted={isDebugTtsMuted}
+                    isSimulating={isSimulating}
+                    setAnger={(val) => console.warn("Direct anger setting disabled in refactored version")}
+                    setEngagement={setEngagement}       // ← FIXED: Use real setter from hook
+                    setDebugValue={setDebugValue}
+                    setIsDebugTtsMuted={setIsDebugTtsMuted}
+                    onSimulate={handleSimulate}
+                    onForceFinish={handleForceFinish}
                 />
-            )}
 
-            {/* Settings Modal */}
-            <Modal visible={showSettings} animationType="fade" transparent>
-                <BlurView intensity={20} style={styles.blurContainer} tint="light">
-                    <View style={styles.modalContainer}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>Control Center</Text>
-                            <TouchableOpacity
-                                onPress={() => setShowSettings(false)}
-                                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                            >
-                                <Ionicons name="close" size={28} color="#333" />
-                            </TouchableOpacity>
-                        </View>
+                <View style={styles.header}>
+                    <Text style={{ fontWeight: 'bold', fontSize: 18 }}>AskME AI</Text>
+                    <TouchableOpacity onPress={() => setShowSettings(true)} style={styles.iconButton}>
+                        <Ionicons name="settings-outline" size={24} color="#333" />
+                    </TouchableOpacity>
+                </View>
 
-                        <ScrollView style={styles.modalContent}>
-                            <Text style={styles.sectionTitle}>1. Setup</Text>
-                            <TouchableOpacity style={styles.glassButton} onPress={pickResume}>
-                                <Ionicons name="document-text-outline" size={24} color="#333" />
-                                <Text style={styles.glassButtonText}>
-                                    {resumeFile ? `Resume: ${resumeFile.name}` : "Upload Resume"}
-                                </Text>
-                                {resumeFile && <Ionicons name="checkmark-circle" size={20} color="#4CAF50" style={{ marginLeft: 10 }} />}
-                            </TouchableOpacity>
-
-                            <TouchableOpacity style={styles.glassButton} onPress={pasteJD}>
-                                <Ionicons name="clipboard-outline" size={24} color="#333" />
-                                <Text style={styles.glassButtonText}>
-                                    {jdText !== MOCK_JOB_DESCRIPTION ? "JD Pasted!" : "Paste Job Description"}
-                                </Text>
-                                {jdText !== MOCK_JOB_DESCRIPTION && <Ionicons name="checkmark-circle" size={20} color="#4CAF50" style={{ marginLeft: 10 }} />}
-                            </TouchableOpacity>
-
-                            <Text style={styles.sectionTitle}>2. Duration</Text>
-                            {renderSlider()}
-
-                            {plan && (
-                                <View style={{ marginTop: 20 }}>
-                                    <Text style={styles.sectionTitle}>3. Agenda Preview</Text>
-                                    <View style={styles.planPreview}>
-                                        {plan.queue.map((item, i) => (
-                                            <Text key={item.id} style={{ fontSize: 14, color: '#333', marginBottom: 5 }}>
-                                                {i}. {item.topic}
-                                            </Text>
-                                        ))}
-                                    </View>
-                                </View>
-                            )}
-
-                            <TouchableOpacity
-                                style={styles.modalGenerateButton}
-                                onPress={handleSaveAndRestart}
-                                disabled={isGenerating}
-                            >
-                                {isGenerating ? (
-                                    <ActivityIndicator color="#FFF" />
-                                ) : (
-                                    <Text style={styles.modalGenerateButtonText}>
-                                        {plan ? "SAVE & RESTART" : "GENERATE & START"}
-                                    </Text>
-                                )}
-                            </TouchableOpacity>
-                        </ScrollView>
-                    </View>
-                </BlurView>
-            </Modal>
-
-            {/* Chat Container */}
-            <View style={styles.chatContainer}>
-                <ScrollView
-                    style={styles.chatList}
-                    contentContainerStyle={{ padding: 20, paddingBottom: 150 }}
-                    ref={ref => ref?.scrollToEnd({ animated: true })}
-                    showsVerticalScrollIndicator={false}
-                >
-                    {messages.map((msg, index) => (
-                        <View key={msg.id} style={[
-                            styles.messageRow,
-                            msg.sender === 'user' ? styles.rowRight : styles.rowLeft
-                        ]}>
-                            {msg.sender === 'ai' && (
-                                <View style={{ alignItems: 'center', marginRight: 8 }}>
-                                    <Text style={{ fontSize: 10, color: '#999', marginBottom: 2 }}>Victoria</Text>
-                                    <Image source={{ uri: VICTORIA_AVATAR_URL }} style={styles.avatar} />
-                                </View>
-                            )}
-
-                            <View style={[
-                                styles.bubble,
-                                msg.sender === 'user' ? styles.userBubble : styles.aiBubble
-                            ]}>
-                                <Text style={[
-                                    styles.bubbleText,
-                                    msg.sender === 'ai' ? styles.aiText : null
-                                ]}>
-                                    {msg.sender === 'ai' && index === messages.length - 1
-                                        ? displayedAiText
-                                        : msg.text}
-                                </Text>
-                            </View>
-                        </View>
-                    ))}
-
-                    {displayTranscript.length > 0 && (
-                        <View style={[styles.messageRow, styles.rowRight]}>
-                            <View style={[styles.bubble, styles.liveBubble]}>
-                                <Text style={[styles.bubbleText, styles.liveBubbleText]}>{displayTranscript}</Text>
-                            </View>
-                        </View>
-                    )}
-
-                    {messages.length === 0 && displayTranscript.length === 0 && (
-                        <View style={styles.placeholderContainer}>
-                            <Text style={styles.placeholderText}>Tap the mic to begin.</Text>
-                        </View>
-                    )}
-                </ScrollView>
-            </View>
-
-            {/* SCORE REVEAL OVERLAY */}
-            <Modal visible={isFinished && !showResultsModal} transparent animationType="fade">
-                <BlurView intensity={90} tint="dark" style={styles.blurContainer}>
-                    <ScoreReveal
-                        score={finalReport ? finalReport.averageScore : 0}
-                        summary={finalReport ? finalReport.overallSummary : "Calculating results..."}
-                        loading={!finalReport}
-                        onReturnToMenu={handleReturnToSettings}
-                        onShowResults={handleShowResults}
+                {/* Metrics HUD - Only visible when debug is OPEN */}
+                {showDebug && (
+                    <MetricsHud
+                        metrics={metrics}
+                        success={topicSuccess}
+                        patience={topicPatience}
+                        anger={anger}
+                        topicTitle={`${currentTopicIndex}. ${currentTopic}`}
                     />
-                </BlurView>
-            </Modal>
-
-            {/* RESULTS MODAL */}
-            <ResultsModal
-                visible={showResultsModal}
-                onClose={handleReturnToSettings}
-                report={finalReport}
-            />
-
-            {/* Mic Controls */}
-            <View style={styles.controls}>
-                <TouchableOpacity
-                    onPress={toggleRecording}
-                    disabled={isProcessing}
-                    activeOpacity={0.7}
-                >
-                    <Animated.View style={[
-                        styles.micButton,
-                        isRecording ? styles.recording : null,
-                        isProcessing ? styles.micButtonDisabled : null,
-                        { transform: [{ scale: micScale }] }
-                    ]}>
-                        {isProcessing ? (
-                            <ActivityIndicator color="#FFF" />
-                        ) : (
-                            <Ionicons name={isRecording ? "stop" : "mic"} size={32} color="#FFF" />
-                        )}
-                    </Animated.View>
-                </TouchableOpacity>
-
-                {isRecording && (
-                    <View style={[
-                        styles.vadPixel,
-                        {
-                            backgroundColor: isProcessing ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
-                            shadowColor: isProcessing ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
-                        }
-                    ]} />
                 )}
-            </View>
-        </SafeAreaView>
+
+                {/* Settings Modal */}
+                <Modal visible={showSettings} animationType="fade" transparent>
+                    <BlurView intensity={20} style={styles.blurContainer} tint="light">
+                        <View style={styles.modalContainer}>
+                            <View style={styles.modalHeader}>
+                                <Text style={styles.modalTitle}>Control Center</Text>
+                                <TouchableOpacity
+                                    onPress={() => setShowSettings(false)}
+                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                                >
+                                    <Ionicons name="close" size={28} color="#333" />
+                                </TouchableOpacity>
+                            </View>
+
+                            <ScrollView style={styles.modalContent}>
+                                <Text style={styles.sectionTitle}>1. Setup</Text>
+                                <TouchableOpacity style={styles.glassButton} onPress={pickResume}>
+                                    <Ionicons name="document-text-outline" size={24} color="#333" />
+                                    <Text style={styles.glassButtonText}>
+                                        {resumeFile ? `Resume: ${resumeFile.name}` : "Upload Resume"}
+                                    </Text>
+                                    {resumeFile && <Ionicons name="checkmark-circle" size={20} color="#4CAF50" style={{ marginLeft: 10 }} />}
+                                </TouchableOpacity>
+
+                                <TouchableOpacity style={styles.glassButton} onPress={pasteJD}>
+                                    <Ionicons name="clipboard-outline" size={24} color="#333" />
+                                    <Text style={styles.glassButtonText}>
+                                        {jdText !== MOCK_JOB_DESCRIPTION ? "JD Pasted!" : "Paste Job Description"}
+                                    </Text>
+                                    {jdText !== MOCK_JOB_DESCRIPTION && <Ionicons name="checkmark-circle" size={20} color="#4CAF50" style={{ marginLeft: 10 }} />}
+                                </TouchableOpacity>
+
+                                <Text style={styles.sectionTitle}>2. Duration</Text>
+                                {renderSlider()}
+
+                                {plan && (
+                                    <View style={{ marginTop: 20 }}>
+                                        <Text style={styles.sectionTitle}>3. Agenda Preview</Text>
+                                        <View style={styles.planPreview}>
+                                            {plan.queue.map((item, i) => (
+                                                <Text key={item.id} style={{ fontSize: 14, color: '#333', marginBottom: 5 }}>
+                                                    {i}. {item.topic}
+                                                </Text>
+                                            ))}
+                                        </View>
+                                    </View>
+                                )}
+
+                                <TouchableOpacity
+                                    style={styles.modalGenerateButton}
+                                    onPress={handleSaveAndRestart}
+                                    disabled={isGenerating}
+                                >
+                                    {isGenerating ? (
+                                        <ActivityIndicator color="#FFF" />
+                                    ) : (
+                                        <Text style={styles.modalGenerateButtonText}>
+                                            {plan ? "SAVE & RESTART" : "GENERATE & START"}
+                                        </Text>
+                                    )}
+                                </TouchableOpacity>
+                            </ScrollView>
+                        </View>
+                    </BlurView>
+                </Modal>
+
+                {/* Chat Container */}
+                <View style={styles.chatContainer}>
+                    <ScrollView
+                        style={styles.chatList}
+                        contentContainerStyle={{ padding: 20, paddingBottom: 150 }}
+                        ref={ref => ref?.scrollToEnd({ animated: true })}
+                        showsVerticalScrollIndicator={false}
+                    >
+                        {messages.map((msg, index) => (
+                            <View key={msg.id} style={[
+                                styles.messageRow,
+                                msg.sender === 'user' ? styles.rowRight : styles.rowLeft
+                            ]}>
+                                {msg.sender === 'ai' && (
+                                    <View style={{ alignItems: 'center', marginRight: 8 }}>
+                                        <Text style={{ fontSize: 10, color: '#999', marginBottom: 2 }}>Victoria</Text>
+                                        <Image source={{ uri: VICTORIA_AVATAR_URL }} style={styles.avatar} />
+                                    </View>
+                                )}
+
+                                <View style={[
+                                    styles.bubble,
+                                    msg.sender === 'user' ? styles.userBubble : styles.aiBubble
+                                ]}>
+                                    <Text style={[
+                                        styles.bubbleText,
+                                        msg.sender === 'ai' ? styles.aiText : null
+                                    ]}>
+                                        {msg.sender === 'ai' && index === messages.length - 1
+                                            ? displayedAiText
+                                            : msg.text}
+                                    </Text>
+                                </View>
+                            </View>
+                        ))}
+
+                        {displayTranscript.length > 0 && (
+                            <View style={[styles.messageRow, styles.rowRight]}>
+                                <View style={[styles.bubble, styles.liveBubble]}>
+                                    <Text style={[styles.bubbleText, styles.liveBubbleText]}>{displayTranscript}</Text>
+                                </View>
+                            </View>
+                        )}
+
+                        {messages.length === 0 && displayTranscript.length === 0 && (
+                            <View style={styles.placeholderContainer}>
+                                <Text style={styles.placeholderText}>Tap the mic to begin.</Text>
+                            </View>
+                        )}
+                    </ScrollView>
+                </View>
+
+                {/* UNIFIED RESULTS MODAL */}
+                <ResultsModal
+                    visible={isFinished}
+                    mode={showDetailedResults ? 'detail' : 'reveal'}
+                    onClose={handleReturnToSettings}
+                    report={finalReport}
+                    roleTitle={resumeFile?.name || "Interview Session"}
+                />
+
+                {/* HISTORY PANEL */}
+                <HistoryPanel
+                    visible={showHistory}
+                    onClose={() => setShowHistory(false)}
+                />
+
+                {/* Mic Controls */}
+                <View style={styles.controls}>
+                    <TouchableOpacity
+                        onPress={toggleRecording}
+                        disabled={isProcessing}
+                        activeOpacity={0.7}
+                    >
+                        <Animated.View style={[
+                            styles.micButton,
+                            isRecording ? styles.recording : null,
+                            isProcessing ? styles.micButtonDisabled : null,
+                            { transform: [{ scale: micScale }] }
+                        ]}>
+                            {isProcessing ? (
+                                <ActivityIndicator color="#FFF" />
+                            ) : (
+                                <Ionicons name={isRecording ? "stop" : "mic"} size={32} color="#FFF" />
+                            )}
+                        </Animated.View>
+                    </TouchableOpacity>
+
+                    {isRecording && (
+                        <View style={[
+                            styles.vadPixel,
+                            {
+                                backgroundColor: isProcessing ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
+                                shadowColor: isProcessing ? '#10B981' : (isSendingData ? '#A855F7' : '#FACC15'),
+                            }
+                        ]} />
+                    )}
+                </View>
+            </SafeAreaView>
+        </GestureDetector>
     );
 }
 

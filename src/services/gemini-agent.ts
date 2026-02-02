@@ -841,6 +841,56 @@ Return ONLY valid JSON with no extra text.
     }
   }
 
+  /**
+   * Generate personalized advice for interview question performance
+   */
+  async generateAdvice(
+    topic: string,
+    score: number,
+    feedback: string,
+    metrics: { accuracy: number; depth: number; structure: number },
+    userAnswer: string
+  ): Promise<string> {
+    const prompt = `
+      You are a technical mentor providing study advice.
+      
+      CONTEXT:
+      - Interview Topic: ${topic}
+      - Score: ${score}/10
+      - Metrics: Accuracy ${metrics.accuracy}/10, Depth ${metrics.depth}/10, Structure ${metrics.structure}/10
+      - AI Feedback: ${feedback}
+      - Candidate's Answer: ${userAnswer}
+      
+      TASK:
+      Generate 2-3 sentences of specific, actionable advice for improvement.
+      
+      Include:
+      1. What to study (specific resources, courses, documentation, books)
+      2. How to practice (hands-on projects, exercises, code katas)
+      3. Key concepts to master for this topic
+      
+      Keep tone encouraging and practical. Be specific (e.g., "Complete React Native's Performance documentation section on FlatList optimization" NOT "read more about performance").
+      
+      Return ONLY the advice text (no JSON, no markdown, no preamble).
+    `;
+
+    const payload = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 200
+      }
+    };
+
+    try {
+      const response = await this.callGemini(payload, "gemini-2.5-flash");
+      return response.trim();
+    } catch (e) {
+      console.error('❌ [ADVICE] Generation failed:', e);
+      return "Focus on building hands-on projects to solidify your understanding. Study the official documentation and practice explaining concepts in your own words.";
+    }
+  }
+
   // --- 4. FINAL EVALUATOR (Gemini 2.0 Flash with Flash Logic + Enhanced Feedback) ---
   async evaluateFinal(lastHistoryItem: ChatMessage, previousResults: QuestionResult[]): Promise<{ finalQuestion: QuestionResult, overallSummary: string }> {
     const prompt = `

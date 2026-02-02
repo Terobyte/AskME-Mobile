@@ -28,11 +28,18 @@ export interface SessionQuestion {
     userAnswer: string;
     score: number;
     feedback: string;
+    advice?: string;  // NEW: Generated study advice
     metrics?: {
         accuracy: number;
         depth: number;
         structure: number;
+        reasoning?: string;  // Optional reasoning for legacy compatibility
     };
+    rawExchange?: Array<{  // NEW: For debug section
+        speaker: 'Victoria' | 'User';
+        text: string;
+        timestamp?: number;
+    }>;
 }
 
 // ============================================
@@ -120,6 +127,55 @@ export const getHistory = async (): Promise<InterviewSession[]> => {
 /**
  * Save a new interview session to history
  */
+/**
+ * Update advice for a specific question in a session
+ * @param sessionId The session ID
+ * @param topicName The topic name to update
+ * @param advice The generated advice text
+ * @returns Success boolean
+ */
+export const updateQuestionAdvice = async (
+  sessionId: string,
+  topicName: string,
+  advice: string
+): Promise<boolean> => {
+  try {
+    console.log(`💾 [ADVICE] Updating advice for session ${sessionId}, topic "${topicName}"`);
+    
+    // Load existing history
+    const history = await getHistory();
+    
+    // Find the session
+    const sessionIndex = history.findIndex((s: InterviewSession) => s.id === sessionId);
+    if (sessionIndex === -1) {
+      console.error(`❌ [ADVICE] Session ${sessionId} not found`);
+      return false;
+    }
+    
+    // Find the question
+    const questionIndex = history[sessionIndex].questions.findIndex(
+      (q: SessionQuestion) => q.topic === topicName
+    );
+    if (questionIndex === -1) {
+      console.error(`❌ [ADVICE] Question "${topicName}" not found in session`);
+      return false;
+    }
+    
+    // Update the advice
+    history[sessionIndex].questions[questionIndex].advice = advice;
+    
+    // Save back to file
+    const file = getHistoryFile();
+    file.write(JSON.stringify(history, null, 2));
+    console.log(`✅ [ADVICE] Successfully updated advice for "${topicName}"`);
+    
+    return true;
+  } catch (error) {
+    console.error('❌ [ADVICE] Error updating advice:', error);
+    return false;
+  }
+};
+
 export const saveSession = async (
     role: string,
     totalScore: number,
@@ -240,4 +296,77 @@ export const clearHistory = async (): Promise<void> => {
 export const getFavoriteSessions = async (): Promise<InterviewSession[]> => {
     const history = await getHistory();
     return history.filter(s => s.isFavorite);
+};
+
+/**
+ * Export all interview history as formatted JSON for debugging
+ */
+export const exportHistoryDebug = async (): Promise<void> => {
+    const history = await getHistory();
+    
+    const debugData = history.map(session => ({
+        id: session.id,
+        role: session.role,
+        date: session.date,
+        timestamp: session.timestamp,
+        totalScore: session.totalScore,
+        overallSummary: session.overallSummary,
+        questions: session.questions.map(q => ({
+            topic: q.topic,
+            score: q.score,
+            metrics: q.metrics,
+            feedback: q.feedback,
+            advice: q.advice,
+            userAnswer: q.userAnswer,
+            rawExchange: q.rawExchange || [
+                { speaker: "Victoria", text: `[Question about ${q.topic}]` },
+                { speaker: "User", text: q.userAnswer },
+                { speaker: "Victoria", text: q.feedback }
+            ]
+        }))
+    }));
+
+    const jsonString = JSON.stringify(debugData, null, 2);
+    const timestamp = Date.now();
+    const filename = `interview_history_${timestamp}.json`;
+
+    try {
+        // Dynamic import to avoid issues if sharing not available
+        const Sharing = await import('expo-sharing');
+        const Clipboard = await import('expo-clipboard');
+        const { Alert } = await import('react-native');
+
+        // Save to cache directory
+        const file = new File(Paths.cache, filename);
+        file.write(jsonString);
+
+        // Check if sharing is available
+        const isAvailable = await Sharing.isAvailableAsync();
+        if (isAvailable) {
+            await Sharing.shareAsync(file.uri, {
+                mimeType: 'application/json',
+                dialogTitle: 'Export Interview History',
+                UTI: 'public.json'
+            });
+            console.log('✅ [EXPORT] History shared successfully');
+        } else {
+            // Fallback: copy to clipboard
+            await Clipboard.default.setStringAsync(jsonString);
+            Alert.alert(
+                'Export Complete',
+                `History copied to clipboard (${history.length} sessions). Sharing not available on this device.`
+            );
+        }
+    } catch (error) {
+        console.error('❌ [EXPORT] Failed:', error);
+        // Fallback: copy to clipboard
+        try {
+            const Clipboard = await import('expo-clipboard');
+            const { Alert } = await import('react-native');
+            await Clipboard.default.setStringAsync(jsonString);
+            Alert.alert('Export Error', 'History copied to clipboard as fallback');
+        } catch (e) {
+            console.error('❌ [EXPORT] Clipboard fallback failed:', e);
+        }
+    }
 };

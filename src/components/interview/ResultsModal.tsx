@@ -1,9 +1,9 @@
 /**
- * ResultsModal - Light Control Center Style
- * Displays interview results with clean, light theme
+ * ResultsModal - Unified Glass Morphism Design
+ * Supports both score reveal animation and detailed results view
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     StyleSheet,
     View,
@@ -12,13 +12,22 @@ import {
     ScrollView,
     Modal,
     Dimensions,
+    Platform,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import Animated, { 
+    useSharedValue, 
+    useAnimatedStyle, 
+    withTiming, 
+    Easing,
+    runOnJS 
+} from 'react-native-reanimated';
 import { FinalInterviewReport, QuestionResult } from '../../types';
 import { getFavoriteIds, toggleFavorite, FavoriteQuestion } from '../../services/favorites-storage';
-import { saveSession } from '../../services/history-storage';
+import { GeminiAgentService } from '../../services/gemini-agent';
+import { updateQuestionAdvice } from '../../services/history-storage';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -26,7 +35,8 @@ interface ResultsModalProps {
     visible: boolean;
     onClose: () => void;
     report: FinalInterviewReport | null;
-    roleTitle?: string;  // e.g. "React Native Developer"
+    roleTitle?: string;
+    mode?: 'reveal' | 'detail'; // NEW: Default 'detail'
 }
 
 // Traffic light colors for scores
@@ -47,7 +57,7 @@ const formatDate = (timestamp: number): string => {
 };
 
 // ============================================
-// QUESTION ROW COMPONENT (Clean, no metrics)
+// QUESTION ROW COMPONENT
 // ============================================
 interface QuestionRowProps {
     question: QuestionResult;
@@ -76,26 +86,91 @@ const QuestionRow: React.FC<QuestionRowProps> = ({ question, onPress }) => {
 };
 
 // ============================================
-// DETAIL VIEW COMPONENT (Full question + metrics + feedback)
+// DETAIL VIEW COMPONENT
 // ============================================
 interface DetailViewProps {
     visible: boolean;
     question: QuestionResult | null;
     isFavorite: boolean;
+    sessionId?: string;
     onClose: () => void;
     onToggleFavorite: () => void;
+    onAdviceGenerated?: (topic: string, advice: string) => void;
 }
 
 const DetailView: React.FC<DetailViewProps> = ({
     visible,
     question,
     isFavorite,
+    sessionId,
     onClose,
-    onToggleFavorite
+    onToggleFavorite,
+    onAdviceGenerated
 }) => {
+    const [debugExpanded, setDebugExpanded] = useState(false);
+    const [generatingAdvice, setGeneratingAdvice] = useState(false);
+    const [currentAdvice, setCurrentAdvice] = useState<string | undefined>(undefined);
+
+    // Sync currentAdvice with question.advice when question changes
+    useEffect(() => {
+        if (question) {
+            setCurrentAdvice(question.advice);
+        }
+    }, [question]);
+
     if (!visible || !question) return null;
 
-    const metrics = (question as any).metrics || { accuracy: 0, depth: 0, structure: 0 };
+    const metrics = question.metrics || { accuracy: 0, depth: 0, structure: 0 };
+    const displayAdvice = currentAdvice || question.advice;
+
+    // Handler for generating advice
+    const handleGenerateAdvice = async () => {
+        if (!question || generatingAdvice) return;
+
+        console.log(`✨ [ADVICE] Generating advice for "${question.topic}"`);
+        setGeneratingAdvice(true);
+
+        try {
+            // Create Gemini agent instance
+            const agent = new GeminiAgentService();
+
+            // Generate advice
+            const advice = await agent.generateAdvice(
+                question.topic,
+                question.score,
+                question.feedback,
+                question.metrics || { accuracy: 0, depth: 0, structure: 0 },
+                question.userAnswer || ''
+            );
+
+            console.log(`✅ [ADVICE] Generated: "${advice.substring(0, 50)}..."`);
+
+            // Update local state immediately for UI
+            setCurrentAdvice(advice);
+
+            // Save to storage if we have a sessionId
+            if (sessionId) {
+                const saveSuccess = await updateQuestionAdvice(sessionId, question.topic, advice);
+                
+                if (saveSuccess) {
+                    console.log(`💾 [ADVICE] Saved to storage`);
+                    // Notify parent component if callback provided
+                    onAdviceGenerated?.(question.topic, advice);
+                } else {
+                    console.warn(`⚠️ [ADVICE] Generated but not saved to storage`);
+                }
+            } else {
+                console.warn(`⚠️ [ADVICE] No sessionId provided, advice not persisted`);
+            }
+
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (error) {
+            console.error('❌ [ADVICE] Generation failed:', error);
+            alert('Could not generate advice. Please try again.');
+        } finally {
+            setGeneratingAdvice(false);
+        }
+    };
 
     const handleFavorite = async () => {
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -105,7 +180,6 @@ const DetailView: React.FC<DetailViewProps> = ({
     return (
         <View style={styles.detailOverlay}>
             <View style={styles.detailCard}>
-                {/* Close button */}
                 <TouchableOpacity style={styles.detailCloseBtn} onPress={onClose}>
                     <Ionicons name="chevron-back" size={24} color="#333" />
                 </TouchableOpacity>
@@ -134,9 +208,9 @@ const DetailView: React.FC<DetailViewProps> = ({
                         </Text>
                     </View>
 
-                    {/* MANDATORY METRICS */}
+                    {/* METRICS */}
                     <View style={styles.metricsBlock}>
-                        <Text style={styles.metricsTitle}>PERFORMANCE METRICS</Text>
+                        <Text style={styles.sectionTitle}>PERFORMANCE METRICS</Text>
                         <View style={styles.metricsRow}>
                             <View style={[styles.metricPill, { backgroundColor: `${getScoreColor(metrics.accuracy)}15` }]}>
                                 <Text style={styles.metricLabel}>Accuracy</Text>
@@ -161,17 +235,93 @@ const DetailView: React.FC<DetailViewProps> = ({
 
                     {/* AI Feedback */}
                     <View style={styles.feedbackBlock}>
-                        <Text style={styles.feedbackTitle}>AI FEEDBACK</Text>
+                        <Text style={styles.sectionTitle}>AI FEEDBACK</Text>
                         <Text style={styles.feedbackText}>{question.feedback}</Text>
                     </View>
 
-                    {/* Your Answer (if available) */}
+                    {/* Advice Section - NEW */}
+                    <View style={styles.adviceSection}>
+                        <Text style={styles.sectionTitle}>💡 STUDY ADVICE</Text>
+                        {displayAdvice ? (
+                            <View style={styles.adviceCard}>
+                                <Text style={styles.adviceText}>{displayAdvice}</Text>
+                            </View>
+                        ) : (
+                            <TouchableOpacity
+                                style={styles.generateAdviceButton}
+                                onPress={handleGenerateAdvice}
+                                disabled={generatingAdvice}
+                                activeOpacity={0.7}
+                            >
+                                {generatingAdvice ? (
+                                    <>
+                                        <Text style={styles.generateAdviceText}>Generating...</Text>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Ionicons name="sparkles" size={18} color="#3B82F6" />
+                                        <Text style={styles.generateAdviceText}>Generate Study Advice</Text>
+                                    </>
+                                )}
+                            </TouchableOpacity>
+                        )}
+                    </View>
+
+                    {/* Your Answer */}
                     {question.userAnswer && (
                         <View style={styles.answerBlock}>
-                            <Text style={styles.answerTitle}>YOUR ANSWER</Text>
+                            <Text style={styles.sectionTitle}>YOUR ANSWER</Text>
                             <Text style={styles.answerText}>{question.userAnswer}</Text>
                         </View>
                     )}
+
+                    {/* Debug Section - NEW */}
+                    <View style={styles.debugSection}>
+                        <TouchableOpacity 
+                            style={styles.debugHeader}
+                            onPress={() => setDebugExpanded(!debugExpanded)}
+                        >
+                            <Text style={styles.debugTitle}>🔧 Debug Info</Text>
+                            <Ionicons 
+                                name={debugExpanded ? "chevron-up" : "chevron-down"} 
+                                size={20} 
+                                color="#666" 
+                            />
+                        </TouchableOpacity>
+                        
+                        {debugExpanded && (
+                            <View style={styles.debugContent}>
+                                {question.rawExchange && question.rawExchange.length > 0 ? (
+                                    question.rawExchange.map((msg, idx) => (
+                                        <View key={idx} style={styles.debugMessage}>
+                                            <Text style={styles.debugSpeaker}>
+                                                {msg.speaker === 'Victoria' ? '🎤 Victoria:' : '👤 You:'}
+                                            </Text>
+                                            <Text style={styles.debugText}>{msg.text}</Text>
+                                        </View>
+                                    ))
+                                ) : (
+                                    <Text style={styles.debugPlaceholder}>
+                                        No raw conversation data available for this session.
+                                    </Text>
+                                )}
+                                
+                                {/* Evaluation Metrics */}
+                                {question.metrics && (
+                                    <View style={styles.debugMetrics}>
+                                        <Text style={styles.debugSpeaker}>--- EVALUATION ---</Text>
+                                        <Text style={styles.debugText}>Accuracy: {question.metrics.accuracy}/10</Text>
+                                        <Text style={styles.debugText}>Depth: {question.metrics.depth}/10</Text>
+                                        <Text style={styles.debugText}>Structure: {question.metrics.structure}/10</Text>
+                                        <Text style={styles.debugText}>Score: {question.score.toFixed(1)}/10</Text>
+                                        {question.metrics.reasoning && (
+                                            <Text style={styles.debugText}>Reasoning: {question.metrics.reasoning}</Text>
+                                        )}
+                                    </View>
+                                )}
+                            </View>
+                        )}
+                    </View>
                 </ScrollView>
             </View>
         </View>
@@ -185,15 +335,17 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
     visible,
     onClose,
     report,
-    roleTitle = "Interview Session"
+    roleTitle = "Interview Session",
+    mode = 'detail'
 }) => {
+    const [internalMode, setInternalMode] = useState(mode);
     const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
     const [selectedQuestion, setSelectedQuestion] = useState<QuestionResult | null>(null);
     const [selectedIndex, setSelectedIndex] = useState<number>(-1);
-    const [isLoading, setIsLoading] = useState(false);  // ✅ FIX: Track loading state
 
-    // Track if this session has been saved (prevent duplicate saves)
-    const sessionSavedRef = useRef<boolean>(false);
+    // Animation values for reveal mode
+    const animatedScore = useSharedValue(0);
+    const [displayScore, setDisplayScore] = useState('0.0');
 
     // Generate unique ID for a question
     const getQuestionId = (question: QuestionResult, index: number): string => {
@@ -209,44 +361,49 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
         }
     }, [visible]);
 
-    // ✅ FIX BUG 3: Safe initialization with timeout failsafe
+    // Reset internal mode when mode prop changes
     useEffect(() => {
-        if (!visible) {
-            sessionSavedRef.current = false;
-            setIsLoading(false);
-            return;
+        if (visible) {
+            setInternalMode(mode);
         }
+    }, [mode, visible]);
 
-        // Handle case where report is null or empty
-        if (!report) {
-            console.log("⚠️ [RESULTS] No report available");
-            setIsLoading(false);
-            return;
-        }
-
-        // Handle early termination with empty questions
-        if (!report.questions || report.questions.length === 0) {
-            console.log("⚠️ [RESULTS] No questions in report, using summary only");
-            setIsLoading(false);
-        }
-
-        // Save session (prevent duplicates)
-        if (!sessionSavedRef.current) {
-            sessionSavedRef.current = true;
-
-            // Save in background (non-blocking)
-            saveSession(
-                roleTitle,
-                report.averageScore,
-                report.overallSummary,
-                report.questions
-            ).then(session => {
-                console.log('💾 [RESULTS] Session auto-saved:', session.id);
-            }).catch(error => {
-                console.error('❌ [RESULTS] Failed to auto-save session:', error);
+    // Score reveal animation
+    useEffect(() => {
+        if (visible && internalMode === 'reveal' && report) {
+            console.log('🎰 [REVEAL] Starting score animation');
+            
+            // Animate score from 0 to final value
+            animatedScore.value = 0;
+            animatedScore.value = withTiming(report.averageScore, {
+                duration: 2000,
+                easing: Easing.out(Easing.cubic)
+            }, (finished) => {
+                if (finished) {
+                    runOnJS(setDisplayScore)(report.averageScore.toFixed(1));
+                }
             });
         }
-    }, [visible, report, roleTitle]);
+    }, [visible, internalMode, report]);
+
+    // Animated score style
+    const animatedScoreStyle = useAnimatedStyle(() => {
+        return {
+            opacity: withTiming(internalMode === 'reveal' ? 1 : 0, { duration: 300 })
+        };
+    });
+
+    // Update display score during animation
+    useEffect(() => {
+        if (internalMode === 'reveal' && report) {
+            const interval = setInterval(() => {
+                const currentValue = animatedScore.value;
+                setDisplayScore(currentValue.toFixed(1));
+            }, 50);
+
+            return () => clearInterval(interval);
+        }
+    }, [internalMode, report]);
 
     // Handle favorite toggle
     const handleToggleFavorite = async (question: QuestionResult, index: number) => {
@@ -272,19 +429,19 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
             score: question.score,
             feedback: question.feedback,
             userAnswer: question.userAnswer || '',
-            metrics: (question as any).metrics,
+            metrics: question.metrics,
             timestamp: Date.now(),
         };
 
         toggleFavorite(favoriteQuestion).catch(console.error);
     };
 
-    // ✅ FIX BUG 3: Show fallback UI if no report is available
+    // Fallback if no report
     if (!report) {
         return (
             <Modal visible={visible} transparent animationType="fade">
-                <View style={styles.blurContainer}>
-                    <View style={styles.modalCard}>
+                <BlurView intensity={80} tint="light" style={styles.blurContainer}>
+                    <View style={styles.glassCard}>
                         <View style={styles.header}>
                             <View style={styles.headerLeft}>
                                 <Text style={styles.roleTitle}>No Results Available</Text>
@@ -298,26 +455,8 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
                                 </TouchableOpacity>
                             </View>
                         </View>
-                        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-                            <Ionicons name="alert-circle-outline" size={64} color="#999" />
-                            <Text style={{ fontSize: 16, color: '#666', marginTop: 16, textAlign: 'center', paddingHorizontal: 24 }}>
-                                No interview data was recorded. Please try again.
-                            </Text>
-                            <TouchableOpacity
-                                onPress={onClose}
-                                style={{
-                                    marginTop: 24,
-                                    backgroundColor: '#333',
-                                    paddingHorizontal: 32,
-                                    paddingVertical: 12,
-                                    borderRadius: 12,
-                                }}
-                            >
-                                <Text style={{ color: '#FFF', fontWeight: '600' }}>Close</Text>
-                            </TouchableOpacity>
-                        </View>
                     </View>
-                </View>
+                </BlurView>
             </Modal>
         );
     }
@@ -326,84 +465,116 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
     const totalScoreColor = getScoreColor(totalScore);
     const sessionDate = formatDate(report.timestamp || Date.now());
     const hasQuestions = report.questions && report.questions.length > 0;
+    const briefSummary = report.overallSummary.split('.')[0] + '.';
 
     return (
         <Modal visible={visible} transparent animationType="fade">
-            <BlurView intensity={40} tint="light" style={styles.blurContainer}>
-                <View style={styles.modalCard}>
-                    {/* ===== HEADER ===== */}
-                    <View style={styles.header}>
-                        <View style={styles.headerLeft}>
-                            <Text style={styles.roleTitle}>{roleTitle}</Text>
-                            <Text style={styles.dateText}>{sessionDate}</Text>
-                        </View>
-                        <View style={styles.headerRight}>
-                            <Text style={[styles.totalScore, { color: totalScoreColor }]}>
-                                {totalScore.toFixed(1)}
+            <BlurView intensity={80} tint="light" style={styles.blurContainer}>
+                {internalMode === 'reveal' ? (
+                    // ============================================
+                    // REVEAL MODE - Score Animation
+                    // ============================================
+                    <View style={styles.revealContainer}>
+                        <Animated.View style={[styles.scoreCircle, animatedScoreStyle]}>
+                            <Text style={[styles.bigScore, { color: totalScoreColor }]}>
+                                {displayScore}
                             </Text>
-                            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-                                <Ionicons name="close" size={28} color="#333" />
-                            </TouchableOpacity>
+                            <Text style={styles.scoreLabel}>OVERALL SCORE</Text>
+                        </Animated.View>
+
+                        <View style={styles.briefSummaryContainer}>
+                            <Text style={styles.briefSummary}>{briefSummary}</Text>
                         </View>
+
+                        <TouchableOpacity 
+                            style={styles.detailButton}
+                            onPress={() => {
+                                setInternalMode('detail');
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            }}
+                        >
+                            <Text style={styles.detailButtonText}>SEE DETAILED RESULTS</Text>
+                            <Ionicons name="arrow-forward" size={20} color="#333" />
+                        </TouchableOpacity>
                     </View>
-
-                    {/* ===== QUESTIONS LIST ===== */}
-                    <ScrollView
-                        style={styles.listContainer}
-                        contentContainerStyle={styles.listContent}
-                        showsVerticalScrollIndicator={false}
-                    >
-                        {/* ✅ FIX: Handle empty questions array gracefully */}
-                        {hasQuestions ? (
-                            <>
-                                <Text style={styles.sectionTitle}>QUESTIONS ({report.questions.length})</Text>
-
-                                {report.questions.map((question, index) => (
-                                    <QuestionRow
-                                        key={getQuestionId(question, index)}
-                                        question={question}
-                                        onPress={() => {
-                                            setSelectedQuestion(question);
-                                            setSelectedIndex(index);
-                                        }}
-                                    />
-                                ))}
-                            </>
-                        ) : (
-                            <View style={{ paddingVertical: 32, alignItems: 'center' }}>
-                                <Ionicons name="information-circle-outline" size={48} color="#999" />
-                                <Text style={{ fontSize: 14, color: '#666', marginTop: 12, textAlign: 'center' }}>
-                                    No questions were answered during this session.
-                                </Text>
+                ) : (
+                    // ============================================
+                    // DETAIL MODE - Full Results
+                    // ============================================
+                    <View style={styles.glassCard}>
+                        {/* Header */}
+                        <View style={styles.header}>
+                            <View style={styles.headerLeft}>
+                                <Text style={styles.roleTitle}>{roleTitle}</Text>
+                                <Text style={styles.dateText}>{sessionDate}</Text>
                             </View>
-                        )}
+                            <View style={styles.headerRight}>
+                                <Text style={[styles.totalScore, { color: totalScoreColor }]}>
+                                    {totalScore.toFixed(1)}
+                                </Text>
+                                <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+                                    <Ionicons name="close" size={28} color="#333" />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
 
-                        {/* Summary - Always show */}
-                        <View style={styles.summaryBlock}>
+                        {/* Overall Summary */}
+                        <View style={styles.summaryCard}>
                             <Text style={styles.sectionTitle}>OVERALL SUMMARY</Text>
                             <Text style={styles.summaryText}>{report.overallSummary}</Text>
                         </View>
-                    </ScrollView>
 
-                    {/* ===== DETAIL VIEW (Overlay) ===== */}
-                    <DetailView
-                        visible={selectedQuestion !== null}
-                        question={selectedQuestion}
-                        isFavorite={selectedQuestion && selectedIndex >= 0
-                            ? favoriteIds.has(getQuestionId(selectedQuestion, selectedIndex))
-                            : false
-                        }
-                        onClose={() => {
-                            setSelectedQuestion(null);
-                            setSelectedIndex(-1);
-                        }}
-                        onToggleFavorite={() => {
-                            if (selectedQuestion && selectedIndex >= 0) {
-                                handleToggleFavorite(selectedQuestion, selectedIndex);
+                        {/* Questions List */}
+                        <ScrollView
+                            style={styles.listContainer}
+                            contentContainerStyle={styles.listContent}
+                            showsVerticalScrollIndicator={false}
+                        >
+                            {hasQuestions ? (
+                                <>
+                                    <Text style={styles.sectionTitle}>QUESTIONS ({report.questions.length})</Text>
+
+                                    {report.questions.map((question, index) => (
+                                        <QuestionRow
+                                            key={getQuestionId(question, index)}
+                                            question={question}
+                                            onPress={() => {
+                                                setSelectedQuestion(question);
+                                                setSelectedIndex(index);
+                                            }}
+                                        />
+                                    ))}
+                                </>
+                            ) : (
+                                <View style={styles.emptyState}>
+                                    <Ionicons name="information-circle-outline" size={48} color="#999" />
+                                    <Text style={styles.emptyText}>
+                                        No questions were answered during this session.
+                                    </Text>
+                                </View>
+                            )}
+                        </ScrollView>
+
+                        {/* Detail View Overlay */}
+                        <DetailView
+                            visible={selectedQuestion !== null}
+                            question={selectedQuestion}
+                            isFavorite={selectedQuestion && selectedIndex >= 0
+                                ? favoriteIds.has(getQuestionId(selectedQuestion, selectedIndex))
+                                : false
                             }
-                        }}
-                    />
-                </View>
+                            onClose={() => {
+                                setSelectedQuestion(null);
+                                setSelectedIndex(-1);
+                            }}
+                            onToggleFavorite={() => {
+                                if (selectedQuestion && selectedIndex >= 0) {
+                                    handleToggleFavorite(selectedQuestion, selectedIndex);
+                                }
+                            }}
+                        />
+                    </View>
+                )}
             </BlurView>
         </Modal>
     );
@@ -420,18 +591,75 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
 
-    // Main card (Light theme)
-    modalCard: {
+    // Glass card (detail mode)
+    glassCard: {
         width: '92%',
-        height: '85%',  // FIXED: Changed from maxHeight to height
-        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        height: '85%',
+        backgroundColor: 'rgba(255, 255, 255, 0.7)',
         borderRadius: 25,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.15,
+        shadowOpacity: 0.1,
         shadowRadius: 25,
         elevation: 15,
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.3)',
         overflow: 'hidden',
+    },
+
+    // ===== REVEAL MODE =====
+    revealContainer: {
+        width: '92%',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 40,
+    },
+    scoreCircle: {
+        alignItems: 'center',
+        marginBottom: 40,
+    },
+    bigScore: {
+        fontSize: 72,
+        fontWeight: 'bold',
+        marginBottom: 8,
+    },
+    scoreLabel: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#666',
+        letterSpacing: 2,
+    },
+    briefSummaryContainer: {
+        paddingHorizontal: 20,
+        marginBottom: 40,
+    },
+    briefSummary: {
+        fontSize: 16,
+        color: '#333',
+        textAlign: 'center',
+        lineHeight: 24,
+    },
+    detailButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        paddingVertical: 16,
+        paddingHorizontal: 32,
+        borderRadius: 25,
+        borderWidth: 1,
+        borderColor: 'rgba(0, 0, 0, 0.1)',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 4,
+    },
+    detailButtonText: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#333',
+        marginRight: 8,
+        letterSpacing: 0.5,
     },
 
     // ===== HEADER =====
@@ -451,7 +679,7 @@ const styles = StyleSheet.create({
     roleTitle: {
         fontSize: 22,
         fontWeight: 'bold',
-        color: '#000',
+        color: '#333',
         marginBottom: 4,
     },
     dateText: {
@@ -471,12 +699,34 @@ const styles = StyleSheet.create({
         padding: 4,
     },
 
+    // ===== SUMMARY CARD =====
+    summaryCard: {
+        margin: 20,
+        marginBottom: 0,
+        backgroundColor: 'rgba(255, 255, 255, 0.7)',
+        borderRadius: 16,
+        padding: 16,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 4,
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.3)',
+    },
+    summaryText: {
+        fontSize: 15,
+        color: '#333',
+        lineHeight: 24,
+    },
+
     // ===== LIST =====
     listContainer: {
         flex: 1,
     },
     listContent: {
         padding: 20,
+        paddingTop: 10,
         paddingBottom: 40,
     },
     sectionTitle: {
@@ -488,21 +738,21 @@ const styles = StyleSheet.create({
         marginTop: 8,
     },
 
-    // ===== QUESTION ROW (glassButton style) =====
+    // ===== QUESTION ROW =====
     questionRow: {
         flexDirection: 'row',
         backgroundColor: 'rgba(255, 255, 255, 0.7)',
         padding: 16,
-        borderRadius: 14,
+        borderRadius: 16,
         alignItems: 'center',
         marginBottom: 10,
         borderWidth: 1,
-        borderColor: 'rgba(0, 0, 0, 0.06)',
+        borderColor: 'rgba(255, 255, 255, 0.3)',
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.03,
-        shadowRadius: 4,
-        elevation: 2,
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 4,
     },
     questionText: {
         flex: 1,
@@ -524,20 +774,19 @@ const styles = StyleSheet.create({
         color: '#FFF',
     },
 
-    // ===== SUMMARY =====
-    summaryBlock: {
-        marginTop: 20,
-        backgroundColor: 'rgba(0, 0, 0, 0.02)',
-        padding: 16,
-        borderRadius: 14,
+    // ===== EMPTY STATE =====
+    emptyState: {
+        paddingVertical: 32,
+        alignItems: 'center',
     },
-    summaryText: {
-        fontSize: 15,
-        color: '#333',
-        lineHeight: 24,
+    emptyText: {
+        fontSize: 14,
+        color: '#666',
+        marginTop: 12,
+        textAlign: 'center',
     },
 
-    // ===== DETAIL VIEW (Overlay) =====
+    // ===== DETAIL VIEW =====
     detailOverlay: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: 'rgba(255, 255, 255, 0.98)',
@@ -571,7 +820,7 @@ const styles = StyleSheet.create({
         flex: 1,
         fontSize: 20,
         fontWeight: 'bold',
-        color: '#000',
+        color: '#333',
         lineHeight: 28,
         marginRight: 12,
     },
@@ -586,16 +835,9 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
     },
 
-    // ===== METRICS BLOCK =====
+    // ===== METRICS =====
     metricsBlock: {
         marginBottom: 24,
-    },
-    metricsTitle: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: '#666',
-        letterSpacing: 1,
-        marginBottom: 12,
     },
     metricsRow: {
         flexDirection: 'row',
@@ -624,17 +866,45 @@ const styles = StyleSheet.create({
     feedbackBlock: {
         marginBottom: 24,
     },
-    feedbackTitle: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: '#666',
-        letterSpacing: 1,
-        marginBottom: 12,
-    },
     feedbackText: {
         fontSize: 15,
         color: '#333',
         lineHeight: 24,
+    },
+
+    // ===== ADVICE SECTION - NEW =====
+    adviceSection: {
+        marginBottom: 24,
+    },
+    adviceCard: {
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        borderRadius: 12,
+        padding: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(59, 130, 246, 0.2)',
+    },
+    adviceText: {
+        fontSize: 14,
+        color: '#333',
+        lineHeight: 20,
+    },
+    generateAdviceButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        paddingVertical: 14,
+        paddingHorizontal: 20,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(59, 130, 246, 0.3)',
+        borderStyle: 'dashed',
+        gap: 8,
+    },
+    generateAdviceText: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#3B82F6',
     },
 
     // ===== ANSWER =====
@@ -642,18 +912,66 @@ const styles = StyleSheet.create({
         backgroundColor: 'rgba(0, 0, 0, 0.03)',
         padding: 16,
         borderRadius: 12,
-    },
-    answerTitle: {
-        fontSize: 12,
-        fontWeight: '600',
-        color: '#666',
-        letterSpacing: 1,
-        marginBottom: 8,
+        marginBottom: 20,
     },
     answerText: {
         fontSize: 14,
         color: '#555',
         lineHeight: 22,
         fontStyle: 'italic',
+    },
+
+    // ===== DEBUG SECTION - NEW =====
+    debugSection: {
+        marginTop: 20,
+        borderTopWidth: 1,
+        borderTopColor: '#E5E5E5',
+        paddingTop: 16,
+    },
+    debugHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 8,
+    },
+    debugTitle: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#666',
+    },
+    debugContent: {
+        marginTop: 12,
+        backgroundColor: '#F5F5F5',
+        borderRadius: 8,
+        padding: 12,
+    },
+    debugMessage: {
+        marginBottom: 12,
+    },
+    debugSpeaker: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#333',
+        marginBottom: 4,
+        fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    },
+    debugText: {
+        fontSize: 12,
+        color: '#555',
+        lineHeight: 18,
+        fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    },
+    debugPlaceholder: {
+        fontSize: 12,
+        color: '#999',
+        fontStyle: 'italic',
+        textAlign: 'center',
+        paddingVertical: 8,
+    },
+    debugMetrics: {
+        marginTop: 12,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: '#DDD',
     },
 });

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Alert, LayoutAnimation } from 'react-native';
 import {
   InterviewPlan,
@@ -120,6 +120,85 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   // ============================================
   // CORE FUNCTIONS
   // ============================================
+
+  /**
+   * Helper function to extract conversation messages for a specific topic
+   * @param history Full conversation history
+   * @param topic Topic name to extract messages for
+   * @param topicIndex Index of the topic in the interview plan
+   * @param allTopics All topics from the interview plan
+   * @returns Array of conversation messages for the topic
+   */
+  const extractTopicMessages = useCallback((
+    history: ChatMessage[],
+    topic: string,
+    topicIndex: number,
+    allTopics: InterviewTopic[]
+  ): Array<{ speaker: 'Victoria' | 'User'; text: string; timestamp: number }> => {
+    console.log(`🔍 Extracting messages for topic "${topic}" (index ${topicIndex})`);
+    
+    if (!history || history.length === 0) {
+      console.log('⚠️ Empty history, returning empty array');
+      return [];
+    }
+
+    // Find the starting point: Victoria's message that introduces this topic
+    let startIndex = -1;
+    const topicKeywords = topic.toLowerCase().split(' ').filter(word => word.length > 3);
+    
+    for (let i = 0; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role === 'assistant') {
+        const contentLower = msg.content.toLowerCase();
+        // Check if message contains topic keywords
+        const matchCount = topicKeywords.filter(keyword => contentLower.includes(keyword)).length;
+        if (matchCount >= Math.min(2, topicKeywords.length)) {
+          startIndex = i;
+          console.log(`✓ Found topic start at index ${i}`);
+          break;
+        }
+      }
+    }
+
+    if (startIndex === -1) {
+      console.log(`⚠️ Could not find start of topic "${topic}"`);
+      return [];
+    }
+
+    // Find the ending point: Victoria's message that introduces the NEXT topic
+    let endIndex = history.length; // Default to end of history
+    
+    if (topicIndex < allTopics.length - 1) {
+      const nextTopic = allTopics[topicIndex + 1];
+      const nextTopicKeywords = nextTopic.topic.toLowerCase().split(' ').filter(word => word.length > 3);
+      
+      for (let i = startIndex + 1; i < history.length; i++) {
+        const msg = history[i];
+        if (msg.role === 'assistant') {
+          const contentLower = msg.content.toLowerCase();
+          const matchCount = nextTopicKeywords.filter(keyword => contentLower.includes(keyword)).length;
+          if (matchCount >= Math.min(2, nextTopicKeywords.length)) {
+            endIndex = i;
+            console.log(`✓ Found topic end at index ${i} (next topic starts)`);
+            break;
+          }
+        }
+      }
+    }
+
+    // Extract messages between start and end
+    const topicMessages = history.slice(startIndex, endIndex);
+    console.log(`📝 Extracted ${topicMessages.length} messages for topic "${topic}"`);
+
+    // Transform to required format
+    const rawExchange = topicMessages.map(msg => ({
+      speaker: (msg.role === 'assistant' ? 'Victoria' : 'User') as 'Victoria' | 'User',
+      text: msg.content,
+      timestamp: msg.timestamp || Date.now()
+    }));
+
+    return rawExchange;
+  }, []);
 
   const playSynchronizedResponse = async (
     text: string,
@@ -776,11 +855,46 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
                 ? await bulkEvalPromise.current
                 : [];
 
+              // Enrich batch results with raw exchanges
+              console.log('🔄 Enriching batch results with raw Q&A exchanges...');
+              const enrichedPreviousResults = previousResults.map((result, index) => {
+                const rawExchange = extractTopicMessages(
+                  historyBuffer.current,
+                  result.topic,
+                  index,
+                  plan.queue
+                );
+                return {
+                  ...result,
+                  rawExchange
+                };
+              });
+              console.log(`✅ Enriched ${enrichedPreviousResults.length} batch results with raw exchanges`);
+
               const lastInteraction = { role: 'user' as const, content: textToFinalize };
 
-              const finalResult = await agentRef.current.evaluateFinal(lastInteraction, previousResults);
+              const finalResult = await agentRef.current.evaluateFinal(lastInteraction, enrichedPreviousResults);
 
-              const allResults = [...previousResults, finalResult.finalQuestion];
+              // Enrich final question with raw exchange
+              console.log('🔄 Enriching final question with raw Q&A exchange...');
+              const finalQuestionRawExchange = extractTopicMessages(
+                historyBuffer.current,
+                finalResult.finalQuestion.topic,
+                plan.queue.length - 1, // Final question is the last topic
+                plan.queue
+              );
+              const enrichedFinalQuestion = {
+                ...finalResult.finalQuestion,
+                rawExchange: finalQuestionRawExchange
+              };
+              console.log(`✅ Enriched final question with ${finalQuestionRawExchange.length} raw exchange messages`);
+
+              const allResults = [...enrichedPreviousResults, enrichedFinalQuestion];
+              
+              // Log summary of raw exchange data
+              const totalMessages = allResults.reduce((sum, result) => sum + (result.rawExchange?.length || 0), 0);
+              console.log(`📊 Total raw exchange messages captured: ${totalMessages}`);
+              
               const avg = allResults.length > 0
                 ? allResults.reduce((a, b) => a + b.score, 0) / allResults.length
                 : 0;

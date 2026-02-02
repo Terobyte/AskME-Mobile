@@ -145,6 +145,7 @@ export interface AiResponse {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  timestamp?: number;
 }
 
 export interface InterviewContext {
@@ -160,12 +161,18 @@ export interface QuestionResult {
   score: number; // 0-10
   feedback: string;
   detailedFeedback?: string; // ✨ NEW: Comprehensive 4-6 sentence feedback with actionable advice
+  advice?: string; // ✨ NEW: Generated study advice (2-3 sentences)
   metrics?: EvaluationMetrics; // Optional for backward compatibility
   compositeScore?: number; // NEW: Weighted average (0-10)
   level?: QualityLevel; // NEW: Semantic quality level
   issues?: AnswerIssue[]; // NEW: Specific problems identified
   intent?: UserIntent; // NEW: User's intent classification
   suggestedFeedback?: string; // NEW: Short phrase for Victoria (5-10 words)
+  rawExchange?: Array<{ // ✨ NEW: Raw Q&A for debug section
+    speaker: 'Victoria' | 'User';
+    text: string;
+    timestamp?: number;
+  }>;
 }
 
 export interface FinalInterviewReport {

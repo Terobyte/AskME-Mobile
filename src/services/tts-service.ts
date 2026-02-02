@@ -1,5 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { Audio } from 'expo-av';
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 
 /**
  * Text-to-Speech Service using Cartesia API
@@ -26,7 +26,9 @@ class TTSService {
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
         shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false
+        playThroughEarpieceAndroid: false,
+        interruptionModeIOS: InterruptionModeIOS.DuckOthers,
+        interruptionModeAndroid: InterruptionModeAndroid.DuckOthers
       });
       
       this.isInitialized = true;
@@ -60,7 +62,7 @@ class TTSService {
       }
       
       if (options?.autoPlay !== false) {
-        return await this.playAudioFile(audioFile);
+        return await this.playAudioFile(audioFile, options?.speed);
       }
       
       return true;
@@ -108,7 +110,7 @@ class TTSService {
         output_format: {
           container: "mp3",
           encoding: "mp3",
-          sample_rate: 22050
+          sample_rate: 44100
         }
       };
       
@@ -174,13 +176,20 @@ class TTSService {
   /**
    * Play audio file
    */
-  private async playAudioFile(filepath: string): Promise<boolean> {
+  private async playAudioFile(filepath: string, speed?: number): Promise<boolean> {
     try {
+      const playbackRate = speed || 1.0;
       console.log(`🔊 [TTS] Playing: ${filepath}`);
+      console.log(`🔊 [TTS] Playing at rate: ${playbackRate}`);
       
       const { sound } = await Audio.Sound.createAsync(
         { uri: filepath },
-        { shouldPlay: true, volume: 1.0 }
+        { 
+          shouldPlay: true, 
+          volume: 1.0,
+          rate: playbackRate,
+          pitchCorrectionQuality: Audio.PitchCorrectionQuality.High
+        }
       );
       
       this.soundObjects.push(sound);
@@ -261,7 +270,12 @@ class TTSService {
       
       const { sound } = await Audio.Sound.createAsync(
         { uri: audioFile },
-        { shouldPlay: false, volume: 1.0 }
+        { 
+          shouldPlay: false, 
+          volume: 1.0,
+          rate: options?.speed || 1.0,
+          pitchCorrectionQuality: Audio.PitchCorrectionQuality.High
+        }
       );
       
       this.soundObjects.push(sound);

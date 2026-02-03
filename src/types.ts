@@ -180,6 +180,8 @@ export interface FinalInterviewReport {
   averageScore: number;
   overallSummary: string;
   timestamp: number;
+  wasForceFinished?: boolean; // ✨ NEW: True if manually force-finished via shake menu
+  terminationReason?: 'completed' | 'force_finished' | 'anger_limit' | 'patience_limit'; // ✨ NEW: How interview ended
 }
 
 // ============================================
@@ -221,17 +223,17 @@ export type VibeLabel =
   | 'Impressed'       // anger 0-10, engagement 80-100
   | 'Encouraging'     // anger 0-10, engagement 50-79
   | 'Professional'    // anger 11-25, engagement 60-100
-  
+
   // Neutral vibes (medium anger, varying engagement)
   | 'Neutral'         // anger 11-25, engagement 30-59
   | 'Curious'         // anger 26-40, engagement 60-100
   | 'Concerned'       // anger 26-40, engagement 30-59
-  
+
   // Negative mild (medium anger, low engagement or special cases)
   | 'Disappointed'    // anger 26-40, engagement 0-29
   | 'Skeptical'       // anger 41-60, engagement 40-100
   | 'Amused'          // anger 41-60, absurd error detected
-  
+
   // Negative strong (high anger)
   | 'Irritated'       // anger 41-60, engagement 0-39
   | 'Frustrated'      // anger 61-70

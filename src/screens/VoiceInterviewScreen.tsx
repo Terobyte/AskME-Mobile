@@ -13,10 +13,10 @@ import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { useTypewriter } from '../hooks/useTypewriter';
 import { useInterviewAudio } from '../hooks/interview/useInterviewAudio';
 import { useInterviewLogic } from '../hooks/interview/useInterviewLogic';
-import { MetricsHud } from '../components/MetricsHud';
 import { DebugOverlay } from '../components/interview/DebugOverlay';
 import { ResultsModal } from '../components/interview/ResultsModal';
 import { HistoryPanel } from '../components/history/HistoryPanel';
+import * as historyStorage from '../services/history-storage';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -31,6 +31,7 @@ const MOCK_JOB_DESCRIPTION = `We are looking for a Senior Mobile Engineer to bui
 const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 
 import { gestureHandlerRootHOC } from 'react-native-gesture-handler';
+import { runOnJS } from 'react-native-reanimated';
 
 function VoiceInterviewScreen() {
     const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
@@ -140,8 +141,22 @@ function VoiceInterviewScreen() {
             // AI finished speaking
             setStatus('idle');
         },
-        onInterviewComplete: (results) => {
-            console.log("✅ Interview Complete:", results);
+        onInterviewComplete: async (results) => {
+            console.log("✅ [INTERVIEW] Interview Complete:", results);
+
+            // Save to history
+            try {
+                const roleTitle = resumeFile?.name || jdText.substring(0, 50) || "Interview Session";
+                await historyStorage.saveSession(
+                    roleTitle,
+                    results.averageScore,
+                    results.overallSummary,
+                    results.questions
+                );
+                console.log("✅ [HISTORY] Session saved to history");
+            } catch (error) {
+                console.error("❌ [HISTORY] Failed to save session:", error);
+            }
         }
     });
 
@@ -246,14 +261,15 @@ function VoiceInterviewScreen() {
         setShowDetailedResults(false);
     };
 
-    // Swipe left from right edge to open history
+    // Swipe left from right edge to open history (only when settings are open)
     const swipeGesture = Gesture.Pan()
-        .activeOffsetX([-20, 20]) // Trigger if moved horizontally
+        .enabled(showSettings) // Only active when Control Center is open
+        .activeOffsetX([-20, 20])
         .onEnd((event) => {
             // Swipe left from right edge (negative velocityX, negative translationX)
             if (event.velocityX < -500 && event.translationX < -50) {
-                setShowHistory(true);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                runOnJS(setShowHistory)(true);
+                runOnJS(Haptics.impactAsync)(Haptics.ImpactFeedbackStyle.Light);
             }
         });
 
@@ -350,36 +366,49 @@ function VoiceInterviewScreen() {
                     visible={showDebug}
                     onClose={() => setShowDebug(false)}
                     anger={anger}
-                    engagement={engagement}              // ← ADD
-                    currentVibe={currentVibe}           // ← ADD
+                    engagement={engagement}
+                    currentVibe={currentVibe}
                     debugValue={debugValue}
                     isDebugTtsMuted={isDebugTtsMuted}
                     isSimulating={isSimulating}
                     setAnger={(val) => console.warn("Direct anger setting disabled in refactored version")}
-                    setEngagement={setEngagement}       // ← FIXED: Use real setter from hook
+                    setEngagement={setEngagement}
                     setDebugValue={setDebugValue}
                     setIsDebugTtsMuted={setIsDebugTtsMuted}
                     onSimulate={handleSimulate}
                     onForceFinish={handleForceFinish}
+                    // NEW: Live metrics props
+                    currentTopic={currentTopic}
+                    currentTopicIndex={currentTopicIndex}
+                    topicSuccess={topicSuccess}
+                    topicPatience={topicPatience}
+                    metrics={metrics}
                 />
 
                 <View style={styles.header}>
                     <Text style={{ fontWeight: 'bold', fontSize: 18 }}>AskME AI</Text>
-                    <TouchableOpacity onPress={() => setShowSettings(true)} style={styles.iconButton}>
-                        <Ionicons name="settings-outline" size={24} color="#333" />
-                    </TouchableOpacity>
+
+                    {/* Button group */}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        {/* History button */}
+                        <TouchableOpacity
+                            onPress={() => setShowHistory(true)}
+                            style={styles.iconButton}
+                        >
+                            <Ionicons name="time-outline" size={24} color="#333" />
+                        </TouchableOpacity>
+
+                        {/* Settings button */}
+                        <TouchableOpacity
+                            onPress={() => setShowSettings(true)}
+                            style={styles.iconButton}
+                        >
+                            <Ionicons name="settings-outline" size={24} color="#333" />
+                        </TouchableOpacity>
+                    </View>
                 </View>
 
-                {/* Metrics HUD - Only visible when debug is OPEN */}
-                {showDebug && (
-                    <MetricsHud
-                        metrics={metrics}
-                        success={topicSuccess}
-                        patience={topicPatience}
-                        anger={anger}
-                        topicTitle={`${currentTopicIndex}. ${currentTopic}`}
-                    />
-                )}
+
 
                 {/* Settings Modal */}
                 <Modal visible={showSettings} animationType="fade" transparent>

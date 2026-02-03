@@ -136,7 +136,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     allTopics: InterviewTopic[]
   ): Array<{ speaker: 'Victoria' | 'User'; text: string; timestamp: number }> => {
     console.log(`🔍 Extracting messages for topic "${topic}" (index ${topicIndex})`);
-    
+
     if (!history || history.length === 0) {
       console.log('⚠️ Empty history, returning empty array');
       return [];
@@ -145,7 +145,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     // Find the starting point: Victoria's message that introduces this topic
     let startIndex = -1;
     const topicKeywords = topic.toLowerCase().split(' ').filter(word => word.length > 3);
-    
+
     for (let i = 0; i < history.length; i++) {
       const msg = history[i];
       if (msg.role === 'assistant') {
@@ -167,11 +167,11 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
     // Find the ending point: Victoria's message that introduces the NEXT topic
     let endIndex = history.length; // Default to end of history
-    
+
     if (topicIndex < allTopics.length - 1) {
       const nextTopic = allTopics[topicIndex + 1];
       const nextTopicKeywords = nextTopic.topic.toLowerCase().split(' ').filter(word => word.length > 3);
-      
+
       for (let i = startIndex + 1; i < history.length; i++) {
         const msg = history[i];
         if (msg.role === 'assistant') {
@@ -256,7 +256,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       const ttsEnd = Date.now();
       const ttsDuration = ttsEnd - ttsStart;
       console.log(`🔊 [TTS DEBUG] Playback completed in ${ttsDuration}ms (${(ttsDuration / 1000).toFixed(1)}s)`);
-      
+
       if (ttsDuration > text.length * 120) {
         console.error(`⚠️ [TTS DEBUG] ABNORMAL: TTS took ${ttsDuration}ms for ${text.length} chars`);
         console.error(`⚠️ [TTS DEBUG] Expected: ~${text.length * 100}ms (100ms per char)`);
@@ -448,7 +448,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             // ✅ FIX: Play voice FIRST, then advance state
             console.log("🔊 [STATE SYNC] Playing voice BEFORE state advance");
             console.log(`📍 [STATE SYNC] Current index: 0 (locked until voice plays)`);
-            
+
             // Use unified TTSService with emotion options
             await playSynchronizedResponse(introSpeech, {
               emotion: currentVibe?.cartesiaEmotion,
@@ -540,9 +540,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           const vibe = VibeCalculator.determineVibe(
             anger,  // Use existing anger variable
             newEngagement,
-            { 
+            {
               isAbsurdError: isAbsurd,
-              intent: analysis.intent 
+              intent: analysis.intent
             }
           );
 
@@ -700,7 +700,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
                 ? Number((partialQuestions.reduce((sum, q) => sum + q.score, 0) / partialQuestions.length).toFixed(1))
                 : 0,
               overallSummary: `Interview was terminated early due to high frustration level. Only ${currentTopicIndex} out of ${plan?.queue.length || 0} topics were covered. The candidate's responses did not meet expectations.`,
-              timestamp: Date.now()
+              timestamp: Date.now(),
+              wasForceFinished: false,
+              terminationReason: 'anger_limit'
             };
 
             console.log("📊 [TERMINATE] Setting termination report");
@@ -773,7 +775,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
                     ? Number((partialQuestions.reduce((sum, q) => sum + q.score, 0) / partialQuestions.length).toFixed(1))
                     : 0,
                   overallSummary: `Interview was terminated early due to accumulated frustration. Only ${currentTopicIndex} out of ${plan?.queue.length || 0} topics were covered.`,
-                  timestamp: Date.now()
+                  timestamp: Date.now(),
+                  wasForceFinished: false,
+                  terminationReason: 'patience_limit'
                 };
 
                 console.log("📊 [TERMINATE] Setting termination report");
@@ -818,7 +822,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           // ✅ FIX: Play voice BEFORE advancing state
           console.log("🔊 [STATE SYNC] Playing voice BEFORE state advance");
           console.log(`📍 [STATE SYNC] Current index: ${currentTopicIndex} (locked until voice plays)`);
-          
+
           // Use unified TTSService with emotion options
           await playSynchronizedResponse(speech, {
             emotion: currentVibe?.cartesiaEmotion,
@@ -890,11 +894,11 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
               console.log(`✅ Enriched final question with ${finalQuestionRawExchange.length} raw exchange messages`);
 
               const allResults = [...enrichedPreviousResults, enrichedFinalQuestion];
-              
+
               // Log summary of raw exchange data
               const totalMessages = allResults.reduce((sum, result) => sum + (result.rawExchange?.length || 0), 0);
               console.log(`📊 Total raw exchange messages captured: ${totalMessages}`);
-              
+
               const avg = allResults.length > 0
                 ? allResults.reduce((a, b) => a + b.score, 0) / allResults.length
                 : 0;
@@ -903,7 +907,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
                 questions: allResults,
                 averageScore: Number(avg.toFixed(1)),
                 overallSummary: finalResult.overallSummary,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                wasForceFinished: false,
+                terminationReason: 'completed'
               };
 
               console.log("✅ Final Report Ready:", JSON.stringify(report, null, 2));
@@ -1007,71 +1013,83 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   };
 
   const forceFinish = async (): Promise<void> => {
-    console.log("🛑 Force Finish Triggered");
+    console.log("🛑 [FORCE_FINISH] Manual termination triggered");
 
     try {
       await TTSService.stop();
     } catch (e) {
-      console.error("Force Finish Audio Stop Error:", e);
+      console.error("❌ [FORCE_FINISH] Audio stop error:", e);
     }
 
     const timestamp = Date.now();
-    const mockQuestions: QuestionResult[] = [
-      {
-        topic: "React Native Performance Optimization",
-        userAnswer: "I would use FlatList with proper optimization props like getItemLayout, remove console.logs, and use Hermes engine.",
-        score: 8.5,
-        feedback: "Excellent understanding of performance bottlenecks. You correctly identified FlatList vs ScrollView trade-offs and explained VirtualizedList internals. Could improve by mentioning Hermes engine optimizations.",
-        metrics: { accuracy: 9, depth: 8, structure: 8, reasoning: "Strong technical foundation" }
-      },
-      {
-        topic: "State Management Patterns",
-        userAnswer: "I prefer Redux Toolkit for large apps, Context for simple state, and Zustand for medium complexity.",
-        score: 9.0,
-        feedback: "Strong knowledge of Redux, Context API, and Zustand. Your explanation of Redux Toolkit vs classic Redux was spot-on. Great example using real-world use cases.",
-        metrics: { accuracy: 9, depth: 9, structure: 9, reasoning: "Comprehensive understanding" }
-      },
-      {
-        topic: "Native Module Development",
-        userAnswer: "I create native modules by bridging iOS and Android code, exposing methods through the bridge.",
-        score: 7.2,
-        feedback: "Good foundation in bridging iOS/Android native code. You understand the basics of TurboModules but missed some advanced concepts like JSI threading. Practice building more complex native modules.",
-        metrics: { accuracy: 7, depth: 7, structure: 8, reasoning: "Needs JSI knowledge" }
-      },
-      {
-        topic: "Memory Management & Leaks",
-        userAnswer: "I clean up timers and listeners in useEffect cleanup, and avoid closures that capture large objects.",
-        score: 6.5,
-        feedback: "You know the common pitfalls (listeners, timers, closures) but struggled to explain WeakMap/WeakRef usage. Your debugging approach using Performance Monitor was correct. Study Hermes memory profiling tools.",
-        metrics: { accuracy: 6, depth: 6, structure: 7, reasoning: "Basic understanding" }
-      },
-      {
-        topic: "Advanced Animation Techniques",
-        userAnswer: "I use Animated API for simple animations and try to use native driver when possible.",
-        score: 4.0,
-        feedback: "Basic knowledge of Animated API but lacked understanding of Reanimated 2 worklets. Couldn't explain the difference between UI thread and JS thread execution. Needs more hands-on practice with complex animations.",
-        metrics: { accuracy: 4, depth: 3, structure: 5, reasoning: "Needs significant improvement" }
+    const partialQuestions: QuestionResult[] = [];
+
+    // Generate report from actual interview history
+    if (historyBuffer.current.length > 0) {
+      console.log(`📊 [FORCE_FINISH] Processing ${historyBuffer.current.length} messages from history...`);
+
+      try {
+        if (agentRef.current) {
+          const results = await agentRef.current.evaluateBatch(historyBuffer.current);
+          partialQuestions.push(...results);
+          console.log(`✅ [FORCE_FINISH] Evaluated ${results.length} topics`);
+        } else {
+          console.warn("⚠️ [FORCE_FINISH] Agent not initialized, cannot evaluate history");
+        }
+      } catch (e) {
+        console.error("❌ [FORCE_FINISH] Failed to evaluate history:", e);
       }
-    ];
+    } else {
+      console.log("⚠️ [FORCE_FINISH] No history to process (interview just started)");
+    }
 
-    const averageScore = Number((mockQuestions.reduce((sum, q) => sum + q.score, 0) / mockQuestions.length).toFixed(1));
+    // Calculate average score
+    const averageScore = partialQuestions.length > 0
+      ? Number((partialQuestions.reduce((sum, q) => sum + q.score, 0) / partialQuestions.length).toFixed(1))
+      : 0;
 
-    const mockReport: FinalInterviewReport = {
-      questions: mockQuestions,
+    // Generate summary based on actual progress
+    const totalTopics = plan?.queue.length || 0;
+    const completedTopics = partialQuestions.length;
+    const progressPercentage = totalTopics > 0 ? Math.round((completedTopics / totalTopics) * 100) : 0;
+
+    let overallSummary = `Interview was manually terminated. `;
+
+    if (completedTopics === 0) {
+      overallSummary += `No topics were completed before termination.`;
+    } else if (completedTopics === totalTopics) {
+      overallSummary += `All ${totalTopics} topics were completed (${progressPercentage}% progress). Average score: ${averageScore}/10.`;
+    } else {
+      overallSummary += `${completedTopics} out of ${totalTopics} topics were completed (${progressPercentage}% progress). `;
+
+      if (averageScore >= 7) {
+        overallSummary += `The candidate demonstrated strong performance with an average score of ${averageScore}/10.`;
+      } else if (averageScore >= 5) {
+        overallSummary += `The candidate showed moderate performance with an average score of ${averageScore}/10.`;
+      } else if (averageScore > 0) {
+        overallSummary += `The candidate struggled with an average score of ${averageScore}/10.`;
+      }
+    }
+
+    const partialReport: FinalInterviewReport = {
+      questions: partialQuestions,
       averageScore,
-      overallSummary: "You demonstrated solid fundamentals in React Native development, particularly excelling in performance optimization and state management patterns. Your understanding of native module basics is good, though advanced concepts like JSI and Reanimated worklets need more practice. Focus on deepening your knowledge of memory profiling and modern animation libraries.",
-      timestamp
+      overallSummary,
+      timestamp,
+      wasForceFinished: true,
+      terminationReason: 'force_finished'
     };
 
-    console.log("📊 [DEBUG] Mock Report Created:");
-    console.log("📊 [DEBUG] Questions Count:", mockQuestions.length);
-    console.log("📊 [DEBUG] Average Score:", averageScore);
-    console.log("📊 [DEBUG] Full Report:", JSON.stringify(mockReport, null, 2));
+    console.log("📊 [FORCE_FINISH] Partial Report Created:");
+    console.log(`   Questions: ${partialQuestions.length}/${totalTopics}`);
+    console.log(`   Average Score: ${averageScore}`);
+    console.log(`   Progress: ${progressPercentage}%`);
 
     setTimeout(() => {
-      setFinalReport(mockReport);
+      setFinalReport(partialReport);
       setIsFinished(true);
-      onInterviewComplete?.(mockReport);
+      onInterviewComplete?.(partialReport);
+      console.log("✅ [FORCE_FINISH] Report set, interview marked as finished");
     }, 500);
   };
 
@@ -1285,7 +1303,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   // ============================================
   // VIBE RECALCULATION ON MANUAL ENGAGEMENT CHANGE
   // ============================================
-  
+
   useEffect(() => {
     // Only recalculate if we have existing vibe data (interview is active)
     if (currentVibe && !isLobbyPhase) {

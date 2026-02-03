@@ -17,17 +17,18 @@ import {
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Animated, { 
-    useSharedValue, 
-    useAnimatedStyle, 
-    withTiming, 
+import Animated, {
+    useSharedValue,
+    useAnimatedStyle,
+    withTiming,
     Easing,
-    runOnJS 
+    runOnJS
 } from 'react-native-reanimated';
 import { FinalInterviewReport, QuestionResult } from '../../types';
 import { getFavoriteIds, toggleFavorite, FavoriteQuestion } from '../../services/favorites-storage';
 import { GeminiAgentService } from '../../services/gemini-agent';
 import { updateQuestionAdvice } from '../../services/history-storage';
+import { ExpandableSection } from './ExpandableSection';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -107,7 +108,7 @@ const DetailView: React.FC<DetailViewProps> = ({
     onToggleFavorite,
     onAdviceGenerated
 }) => {
-    const [debugExpanded, setDebugExpanded] = useState(false);
+
     const [generatingAdvice, setGeneratingAdvice] = useState(false);
     const [currentAdvice, setCurrentAdvice] = useState<string | undefined>(undefined);
 
@@ -151,7 +152,7 @@ const DetailView: React.FC<DetailViewProps> = ({
             // Save to storage if we have a sessionId
             if (sessionId) {
                 const saveSuccess = await updateQuestionAdvice(sessionId, question.topic, advice);
-                
+
                 if (saveSuccess) {
                     console.log(`💾 [ADVICE] Saved to storage`);
                     // Notify parent component if callback provided
@@ -274,54 +275,6 @@ const DetailView: React.FC<DetailViewProps> = ({
                             <Text style={styles.answerText}>{question.userAnswer}</Text>
                         </View>
                     )}
-
-                    {/* Debug Section - NEW */}
-                    <View style={styles.debugSection}>
-                        <TouchableOpacity 
-                            style={styles.debugHeader}
-                            onPress={() => setDebugExpanded(!debugExpanded)}
-                        >
-                            <Text style={styles.debugTitle}>🔧 Debug Info</Text>
-                            <Ionicons 
-                                name={debugExpanded ? "chevron-up" : "chevron-down"} 
-                                size={20} 
-                                color="#666" 
-                            />
-                        </TouchableOpacity>
-                        
-                        {debugExpanded && (
-                            <View style={styles.debugContent}>
-                                {question.rawExchange && question.rawExchange.length > 0 ? (
-                                    question.rawExchange.map((msg, idx) => (
-                                        <View key={idx} style={styles.debugMessage}>
-                                            <Text style={styles.debugSpeaker}>
-                                                {msg.speaker === 'Victoria' ? '🎤 Victoria:' : '👤 You:'}
-                                            </Text>
-                                            <Text style={styles.debugText}>{msg.text}</Text>
-                                        </View>
-                                    ))
-                                ) : (
-                                    <Text style={styles.debugPlaceholder}>
-                                        No raw conversation data available for this session.
-                                    </Text>
-                                )}
-                                
-                                {/* Evaluation Metrics */}
-                                {question.metrics && (
-                                    <View style={styles.debugMetrics}>
-                                        <Text style={styles.debugSpeaker}>--- EVALUATION ---</Text>
-                                        <Text style={styles.debugText}>Accuracy: {question.metrics.accuracy}/10</Text>
-                                        <Text style={styles.debugText}>Depth: {question.metrics.depth}/10</Text>
-                                        <Text style={styles.debugText}>Structure: {question.metrics.structure}/10</Text>
-                                        <Text style={styles.debugText}>Score: {question.score.toFixed(1)}/10</Text>
-                                        {question.metrics.reasoning && (
-                                            <Text style={styles.debugText}>Reasoning: {question.metrics.reasoning}</Text>
-                                        )}
-                                    </View>
-                                )}
-                            </View>
-                        )}
-                    </View>
                 </ScrollView>
             </View>
         </View>
@@ -342,6 +295,8 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
     const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
     const [selectedQuestion, setSelectedQuestion] = useState<QuestionResult | null>(null);
     const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+    // NEW: Tab state
+    const [activeTab, setActiveTab] = useState<'summary' | 'topics' | 'debug'>('summary');
 
     // Animation values for reveal mode
     const animatedScore = useSharedValue(0);
@@ -372,7 +327,7 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
     useEffect(() => {
         if (visible && internalMode === 'reveal' && report) {
             console.log('🎰 [REVEAL] Starting score animation');
-            
+
             // Animate score from 0 to final value
             animatedScore.value = 0;
             animatedScore.value = withTiming(report.averageScore, {
@@ -486,7 +441,7 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
                             <Text style={styles.briefSummary}>{briefSummary}</Text>
                         </View>
 
-                        <TouchableOpacity 
+                        <TouchableOpacity
                             style={styles.detailButton}
                             onPress={() => {
                                 setInternalMode('detail');
@@ -518,39 +473,183 @@ export const ResultsModal: React.FC<ResultsModalProps> = ({
                             </View>
                         </View>
 
-                        {/* Overall Summary */}
-                        <View style={styles.summaryCard}>
-                            <Text style={styles.sectionTitle}>OVERALL SUMMARY</Text>
-                            <Text style={styles.summaryText}>{report.overallSummary}</Text>
+                        {/* NEW: Tab Bar */}
+                        <View style={styles.tabBar}>
+                            <TouchableOpacity
+                                style={[styles.tab, activeTab === 'summary' && styles.tabActive]}
+                                onPress={() => {
+                                    setActiveTab('summary');
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }}
+                            >
+                                <Ionicons
+                                    name="stats-chart"
+                                    size={20}
+                                    color={activeTab === 'summary' ? '#007AFF' : '#666'}
+                                />
+                                <Text style={[styles.tabText, activeTab === 'summary' && styles.tabTextActive]}>
+                                    Summary
+                                </Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={[styles.tab, activeTab === 'topics' && styles.tabActive]}
+                                onPress={() => {
+                                    setActiveTab('topics');
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }}
+                            >
+                                <Ionicons
+                                    name="list"
+                                    size={20}
+                                    color={activeTab === 'topics' ? '#007AFF' : '#666'}
+                                />
+                                <Text style={[styles.tabText, activeTab === 'topics' && styles.tabTextActive]}>
+                                    Topics
+                                </Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={[styles.tab, activeTab === 'debug' && styles.tabActive]}
+                                onPress={() => {
+                                    setActiveTab('debug');
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                }}
+                            >
+                                <Ionicons
+                                    name="code-slash"
+                                    size={20}
+                                    color={activeTab === 'debug' ? '#007AFF' : '#666'}
+                                />
+                                <Text style={[styles.tabText, activeTab === 'debug' && styles.tabTextActive]}>
+                                    Debug
+                                </Text>
+                            </TouchableOpacity>
                         </View>
 
-                        {/* Questions List */}
+                        {/* Tab Content */}
                         <ScrollView
-                            style={styles.listContainer}
-                            contentContainerStyle={styles.listContent}
+                            style={styles.tabContent}
+                            contentContainerStyle={styles.tabContentContainer}
                             showsVerticalScrollIndicator={false}
                         >
-                            {hasQuestions ? (
-                                <>
-                                    <Text style={styles.sectionTitle}>QUESTIONS ({report.questions.length})</Text>
+                            {activeTab === 'summary' && (
+                                <View style={styles.summaryView}>
+                                    {/* Large Score Card */}
+                                    <View style={styles.scoreCard}>
+                                        <Text style={[styles.largeScore, { color: totalScoreColor }]}>
+                                            {totalScore.toFixed(1)}
+                                        </Text>
+                                        <Text style={styles.scoreSubtitle}>Overall Score</Text>
+                                    </View>
 
-                                    {report.questions.map((question, index) => (
-                                        <QuestionRow
-                                            key={getQuestionId(question, index)}
-                                            question={question}
-                                            onPress={() => {
-                                                setSelectedQuestion(question);
-                                                setSelectedIndex(index);
-                                            }}
+                                    {/* Stats Grid */}
+                                    <View style={styles.statsGrid}>
+                                        <View style={styles.statCard}>
+                                            <Text style={styles.statValue}>
+                                                {report.questions.length}
+                                            </Text>
+                                            <Text style={styles.statLabel}>Topics Completed</Text>
+                                        </View>
+                                        <View style={styles.statCard}>
+                                            <Text style={styles.statValue}>
+                                                {totalScore >= 7 ? 'Strong' : totalScore >= 5 ? 'Good' : 'Needs Work'}
+                                            </Text>
+                                            <Text style={styles.statLabel}>Performance</Text>
+                                        </View>
+                                        <View style={styles.statCard}>
+                                            <Text style={styles.statValue}>
+                                                {report.wasForceFinished ? '⚠️' : '✅'}
+                                            </Text>
+                                            <Text style={styles.statLabel}>
+                                                {report.wasForceFinished ? 'Partial' : 'Complete'}
+                                            </Text>
+                                        </View>
+                                    </View>
+
+                                    {/* AI Summary with ExpandableSection */}
+                                    <View style={styles.summarySection}>
+                                        <Text style={styles.sectionTitle}>AI SUMMARY</Text>
+                                        <ExpandableSection
+                                            content={report.overallSummary}
+                                            previewLines={3}
+                                            style={styles.expandableContainer}
+                                            textStyle={styles.summaryText}
                                         />
-                                    ))}
-                                </>
-                            ) : (
-                                <View style={styles.emptyState}>
-                                    <Ionicons name="information-circle-outline" size={48} color="#999" />
-                                    <Text style={styles.emptyText}>
-                                        No questions were answered during this session.
-                                    </Text>
+                                    </View>
+                                </View>
+                            )}
+
+                            {activeTab === 'topics' && (
+                                <View style={styles.topicsView}>
+                                    {hasQuestions ? (
+                                        report.questions.map((question, index) => (
+                                            <QuestionRow
+                                                key={getQuestionId(question, index)}
+                                                question={question}
+                                                onPress={() => {
+                                                    setSelectedQuestion(question);
+                                                    setSelectedIndex(index);
+                                                }}
+                                            />
+                                        ))
+                                    ) : (
+                                        <View style={styles.emptyState}>
+                                            <Ionicons name="information-circle-outline" size={48} color="#999" />
+                                            <Text style={styles.emptyText}>
+                                                No questions were answered during this session.
+                                            </Text>
+                                        </View>
+                                    )}
+                                </View>
+                            )}
+
+                            {activeTab === 'debug' && (
+                                <View style={styles.debugView}>
+                                    {/* Session Info */}
+                                    <View style={styles.debugSection}>
+                                        <Text style={styles.debugSectionTitle}>📋 SESSION INFO</Text>
+                                        <View style={styles.debugCard}>
+                                            <Text style={styles.debugText}>Timestamp: {new Date(report.timestamp).toLocaleString()}</Text>
+                                            <Text style={styles.debugText}>Was Force Finished: {report.wasForceFinished ? 'Yes' : 'No'}</Text>
+                                            <Text style={styles.debugText}>Termination Reason: {report.terminationReason || 'N/A'}</Text>
+                                            <Text style={styles.debugText}>Total Questions: {report.questions.length}</Text>
+                                            <Text style={styles.debugText}>Average Score: {report.averageScore}</Text>
+                                        </View>
+                                    </View>
+
+                                    {/* Topic Metrics */}
+                                    <View style={styles.debugSection}>
+                                        <Text style={styles.debugSectionTitle}>📊 TOPIC METRICS</Text>
+                                        {report.questions.map((q, idx) => (
+                                            <View key={idx} style={styles.debugCard}>
+                                                <Text style={styles.debugTopicTitle}>{q.topic}</Text>
+                                                <Text style={styles.debugText}>Score: {q.score}/10</Text>
+                                                {q.metrics && (
+                                                    <>
+                                                        <Text style={styles.debugText}>Accuracy: {q.metrics.accuracy}/10</Text>
+                                                        <Text style={styles.debugText}>Depth: {q.metrics.depth}/10</Text>
+                                                        <Text style={styles.debugText}>Structure: {q.metrics.structure}/10</Text>
+                                                        {q.metrics.reasoning && (
+                                                            <Text style={styles.debugText}>Reasoning: {q.metrics.reasoning}</Text>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </View>
+                                        ))}
+                                    </View>
+
+                                    {/* Raw Exchange */}
+                                    <View style={styles.debugSection}>
+                                        <Text style={styles.debugSectionTitle}>💬 RAW EXCHANGE</Text>
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+                                            <View style={styles.debugCard}>
+                                                <Text style={styles.debugJson}>
+                                                    {JSON.stringify(report, null, 2)}
+                                                </Text>
+                                            </View>
+                                        </ScrollView>
+                                    </View>
                                 </View>
                             )}
                         </ScrollView>
@@ -921,57 +1020,168 @@ const styles = StyleSheet.create({
         fontStyle: 'italic',
     },
 
-    // ===== DEBUG SECTION - NEW =====
-    debugSection: {
-        marginTop: 20,
-        borderTopWidth: 1,
-        borderTopColor: '#E5E5E5',
-        paddingTop: 16,
-    },
-    debugHeader: {
+    // ===== NEW: TAB SYSTEM STYLES =====
+    tabBar: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        paddingVertical: 8,
+        backgroundColor: '#F5F5F5',
+        borderRadius: 12,
+        padding: 4,
+        marginHorizontal: 16,
+        marginTop: 16,
+        marginBottom: 12,
     },
-    debugTitle: {
+    tab: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        gap: 6,
+    },
+    tabActive: {
+        backgroundColor: '#FFFFFF',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    tabText: {
         fontSize: 14,
         fontWeight: '600',
         color: '#666',
     },
-    debugContent: {
-        marginTop: 12,
-        backgroundColor: '#F5F5F5',
-        borderRadius: 8,
-        padding: 12,
-    },
-    debugMessage: {
-        marginBottom: 12,
-    },
-    debugSpeaker: {
-        fontSize: 12,
+    tabTextActive: {
+        color: '#007AFF',
         fontWeight: '700',
+    },
+
+    // ===== TAB CONTENT =====
+    tabContent: {
+        flex: 1,
+    },
+    tabContentContainer: {
+        padding: 16,
+        paddingBottom: 32,
+    },
+
+    // ===== SUMMARY VIEW STYLES =====
+    summaryView: {
+        gap: 20,
+    },
+    scoreCard: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: 20,
+        padding: 32,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 12,
+        elevation: 4,
+    },
+    largeScore: {
+        fontSize: 72,
+        fontWeight: '900',
+        lineHeight: 80,
+    },
+    scoreSubtitle: {
+        fontSize: 14,
+        color: '#666',
+        fontWeight: '600',
+        marginTop: 8,
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+    },
+    statsGrid: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    statCard: {
+        flex: 1,
+        backgroundColor: '#FFFFFF',
+        borderRadius: 12,
+        padding: 16,
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        elevation: 3,
+    },
+    statValue: {
+        fontSize: 24,
+        fontWeight: '800',
         color: '#333',
         marginBottom: 4,
-        fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    },
+    statLabel: {
+        fontSize: 11,
+        color: '#666',
+        fontWeight: '600',
+        textAlign: 'center',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    summarySection: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: 12,
+        padding: 16,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        elevation: 3,
+    },
+    expandableContainer: {
+        marginTop: 8,
+    },
+
+    // ===== TOPICS VIEW STYLES =====
+    topicsView: {
+        gap: 12,
+    },
+
+    // ===== DEBUG VIEW STYLES =====
+    debugView: {
+        gap: 20,
+    },
+    debugSection: {
+        backgroundColor: '#111827',
+        borderRadius: 12,
+        padding: 16,
+    },
+    debugSectionTitle: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#10B981',
+        marginBottom: 12,
+        letterSpacing: 1,
+    },
+    debugCard: {
+        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 8,
+    },
+    debugTopicTitle: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#FFFFFF',
+        marginBottom: 8,
     },
     debugText: {
         fontSize: 12,
-        color: '#555',
+        color: '#D1D5DB',
         lineHeight: 18,
         fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     },
-    debugPlaceholder: {
-        fontSize: 12,
-        color: '#999',
-        fontStyle: 'italic',
-        textAlign: 'center',
-        paddingVertical: 8,
-    },
-    debugMetrics: {
-        marginTop: 12,
-        paddingTop: 12,
-        borderTopWidth: 1,
-        borderTopColor: '#DDD',
+    debugJson: {
+        fontSize: 11,
+        color: '#10B981',
+        lineHeight: 16,
+        fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     },
 });

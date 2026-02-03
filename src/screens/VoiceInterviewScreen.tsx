@@ -7,7 +7,7 @@ import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
 import { InterviewMode } from '../types';
 import * as Haptics from 'expo-haptics';
-import RNShake from 'react-native-shake';
+import { Accelerometer } from 'expo-sensors';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 import { useTypewriter } from '../hooks/useTypewriter';
@@ -30,7 +30,9 @@ const MOCK_RESUME = `Senior React Native Developer with 5 years of experience. E
 const MOCK_JOB_DESCRIPTION = `We are looking for a Senior Mobile Engineer to build our flagship iOS and Android app.`;
 const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 
-export default function VoiceInterviewScreen() {
+import { gestureHandlerRootHOC } from 'react-native-gesture-handler';
+
+function VoiceInterviewScreen() {
     const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
     const [showSettings, setShowSettings] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -148,13 +150,19 @@ export default function VoiceInterviewScreen() {
         ? messages[messages.length - 1].text
         : "";
     const displayedAiText = useTypewriter(latestAiMessage, 30);
-
     // Secret Shake Listener
     useEffect(() => {
-        const subscription = RNShake.addListener(() => {
-            setShowDebug(prev => !prev);
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        const subscription = Accelerometer.addListener(({ x, y, z }) => {
+            const acceleration = Math.sqrt(x * x + y * y + z * z);
+            // Threshold for shake (approx 1.78g)
+            if (acceleration >= 1.78) {
+                setShowDebug(prev => !prev);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            }
         });
+
+        // Update interval to 100ms
+        Accelerometer.setUpdateInterval(100);
 
         return () => {
             subscription.remove();
@@ -240,6 +248,7 @@ export default function VoiceInterviewScreen() {
 
     // Swipe left from right edge to open history
     const swipeGesture = Gesture.Pan()
+        .activeOffsetX([-20, 20]) // Trigger if moved horizontally
         .onEnd((event) => {
             // Swipe left from right edge (negative velocityX, negative translationX)
             if (event.velocityX < -500 && event.translationX < -50) {
@@ -758,3 +767,5 @@ const styles = StyleSheet.create({
         borderRadius: 10,
     },
 });
+
+export default gestureHandlerRootHOC(VoiceInterviewScreen);

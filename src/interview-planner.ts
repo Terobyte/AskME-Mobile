@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { softSkillsDB } from "./soft-skills-db";
-import { InterviewMode, InterviewPlan, InterviewTopic, GeminiAnalysisResult } from "./types";
+import { InterviewMode, InterviewPlan, InterviewTopic, GeminiAnalysisResult, ResumeData } from "./types";
 
 // USE ENV VAR
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || ""; 
@@ -8,7 +8,44 @@ if (!GEMINI_API_KEY) console.warn("Gemini API Key missing in .env");
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-export async function generateInterviewPlan(resume: string, jd: string, mode: InterviewMode, previousQuestionIds: string[] = []): Promise<InterviewPlan> {
+export async function generateInterviewPlan(
+  resume: string | ResumeData,
+  jd: string,
+  mode: InterviewMode,
+  previousQuestionIds: string[] = []
+): Promise<InterviewPlan> {
+  // ============================================
+  // PDF RESUME SUPPORT LOGIC
+  // ============================================
+  
+  // Обработка ResumeData (PDF) или string (legacy)
+  let resumeTextForPrompt = "";
+  let pdfPart: any = null;
+
+  if (typeof resume === 'string') {
+    // Legacy: строка с текстом резюме
+    resumeTextForPrompt = resume;
+    console.log("📄 [INTERVIEW_PLANNER] Using legacy string resume");
+  } else if (resume.usePdfDirectly && resume.pdfBase64) {
+    // PDF: загрузка через inlineData
+    resumeTextForPrompt = resume.text || "PDF resume loaded";
+    
+    // Создаем часть с inlineData для PDF
+    pdfPart = {
+      inlineData: {
+        mimeType: "application/pdf",
+        data: resume.pdfBase64
+      }
+    };
+    
+    console.log(`📄 [INTERVIEW_PLANNER] Using PDF resume (inlineData)`);
+    console.log(`📄 [INTERVIEW_PLANNER] PDF size: ${resume.fileSize ? (resume.fileSize / 1024).toFixed(2) + ' KB' : 'unknown'}`);
+  } else {
+    // Fallback: используем текст из ResumeData
+    resumeTextForPrompt = resume.text;
+    console.log("📄 [INTERVIEW_PLANNER] Using ResumeData text fallback");
+  }
+
   // Logic Step 1: Gemini Prompt Update - DYNAMIC CATEGORIZATION & ROLE EXTRACTION
   const prompt = `Analyze this Resume vs JD. 
   
@@ -27,7 +64,7 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
     - For Technical Skills: Create a debugging scenario or architecture challenge. (e.g. "Your React app has a memory leak in a large list. How do you debug it?")
     - For Soft Skills: Create a conflict/leadership scenario. (e.g. "A stakeholder wants to release a feature you know is buggy. How do you handle it?")
   
-  Resume: ${resume}
+  ${typeof resume === 'string' ? `Resume: ${resume}` : 'Resume: Provided as PDF - analyze the attached PDF document.'}
   JD: ${jd}
   
   Return strictly raw JSON with keys: job_role, matches, gaps, cool_skills, soft_skills. 
@@ -35,7 +72,7 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
   Do not use Markdown formatting.`;
 
   // Helper: Call Gemini with Retry Logic
-  async function callGeminiWithRetry(promptText: string): Promise<string> {
+  async function callGeminiWithRetry(promptText: string, pdfInlineData: any = null): Promise<string> {
     const maxRetries = 3;
     const delays = [2000, 4000]; // 2s, 4s
 
@@ -43,9 +80,18 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        // Создаем массив parts для запроса
+        const parts: any[] = [{ text: promptText }];
+        
+        // Если есть PDF, добавляем его в запрос
+        if (pdfInlineData) {
+          parts.push(pdfInlineData);
+          console.log("📄 [INTERVIEW_PLANNER] Added PDF inlineData to request");
+        }
+
         const response = await ai.models.generateContent({
             model: "gemini-2.5-pro",  //dont touch this model! it is only working dont change to 1.5
-            contents: [{ role: "user", parts: [{ text: promptText }] }],
+            contents: [{ role: "user", parts: parts }],
         });
         
         // Google GenAI SDK (v0.1.0+) structure check
@@ -73,7 +119,7 @@ export async function generateInterviewPlan(resume: string, jd: string, mode: In
   let jobRole = "Senior Technical Lead"; 
 
   try {
-    const text = await callGeminiWithRetry(prompt);
+    const text = await callGeminiWithRetry(prompt, pdfPart);
     const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
     const result = JSON.parse(jsonStr);
     analysis = result;

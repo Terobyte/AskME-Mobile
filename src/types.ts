@@ -82,7 +82,9 @@ export type AnswerIssue =
  * - WEAK_ATTEMPT: Poor quality attempt (compositeScore < 5) → patience increases
  * - CLARIFICATION: Request for rephrasing → metrics zeroed, stay on topic
  * - GIVE_UP: Admit not knowing → move to next topic, slight patience
- * - SHOW_ANSWER: Request explanation → educational transition
+ * - SHOW_ANSWER: Request explanation → educational transition (OLD)
+ * - SHOW_ANSWER_STAY: Request explanation → stay on topic, retry same question (NEW)
+ * - SHOW_ANSWER_PREVIOUS: Go back to previous → explain, retry previous (NEW)
  * - NONSENSE: Off-topic trolling → triggers anger increase
  * - READY_CONFIRM: User says "ready" → intro phase only
  */
@@ -91,7 +93,9 @@ export type UserIntent =
   | 'WEAK_ATTEMPT'      // Poor quality attempt (score < 5)
   | 'CLARIFICATION'     // Asking for question to be rephrased
   | 'GIVE_UP'           // Admitting don't know, skip
-  | 'SHOW_ANSWER'       // Request to reveal correct answer
+  | 'SHOW_ANSWER'       // Request to reveal correct answer (OLD: explain + transition)
+  | 'SHOW_ANSWER_STAY'  // Request explanation + retry same question (NEW)
+  | 'SHOW_ANSWER_PREVIOUS' // Go back to previous + explain (NEW)
   | 'NONSENSE'          // Off-topic trolling
   | 'READY_CONFIRM';    // User says "ready" (intro only)
 
@@ -294,3 +298,28 @@ export type OpenAIVoice =
   | 'onyx'    // Мужской, глубокий
   | 'nova'    // Женский, дружелюбный
   | 'shimmer'; // Женский, мягкий
+
+// ============================================
+// PDF RESUME SUPPORT TYPES
+// ============================================
+
+/**
+ * ResumeData: Тип для поддержки PDF резюме
+ * Позволяет передавать PDF файл напрямую в Gemini API
+ */
+export interface ResumeData {
+  /** Fallback текст (заглушка или извлеченный текст) */
+  text: string;
+  
+  /** Локальный путь к PDF файлу */
+  pdfUri: string;
+  
+  /** Base64 код PDF (опционально, для inline data) */
+  pdfBase64?: string;
+  
+  /** Флаг: загружать PDF напрямую в Gemini */
+  usePdfDirectly: boolean;
+  
+  /** Размер файла в байтах (для выбора метода загрузки) */
+  fileSize?: number;
+}

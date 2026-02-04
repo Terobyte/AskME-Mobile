@@ -343,8 +343,31 @@ class TTSService {
       
       console.log(`📤 [TTS] Request:`, JSON.stringify(requestBody, null, 2));
       
-      // Make request
-      const response = await fetch("https://api.cartesia.ai/tts/bytes", {
+      // Helper function for fetch with timeout
+      const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number = 15000) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        
+        try {
+          const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          return response;
+        } catch (error: any) {
+          if (error.name === 'AbortError') {
+            throw new Error(`Request timeout after ${timeoutMs}ms`);
+          }
+          throw error;
+        }
+      };
+      
+      // Make request with timeout and timing
+      const fetchStartTime = Date.now();
+      console.log(`📤 [TTS] Starting TTS request to Cartesia API...`);
+      
+      const response = await fetchWithTimeout("https://api.cartesia.ai/tts/bytes", {
         method: "POST",
         headers: {
           "X-API-Key": API_KEY,
@@ -352,29 +375,27 @@ class TTSService {
           "Content-Type": "application/json"
         },
         body: JSON.stringify(requestBody)
-      });
+      }, 15000); // 15 seconds timeout
       
+      const fetchTime = Date.now() - fetchStartTime;
+      console.log(`📥 [TTS] Fetch completed in ${fetchTime}ms`);
       console.log(`📥 [TTS] Response status: ${response.status}`);
       
       // Check response
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`❌ [TTS] API Error (${response.status}):`, errorText);
-        
-        // Log request details for debugging
-        console.error(`❌ [TTS] Request was:`, JSON.stringify(requestBody, null, 2));
-        console.error(`❌ [TTS] Headers:`, {
-          "X-API-Key": `${API_KEY.substring(0, 25)}...`,
-          "Cartesia-Version": "2024-06-10"
-        });
+        console.error(`❌ [TTS] Check API key, request format, and network connectivity`);
         
         return null;
       }
       
-      // Get audio data
+      // Get audio data with timing
       console.log(`✅ [TTS] Response OK, reading audio...`);
+      const arrayBufferStartTime = Date.now();
       const arrayBuffer = await response.arrayBuffer();
-      console.log(`✅ [TTS] Audio received: ${arrayBuffer.byteLength} bytes`);
+      const arrayBufferTime = Date.now() - arrayBufferStartTime;
+      console.log(`✅ [TTS] Audio received: ${arrayBuffer.byteLength} bytes (ArrayBuffer read in ${arrayBufferTime}ms)`);
       
       // Save to file
       const filename = `speech_${Date.now()}.mp3`;
@@ -382,11 +403,14 @@ class TTSService {
       
       const base64Audio = this.arrayBufferToBase64(arrayBuffer);
       
+      const saveStartTime = Date.now();
       await FileSystem.writeAsStringAsync(filepath, base64Audio, {
         encoding: 'base64'
       });
+      const saveTime = Date.now() - saveStartTime;
       
-      console.log(`💾 [TTS] Saved to: ${filepath}`);
+      console.log(`💾 [TTS] Saved to: ${filepath} (File write in ${saveTime}ms)`);
+      console.log(`⏱️ [TTS] BREAKDOWN: Fetch=${fetchTime}ms, ArrayBuffer=${arrayBufferTime}ms, Save=${saveTime}ms, Total=${fetchTime + arrayBufferTime + saveTime}ms`);
       
       return filepath;
       

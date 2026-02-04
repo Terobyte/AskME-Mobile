@@ -8,7 +8,8 @@ import {
   FinalInterviewReport,
   InterviewMode,
   ChatMessage,
-  VibeConfig
+  VibeConfig,
+  ResumeData
 } from '../../types';
 import { GeminiAgentService } from '../../services/gemini-agent';
 import { generateInterviewPlan } from '../../interview-planner';
@@ -53,7 +54,7 @@ interface UseInterviewLogicReturn {
   finalReport: FinalInterviewReport | null;
 
   // Functions
-  initializeInterview: (resume: string, jobDescription: string, mode: InterviewMode) => Promise<void>;
+  initializeInterview: (resume: string | ResumeData, jobDescription: string, mode: InterviewMode) => Promise<void>;
   processUserInput: (text: string) => Promise<void>;
   forceFinish: () => Promise<void>;
   restart: () => void;
@@ -93,6 +94,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   const [currentMetrics, setCurrentMetrics] = useState<EvaluationMetrics | null>(null);
   const [isFinished, setIsFinished] = useState(false);
   const [resumeText, setResumeText] = useState('');
+  const [jobDescription, setJobDescription] = useState('');
   const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isLobbyPhase, setIsLobbyPhase] = useState(true);
@@ -398,12 +400,18 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
             const introTopic = plan.queue[0];
             const nextTopic = plan.queue[1];
+
+            // ✅ FIX: Validate nextTopic before using it
+            if (!nextTopic) {
+              console.warn(`⚠️ [INTRO] No next topic available (likely last question or single topic plan)`);
+            }
+
             const introLastAiText = historyBuffer.current.filter(msg => msg.role === 'assistant').slice(-1)[0]?.content || "Start of intro";
 
             // ⭐ UNIFIED CALL: Single API call for evaluation + voice
             console.log("🔍 [UNIFIED] Starting evaluation and voice generation...");
             console.log(`📍 [UNIFIED] Current: "${introTopic.topic}" (Index 0 - Intro)`);
-            console.log(`📍 [UNIFIED] Next: "${nextTopic.topic}" (Topic 1)`);
+            console.log(`📍 [UNIFIED] Next: "${nextTopic?.topic || 'final question'}"`);
 
             const introUnified = await agentRef.current.evaluateAndRespond(
               textToFinalize,
@@ -459,7 +467,17 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
             console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
             console.log("📍 [STATE SYNC] Advancing to index 1");
-            console.log(`📍 [STATE SYNC] New topic: "${plan.queue[1].topic}"`);
+
+            // ✅ FIX: Add defensive logging for next topic
+            const nextTopicData = plan.queue[1];
+            console.log(`📍 [STATE SYNC] Predicted next: ${nextTopicData ? `"${nextTopicData.topic}" (Index 1)` : "None (final)"}`);
+
+            if (nextTopicData) {
+              console.log(`📍 [STATE SYNC] New topic: "${nextTopicData.topic}"`);
+            } else {
+              console.warn(`📍 [STATE SYNC] No next topic available (index: 1)`);
+            }
+
             console.log("✅ [STATE SYNC] UI and AI state synchronized");
 
             // ✅ FIX: AFTER voice plays, advance state
@@ -600,6 +618,28 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             console.log("💡 User asked for ANSWER.");
             newPatience = 110;
             transitionMode = 'NEXT_EXPLAIN';
+          }
+          else if (analysis.intent === 'SHOW_ANSWER_STAY') {
+            console.log("💡 User asked for ANSWER (STAY MODE).");
+            newPatience = 110;
+            transitionMode = 'STAY';  // ← КРИТИЧНО: НЕ ПЕРЕХОДИМ!
+            // НЕ меняем currentTopicIndex - остаемся на том же вопросе
+            // НЕ меняем topicSuccess или topicPatience - пользователь ещё не ответил
+          }
+          else if (analysis.intent === 'SHOW_ANSWER_PREVIOUS') {
+            console.log("↩️ User asked to GO BACK to PREVIOUS question.");
+            newPatience = 110;
+            transitionMode = 'STAY';  // ← КРИТИЧНО: НЕ ПЕРЕХОДИМ ВПЕРЁД!
+            
+            // ВАЛИДАЦИЯ: Можно ли вернуться назад?
+            if (currentTopicIndex > 0) {
+              effectiveTopicIndex = currentTopicIndex - 1;  // ← Идём на один вопрос назад
+              console.log("↩️ [GO_BACK] Moving from topic", currentTopicIndex, "to", effectiveTopicIndex);
+            } else {
+              // Если это первый вопрос - объясняем текущий
+              console.log("⚠️ [GO_BACK] Cannot go back from first topic, staying on current.");
+              effectiveTopicIndex = currentTopicIndex;
+            }
           }
           else if (analysis.intent === 'NONSENSE') {
             console.log("🤡 User is Trolling/Nonsense.");
@@ -834,11 +874,11 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
 
           // ✅ FIX: Advance state AFTER voice plays
-          if (nextIndex !== currentTopicIndex) {
+          if (effectiveTopicIndex !== currentTopicIndex) {
             if (!shouldFinishInterview) {
-              console.log(`📍 [STATE SYNC] Advancing to index ${nextIndex}`);
-              console.log(`📍 [STATE SYNC] New topic: "${plan.queue[nextIndex].topic}"`);
-              setCurrentTopicIndex(nextIndex);
+              console.log(`📍 [STATE SYNC] Updating index from ${currentTopicIndex} to ${effectiveTopicIndex}`);
+              console.log(`📍 [STATE SYNC] Topic: "${plan.queue[effectiveTopicIndex].topic}"`);
+              setCurrentTopicIndex(effectiveTopicIndex);
               console.log("✅ [STATE SYNC] UI and AI state synchronized");
             } else {
               console.log("🏁 [STATE] Interview finished, not advancing index");
@@ -945,7 +985,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
   };
 
   const initializeInterview = async (
-    resume: string,
+    resume: string | ResumeData,
     jobDescription: string,
     mode: InterviewMode
   ): Promise<void> => {
@@ -964,7 +1004,27 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       setIsFinished(false);
       setFinalReport(null);
       historyBuffer.current = [];
-      setResumeText(resume);
+      
+      // ============================================
+      // PDF RESUME SUPPORT LOGIC
+      // ============================================
+      
+      // Обработка ResumeData (PDF) или string (legacy)
+      if (typeof resume === 'string') {
+        // Legacy: строка с текстом резюме
+        setResumeText(resume);
+        console.log("📄 [INIT] Using legacy string resume");
+      } else {
+        // ResumeData: сохраняем текст для backward compatibility
+        setResumeText(resume.text || "PDF loaded");
+        console.log("📄 [INIT] Using ResumeData with PDF support");
+        console.log(`📄 [INIT] PDF URI: ${resume.pdfUri}`);
+        console.log(`📄 [INIT] PDF size: ${resume.fileSize ? (resume.fileSize / 1024).toFixed(2) + ' KB' : 'unknown'}`);
+      }
+
+      // Сохраняем jobDescription в state
+      setJobDescription(jobDescription);
+      console.log("📄 [INIT] Job description saved:", jobDescription.substring(0, 100) + "...");
 
       // 3. Set initial plan (Intro only)
       setPlan(INITIAL_PLAN);
@@ -1238,6 +1298,14 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         console.log("⚡ [SIMULATE] Special action: SHOW_ANSWER → generateSpecialAction('show_answer')");
         return await agentRef.current.generateSpecialAction('show_answer', currentTopicData);
       }
+      if (upperIntent === 'SHOW_ANSWER_STAY') {
+        console.log("⚡ [SIMULATE] Special action: SHOW_ANSWER_STAY → generateSpecialAction('show_answer_stay')");
+        return await agentRef.current.generateSpecialAction('show_answer_stay', currentTopicData);
+      }
+      if (upperIntent === 'SHOW_ANSWER_PREVIOUS') {
+        console.log("⚡ [SIMULATE] Special action: SHOW_ANSWER_PREVIOUS → generateSpecialAction('show_answer_previous')");
+        return await agentRef.current.generateSpecialAction('show_answer_previous', currentTopicData);
+      }
 
       // Check for new semantic quality levels (direct usage)
       const validQualityLevels = ['excellent', 'good', 'mediocre', 'poor', 'fail'];
@@ -1247,7 +1315,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         return await agentRef.current.generateSimulatedAnswer(
           currentTopicData,
           lowerIntent as 'excellent' | 'good' | 'mediocre' | 'poor' | 'fail',
-          resumeText
+          resumeText,
+          jobDescription
         );
       }
     }
@@ -1293,7 +1362,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       const simulatedAnswer = await agentRef.current.generateSimulatedAnswer(
         currentTopicData,
         qualityLevel,
-        resumeText
+        resumeText,
+        jobDescription
       );
 
       if (!simulatedAnswer) {

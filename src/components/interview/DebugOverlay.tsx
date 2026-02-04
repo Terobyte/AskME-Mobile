@@ -65,7 +65,9 @@ const specialActions = [
     { value: 'nonsense', label: '💩 Nonsense', color: '#8E8E93' },
     { value: 'give_up', label: '🏳️ Give Up', color: '#8E8E93' },
     { value: 'clarify', label: '❓ Clarify', color: '#8E8E93' },
-    { value: 'show_answer', label: '💡 Show Answer', color: '#8E8E93' }
+    { value: 'show_answer', label: '💡 Show Answer (Next)', color: '#8E8E93' },
+    { value: 'show_answer_stay', label: '💡 Show Answer (Stay)', color: '#8E8E93' },
+    { value: 'show_answer_previous', label: '↩️ Show Answer Previous', color: '#8E8E93' }
 ];
 
 export const DebugOverlay: React.FC<DebugOverlayProps> = ({

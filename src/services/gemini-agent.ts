@@ -1,4 +1,3 @@
-import { InterviewTopic, AiResponse, InterviewContext, AnalysisResponse, VoiceGenerationContext, ChatMessage, QuestionResult, FinalInterviewReport, QualityLevel, VibeConfig } from "../types";
 const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL! 
 // "gemini-2.5-flash" is the ONLY stable model for this API.
 // Using "1.5" or others will BREAK the app.
@@ -37,9 +36,11 @@ const MODEL_ID = "gemini-2.5-flash";// ⛔️ DO NOT CHANGE THIS MODEL!
  * - 'nonsense': Triggers anger (trolling, off-topic)
  * - 'give_up': Polite skip (no anger penalty)
  * - 'clarify': Request for rephrasing (stays on topic)
- * - 'show_answer': Request for explanation (educational)
+ * - 'show_answer': Request for explanation + transition to next (educational, OLD)
+ * - 'show_answer_stay': Request for explanation + retry same question (educational, NEW)
+ * - 'show_answer_previous': Go back to previous + explain + retry (educational, NEW)
  */
-type SpecialAction = 'nonsense' | 'give_up' | 'clarify' | 'show_answer';
+type SpecialAction = 'nonsense' | 'give_up' | 'clarify' | 'show_answer' | 'show_answer_stay' | 'show_answer_previous';
 
 /**
  * LEVEL_DESCRIPTIONS: Detailed Gemini prompts for each quality level.
@@ -99,7 +100,7 @@ const LEVEL_DESCRIPTIONS: Record<QualityLevel, string> = {
  * 
  * Key distinction:
  * - 'nonsense' triggers ANGER (interviewer frustration) because candidate isn't trying
- * - 'give_up', 'clarify', 'show_answer' don't trigger anger (professional behaviors)
+ * - 'give_up', 'clarify', 'show_answer', 'show_answer_stay', 'show_answer_previous' don't trigger anger (professional behaviors)
  */
 const SPECIAL_ACTIONS: Record<SpecialAction, string> = {
   nonsense: `NONSENSE/TROLLING (⚠️ This triggers interviewer ANGER):
@@ -125,7 +126,23 @@ const SPECIAL_ACTIONS: Record<SpecialAction, string> = {
     - Admit being stuck but wanting to learn
     - Ask interviewer to explain the correct approach
     - Show intellectual curiosity despite not knowing
-    - Example: "I'm stuck on this one. Could you walk me through what the best approach would be?"`
+    - Example: "I'm stuck on this one. Could you walk me through what the best approach would be?"`,
+
+  show_answer_stay: `REQUEST FOR EXPLANATION AND RETRY (educational, no anger, STAY on topic):
+    - Admit being stuck but wanting to learn
+    - Ask interviewer to explain the correct approach
+    - Show intellectual curiosity despite not knowing
+    - KEY DIFFERENCE: Wants to RETRY the SAME question after explanation
+    - Example: "I'm stuck on this one. Could you walk me through what the best approach would be, then I'll try again?"
+    - After explanation: Wait for user to answer the SAME question again`,
+
+  show_answer_previous: `REQUEST TO GO BACK AND RETRY (educational, no anger, PREVIOUS topic):
+    - Explicitly ask to return to the PREVIOUS question
+    - Want explanation of the previous question
+    - Want another chance to answer the previous question correctly
+    - Example: "Can we go back to the previous question? I want to try answering it again with your help."
+    - Example: "I think I understand now. Let me try the last question again."
+    - After explanation: Return to previous topic, wait for user to answer that PREVIOUS question`
 };
 
 export class GeminiAgentService {
@@ -141,8 +158,46 @@ export class GeminiAgentService {
     if (!this.apiKey) console.error("API Key missing! Check .env file.");
   }
 
-  async startInterview(resume: string, role: string, initialContext: InterviewContext): Promise<AiResponse | string> {
-    this.resume = resume;
+  async startInterview(
+    resume: string | ResumeData,
+    role: string,
+    initialContext: InterviewContext
+  ): Promise<AiResponse | string> {
+    // ============================================
+    // PDF RESUME SUPPORT LOGIC
+    // ============================================
+    
+    // Обработка ResumeData (PDF) или string (legacy)
+    let resumeTextForContext = "";
+    let pdfPart: any = null;
+
+    if (typeof resume === 'string') {
+      // Legacy: строка с текстом резюме
+      resumeTextForContext = resume;
+      this.resume = resume;
+      console.log("📄 [START_INTERVIEW] Using legacy string resume");
+    } else if (resume.usePdfDirectly && resume.pdfBase64) {
+      // PDF: загрузка через inlineData
+      resumeTextForContext = resume.text || "PDF resume loaded";
+      this.resume = resume.text || "PDF resume loaded";
+      
+      // Создаем часть с inlineData для PDF
+      pdfPart = {
+        inlineData: {
+          mimeType: "application/pdf",
+          data: resume.pdfBase64
+        }
+      };
+      
+      console.log(`📄 [START_INTERVIEW] Using PDF resume (inlineData)`);
+      console.log(`📄 [START_INTERVIEW] PDF size: ${resume.fileSize ? (resume.fileSize / 1024).toFixed(2) + ' KB' : 'unknown'}`);
+    } else {
+      // Fallback: используем текст из ResumeData
+      resumeTextForContext = resume.text;
+      this.resume = resume.text;
+      console.log("📄 [START_INTERVIEW] Using ResumeData text fallback");
+    }
+
     this.role = role;
     this.history = []; // Reset History
 
@@ -159,7 +214,7 @@ export class GeminiAgentService {
       - The first topic is "Introduction" - asking the candidate to introduce themselves.
       
       CANDIDATE RESUME CONTEXT (use to personalize if possible):
-      ${resume.substring(0, 500)}
+      ${resumeTextForContext.substring(0, 500)}
       
       TASK:
       Generate a natural, professional transition (1-2 sentences) that:
@@ -175,8 +230,17 @@ export class GeminiAgentService {
       Return ONLY the spoken response (no explanations, no quotes).
     `;
 
+    // Создаем массив parts для запроса
+    const parts: any[] = [{ text: prompt }];
+    
+    // Если есть PDF, добавляем его в запрос
+    if (pdfPart) {
+      parts.push(pdfPart);
+      console.log("📄 [START_INTERVIEW] Added PDF inlineData to request");
+    }
+
     const payload = {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ role: "user", parts: parts }],
       generationConfig: { temperature: 0.7 }
     };
 
@@ -357,7 +421,7 @@ ${JSON.stringify(historyBuffer.slice(-6))}
 
 Classify user intent, score the answer (if applicable), and calculate composite score.
 
-Intent types: CLARIFICATION, SHOW_ANSWER, GIVE_UP, NONSENSE, READY_CONFIRM, WEAK_ATTEMPT, STRONG_ATTEMPT
+Intent types: CLARIFICATION, SHOW_ANSWER, SHOW_ANSWER_STAY, SHOW_ANSWER_PREVIOUS, GIVE_UP, NONSENSE, READY_CONFIRM, WEAK_ATTEMPT, STRONG_ATTEMPT
 
 ===== INTENT CLASSIFICATION =====
 
@@ -379,6 +443,28 @@ Determine user's PRIMARY intent (critically important for state logic):
   - "Tell me how you would solve it"
   - "I'm stuck on this one. Can you help me understand?"
   Indicators: "stuck", "explain", "walk through", "tell me", "show me", "how would you", "help me understand"
+
+**"SHOW_ANSWER_STAY"** - User asks for explanation AND wants to RETRY the SAME question
+  ⚠️ KEY DISTINCTION: Do NOT transition to next topic - stay on current question
+  Examples:
+  - "I don't know. Explain how to answer, then I'll try again."
+  - "Give me the answer but I want to retry this question."
+  - "Tell me the correct approach so I can answer this question again."
+  - "I'm stuck, explain it and let me try one more time."
+  - "Don't move on yet. Explain and I'll answer again."
+  Indicators: "try again", "retry", "answer again", "stay on this", "don't move on", "let me try", "once more"
+  ⚠️ MUST: Stay on current topic index after explanation
+
+**"SHOW_ANSWER_PREVIOUS"** - User wants to GO BACK to previous question and retry
+  ⚠️ KEY DISTINCTION: Decrement topic index and explain previous question
+  Examples:
+  - "Let's go back to the previous question."
+  - "Can we return to the last question? I want to try again."
+  - "I want to retry the previous question."
+  - "Go back, explain the previous question to me."
+  - "Back to the last one. I want another shot at it."
+  Indicators: "previous", "last question", "go back", "return to", "retry the previous", "another shot"
+  ⚠️ MUST: Decrement currentTopicIndex and explain previous topic
 
 **"GIVE_UP"** - User admits defeat WITHOUT asking for help
   ⚠️ KEY DISTINCTION: User wants to skip, not learn
@@ -413,7 +499,13 @@ Determine user's PRIMARY intent (critically important for state logic):
 
 IF user says they're stuck:
   └─ Does message include "explain", "walk through", "tell me how", "show me", "help"?
-     ├─ YES → SHOW_ANSWER (they want to learn)
+     ├─ YES → Check if wants to retry or go back
+     │  └─ Includes "try again", "retry", "answer again", "stay on this", "don't move on", "let me try", "once more"
+     │     ├─ YES → SHOW_ANSWER_STAY (retry same question)
+     │     └─ NO → Check if wants to go back
+     │        └─ Includes "previous", "last question", "go back", "return to"
+     │           ├─ YES → SHOW_ANSWER_PREVIOUS (return to previous topic)
+     │           └─ NO → SHOW_ANSWER (old behavior, transition)
      └─ NO → GIVE_UP (they want to skip)
 
 IF answer is wrong or off-topic:
@@ -423,11 +515,19 @@ IF answer is wrong or off-topic:
         ├─ Pure trolling (anime, pizza, random) → NONSENSE
         └─ Confused/rambling → WEAK_ATTEMPT
 
+IF user asks to go back or try again:
+  └─ Does message include "previous", "last question", "go back", "return"?
+     ├─ YES → SHOW_ANSWER_PREVIOUS (return to previous topic)
+     └─ NO → Check if wants to retry same question
+        ├─ Includes "try again", "retry", "answer again", "don't move on" → SHOW_ANSWER_STAY
+        └─ Just "explain" without retry → SHOW_ANSWER (old behavior, transition)
+
 Example disambiguation:
-- "I'm stuck on this one. Can you explain?" → SHOW_ANSWER (asks for explanation)
-- "I'm stuck. Let's skip it." → GIVE_UP (wants to move on)
-- "Honestly, Temirlan here. FlatList performance..." → WEAK_ATTEMPT (wrong but technical)
-- "I like pizza and anime" → NONSENSE (zero technical content)
+- "I'm stuck, explain and I'll try again" → SHOW_ANSWER_STAY (retry same question)
+- "Let's go back to the previous" → SHOW_ANSWER_PREVIOUS (go back)
+- "I'm stuck, explain" → SHOW_ANSWER (old behavior, transition)
+- "Don't move on yet" → SHOW_ANSWER_STAY (stay on topic)
+- "I want to try the last question again" → SHOW_ANSWER_PREVIOUS (go back)
 
 Scoring (each 0-10): accuracy, depth, structure
 Composite score weighted by topic type.
@@ -443,14 +543,16 @@ Response strategy based on intent and score:
 - CLARIFICATION: Rephrase question, stay on topic
 - GIVE_UP: Acknowledge, ${nextTopic ? `transition to ${nextTopicDesc}` : "wrap up"}
 - SHOW_ANSWER: Brief explanation, ${nextTopic ? "transition" : "continue"}
+- SHOW_ANSWER_STAY: Provide detailed explanation of correct answer (2-3 sentences), give specific hints and key concepts, CRITICALLY end with phrase "Теперь попробуйте ответить на этот вопрос ещё раз." (or "Now try answering this question again."), DO NOT transition to next topic, STAY on current question index and wait for user's retry answer
+- SHOW_ANSWER_PREVIOUS: Acknowledge request to go back, remind of previous question briefly (1 sentence), provide detailed explanation of correct answer for previous topic (2-3 sentences), give specific hints, end with phrase "Теперь дайте ответ на этот вопрос ещё раз." (or "Now answer this question again."), DECREMENT topic index, DO NOT transition forward, wait for user's answer to PREVIOUS question
 - NONSENSE: Redirect firmly, stay on topic
 - READY_CONFIRM: Acknowledge, ask for introduction
 - Score >= 7.0: Positive feedback, ${nextTopic ? `transition to ${nextTopicDesc} with new question` : "thank and wrap up"}
 - Score 5.0-6.9: Neutral, ask follow-up, stay on topic
 - Score < 5.0: Brief acknowledgment, ${nextTopic ? `transition to ${nextTopicDesc}` : "wrap up"}
 
-${nextTopic && nextTopicType === 'SoftSkill' ? `For next topic (SoftSkill), generate situational question related to candidate's role.` : ""}
-${nextTopic && (nextTopicType === 'Match' || nextTopicType === 'Gap' || nextTopicType === 'CoolSkill') ? `For next topic (Technical), choose scenario or experience question.` : ""}
+${nextTopic?.type === 'SoftSkill' ? `For next topic (SoftSkill: "${nextTopic.topic}"), generate situational question related to candidate's role.` : ""}
+${nextTopic && (nextTopic?.type === 'Match' || nextTopic?.type === 'Gap' || nextTopic?.type === 'CoolSkill') ? `For next topic (Technical: "${nextTopic.topic}"), choose scenario or experience question.` : ""}
 
 ===== OUTPUT JSON SCHEMA =====
 
@@ -465,7 +567,7 @@ ${nextTopic && (nextTopicType === 'Match' || nextTopicType === 'Gap' || nextTopi
     "compositeScore": number (0-10),
     "level": "excellent" | "good" | "mediocre" | "poor" | "fail",
     "issues": ["ISSUE_TYPE", ...],
-    "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | "CLARIFICATION" | "GIVE_UP" | "SHOW_ANSWER" | "NONSENSE" | "READY_CONFIRM",
+    "intent": "STRONG_ATTEMPT" | "WEAK_ATTEMPT" | "CLARIFICATION" | "GIVE_UP" | "SHOW_ANSWER" | "SHOW_ANSWER_STAY" | "SHOW_ANSWER_PREVIOUS" | "NONSENSE" | "READY_CONFIRM",
     "suggestedFeedback": "string (5-10 words)"
   },
   "voiceResponse": "string (2-4 sentences, natural spoken)"
@@ -1124,34 +1226,63 @@ Return ONLY valid JSON with no extra text.
    * USAGE:
    * ```typescript
    * // Generate an expert-level answer
-   * const answer = await agent.generateSimulatedAnswer(topic, 'excellent', resume);
+   * const answer = await agent.generateSimulatedAnswer(topic, 'excellent', resume, jobDescription);
    * 
    * // Generate a failing-but-trying answer
-   * const badAnswer = await agent.generateSimulatedAnswer(topic, 'fail', resume);
+   * const badAnswer = await agent.generateSimulatedAnswer(topic, 'fail', resume, jobDescription);
    * ```
    * 
    * @param topic - The current interview topic/question
    * @param level - The quality level: 'excellent' | 'good' | 'average' | 'poor' | 'fail'
    * @param resumeText - Candidate's resume for context personalization
+   * @param jobDescription - Optional job description for role alignment
    * @returns Generated spoken answer text
    */
   async generateSimulatedAnswer(
     topic: InterviewTopic,
     level: QualityLevel,
-    resumeText: string
+    resumeText: string,
+    jobDescription?: string
   ): Promise<string> {
     // Get the level description from our constants
     const levelDescription = LEVEL_DESCRIPTIONS[level];
     const scoreRange = this.getScoreRange(level);
 
     console.log(`⚡ [SIMULATE] Level: ${level} (expected score: ${scoreRange.min}-${scoreRange.max}, avg: ${scoreRange.avg})`);
+    console.log(`⚡ [SIMULATE] Resume length: ${resumeText.length} chars`);
+    console.log(`⚡ [SIMULATE] Using ${resumeText.length > 0 ? 'REAL RESUME' : 'FALLBACK persona'}`);
 
     const prompt = `
       You are a candidate participating in a technical voice interview.
 
-      **YOUR IDENTITY (Rooted in Resume):**
-      ${resumeText.substring(0, 400)}
-      (If the resume is empty/mock, assume the persona of "Temirlan, a Senior React Native Developer with 5 years of experience".)
+      **TARGET POSITION CONTEXT:**
+      ${jobDescription ? 
+        `The position requires: ${jobDescription.substring(0, 500)}. 
+         Align your expertise and experience with these requirements.` : 
+        "General software engineering position"}
+
+      **YOUR IDENTITY INSTRUCTIONS:**
+      Analyze BOTH the resume and target position to establish your identity:
+      - If resume contains a NAME, use it naturally ("I'm [Name]...")
+      - If resume contains YEARS of experience, reference it HONESTLY
+      - If resume lists specific TECHNologies (Python, Java, AWS, React, etc.), mention them
+      - If resume shows specific ROLES (Backend Engineer, Frontend, DevOps), adopt that persona
+      - Speak from ACTUAL experience in resume, not assumptions
+      - For "Backend" roles: mention databases, APIs, server-side tech
+      - For "Frontend" roles: mention UI, frameworks, state management
+      - For "DevOps" roles: mention CI/CD, cloud, infrastructure
+      - For "Full Stack" roles: mention both frontend and backend
+
+      **CRITICAL:**
+      - If resume mentions "Python" and JD asks about "Python" → highlight Python experience
+      - If resume is about "Backend" but JD mentions "Frontend" → don't claim frontend expertise
+      - If resume is empty/incomplete → generalize to "experienced developer" or "software engineer"
+      - DO NOT assume "React Native" unless explicitly mentioned in resume
+
+      **RESUME CONTEXT:**
+      ${resumeText.substring(0, 2000)}
+
+      (If resume is missing key details, generalize to "experienced software developer" based on interview context. DO NOT hardcode persona or technologies.)
 
       **YOUR STYLE:**
       - Pragmatic, conversational, experienced developer personality
@@ -1255,7 +1386,9 @@ Return ONLY valid JSON with no extra text.
         nonsense: "I live in Bikini Bottom and my favorite color is pizza.",
         give_up: "I'm not sure about this one. Can we move on?",
         clarify: "Could you rephrase that question?",
-        show_answer: "I'm stuck. Could you explain the approach?"
+        show_answer: "I'm stuck. Could you explain the approach?",
+        show_answer_stay: "I'm stuck. Could you explain the approach, then I'll try again?",
+        show_answer_previous: "Can we go back to the previous question? I want to try answering it again with your help."
       };
       return fallbacks[action];
     }
@@ -1275,24 +1408,71 @@ Return ONLY valid JSON with no extra text.
           `;
     }
 
+    // ==========================================
+    // ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ
+    // ==========================================
+    
+    console.log(`🔍 [VOICE_RESPONSE] generateVoiceResponse() called`);
+    console.log(`🔍 [VOICE_RESPONSE] context.currentTopic:`, context.currentTopic);
+    console.log(`🔍 [VOICE_RESPONSE] context.currentTopic.topic:`, context.currentTopic?.topic);
+    console.log(`🔍 [VOICE_RESPONSE] context.nextTopic:`, context.nextTopic);
+    console.log(`🔍 [VOICE_RESPONSE] context.transitionMode:`, context.transitionMode);
+    console.log(`🔍 [VOICE_RESPONSE] context.isIntro:`, context.isIntro);
+
+    // ==========================================
+    // ПРОВЕРКИ ПЕРЕД ИСПОЛЬЗОВАНИЕ
+    // ==========================================
+
+    if (context.currentTopic && context.currentTopic.topic) {
+      console.log(`✅ [VOICE_RESPONSE] currentTopic.topic is VALID:`, context.currentTopic.topic);
+    } else {
+      console.log(`⚠️ [VOICE_RESPONSE] currentTopic is MISSING or has no .topic property!`);
+      console.log(`⚠️ [VOICE_RESPONSE] currentTopic object:`, context.currentTopic);
+    }
+
+    if (context.nextTopic && context.nextTopic.topic) {
+      console.log(`✅ [VOICE_RESPONSE] nextTopic.topic is VALID:`, context.nextTopic.topic);
+    } else {
+      console.log(`⚠️ [VOICE_RESPONSE] nextTopic is MISSING or has no .topic property!`);
+      console.log(`⚠️ [VOICE_RESPONSE] nextTopic object:`, context.nextTopic);
+    }
+
+    // ==========================================
+    // ВАЛИДАЦИЯ ПЕРЕД SWITCH
+    // ==========================================
+
+    if (!context.currentTopic?.topic) {
+      console.warn(`⚠️ [VOICE_RESPONSE] No current topic available, using fallback instruction`);
+      behaviorInstruction = `Ask a follow-up or dig deeper based on history.`;
+    } else {
+      // Proceed with switch statement only if currentTopic exists
+
     // Question Logic Injection
+    console.log(`📋 [QUESTION_LOGIC] nextTopic exists:`, !!context.nextTopic);
+    console.log(`📋 [QUESTION_LOGIC] nextTopic:`, context.nextTopic);
+    
     let questionLogic = "";
     if (context.nextTopic) {
       if (context.nextTopic.type === 'SoftSkill') {
         questionLogic = `
                NEXT QUESTION STRATEGY (Soft Skill: "${context.nextTopic.topic}"):
                - Constraint: Do NOT ask generic definition questions (e.g., "What is flexibility?").
-               - Instruction: Generate a Situational Question specifically related to the Candidate's Role.
+               - Instruction: Generate a Situational Question specifically related to Candidate's Role.
                - Example: "As a Senior Engineer, how do you handle disagreements about code quality?"
                `;
       } else {
         questionLogic = `
                NEXT QUESTION STRATEGY (Technical: "${context.nextTopic.topic}"):
                - Instruction: Randomly choose (50/50) between:
-                 A) Scenario: "Imagine you face [Problem] in [Topic]. How do you solve it?"
+                 A) Scenario: "Imagine you face [Problem
                  B) Experience: "Tell me about a time you used [Topic] in a complex project."
                `;
       }
+    } else {
+      console.log(`⚠️ [QUESTION_LOGIC] No nextTopic, using fallback logic`);
+      questionLogic = `
+               No next topic - wrap up interview gracefully.
+               `;
     }
 
     if (overridePrompt) {
@@ -1300,16 +1480,20 @@ Return ONLY valid JSON with no extra text.
     } else {
       switch (context.transitionMode) {
         case 'STAY':
-          behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
+          if (context.currentTopic?.topic) {
+            behaviorInstruction = `User is still on topic: "${context.currentTopic.topic}". Ask a follow-up or dig deeper based on history.`;
+          } else {
+            behaviorInstruction = `User is still on topic. Ask a follow-up or dig deeper based on history.`;
+          }
           break;
         case 'NEXT_FAIL':
-          behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
+          behaviorInstruction = `Adopt a strict, professional tone. Briefly acknowledge the answer was incorrect/missing. Do NOT lecture. Immediately transition to NEXT TOPIC: "${context.nextTopic?.topic || 'final question'}". ${questionLogic}`;
           break;
         case 'NEXT_PASS':
-          behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
+          behaviorInstruction = `Adopt a neutral or slightly approving tone. Transition smoothly to NEXT TOPIC: "${context.nextTopic?.topic || 'final question'}". ${questionLogic}`;
           break;
         case 'NEXT_EXPLAIN':
-          behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic}". ${questionLogic}`;
+          behaviorInstruction = `Briefly explain the core concept the user missed (Teach them). Then transition to NEXT TOPIC: "${context.nextTopic?.topic || 'final question'}". ${questionLogic}`;
           break;
         case 'FINISH_INTERVIEW':
           const mood = (context.angerLevel || 0) > 50 ? "cold and brief" : "warm and encouraging";
@@ -1319,6 +1503,7 @@ Return ONLY valid JSON with no extra text.
           behaviorInstruction = `You are furious. The candidate has wasted your time with poor answers. Harshly terminate the interview immediately. Say something like "That's enough. We are done here." and hang up.`;
           break;
       }
+    }  // ✅ Close the else block for currentTopic validation
     }
 
     const prompt = `

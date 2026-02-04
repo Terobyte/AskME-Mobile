@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, ActivityIndicator, Image, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
+import { File } from 'expo-file-system';
 import * as Clipboard from 'expo-clipboard';
 import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
-import { InterviewMode } from '../types';
+import { InterviewMode, ResumeData } from '../types';
 import * as Haptics from 'expo-haptics';
 import { Accelerometer } from 'expo-sensors';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
@@ -49,6 +50,7 @@ function VoiceInterviewScreen() {
     const [mode, setMode] = useState<InterviewMode>('short');
     const [sliderValue, setSliderValue] = useState(0);
     const [resumeFile, setResumeFile] = useState<any>(null);
+    const [resumeData, setResumeData] = useState<ResumeData | string | null>(null);
 
     // Dev Tools State
     const [debugValue, setDebugValue] = useState("10");
@@ -270,11 +272,54 @@ function VoiceInterviewScreen() {
             });
 
             if (result.canceled === false) {
-                setResumeFile(result.assets[0]);
-                setResumeText("Extracted Resume Content...");
+                const file = result.assets[0];
+                setResumeFile(file);
+                
+                const fileSize = file.size || 0;
+                console.log("📄 [PICK_RESUME] File selected:", file.name);
+                console.log("📄 [PICK_RESUME] File URI:", file.uri);
+                console.log("📄 [PICK_RESUME] File size:", fileSize);
+                
+                // Показываем индикатор загрузки
+                setResumeText("Reading PDF...");
+                
+                try {
+                    // Создаем экземпляр File из URI
+                    const fileInstance = new File(file.uri);
+                    
+                    // Читаем PDF как base64 используя новый API
+                    const pdfBase64 = fileInstance.base64Sync();
+                    
+                    console.log("📄 [PICK_RESUME] PDF read successfully");
+                    console.log(`📄 [PICK_RESUME] Base64 length: ${pdfBase64.length}`);
+                    
+                    // Создаем ResumeData объект
+                    const resumeDataObj: ResumeData = {
+                        text: "PDF Resume Loaded", // Fallback текст
+                        pdfUri: file.uri,
+                        pdfBase64: pdfBase64,
+                        usePdfDirectly: true,
+                        fileSize: fileSize
+                    };
+                    
+                    // Сохраняем ResumeData для инициализации интервью
+                    setResumeData(resumeDataObj);
+                    setResumeText(`✅ PDF Loaded: ${file.name} (${(fileSize / 1024).toFixed(0)} KB)`);
+                    
+                    console.log("📄 [PICK_RESUME] ResumeData created successfully");
+                    
+                } catch (readError) {
+                    console.error("❌ [PICK_RESUME] Failed to read PDF:", readError);
+                    Alert.alert(
+                        "Error Reading PDF",
+                        "Could not read the PDF file. Please try again or use a different file."
+                    );
+                    setResumeText("Failed to read PDF");
+                }
             }
         } catch (err) {
-            console.error(err);
+            console.error("❌ [PICK_RESUME] Error:", err);
+            Alert.alert("Error", "Failed to pick PDF file. Please try again.");
         }
     };
 
@@ -297,7 +342,13 @@ function VoiceInterviewScreen() {
         setShowSettings(false);
 
         try {
-            await initializeInterview(resumeText, jdText, mode);
+            // Передаем ResumeData или string в зависимости от типа
+            const resumeInput = resumeData || resumeText;
+            
+            console.log("📄 [START_INTERVIEW] Resume input type:", typeof resumeInput);
+            console.log("📄 [START_INTERVIEW] Using PDF:", typeof resumeInput === 'object' && 'usePdfDirectly' in resumeInput);
+            
+            await initializeInterview(resumeInput, jdText, mode);
         } catch (error) {
             Alert.alert("Error", "Failed to initialize interview.");
             console.error(error);

@@ -1,8 +1,9 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
+import { TTSProvider, OpenAIVoice } from '../types';
 
 /**
- * Text-to-Speech Service using Cartesia API
+ * Text-to-Speech Service supporting Cartesia and OpenAI APIs
  * 
  * Uses raw fetch (no SDK) to avoid React Native incompatibility with Node.js modules.
  */
@@ -10,9 +11,19 @@ class TTSService {
   private soundObjects: Audio.Sound[] = [];
   private isPlaying: boolean = false;
   private isInitialized: boolean = false;
+  
+  // NEW: Mute state
+  private isMuted: boolean = false;
+  
+  // NEW: TTS Provider selection
+  private ttsProvider: TTSProvider = 'cartesia';
+  private openaiVoice: OpenAIVoice = 'nova';
+  private openaiApiKey?: string;
 
   constructor() {
     this.initialize();
+    this.openaiApiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+    this.loadSettings();
   }
 
   private async initialize(): Promise<void> {
@@ -39,8 +50,108 @@ class TTSService {
     }
   }
 
+  // ========================
+  // MUTE CONTROL
+  // ========================
+
   /**
-   * Generate speech from text using Cartesia API
+   * Set mute state
+   */
+  setMuted(muted: boolean): void {
+    console.log(`🔇 [TTS] Mute state changed: ${muted}`);
+    this.isMuted = muted;
+    
+    // Если включаем mute во время воспроизведения - остановить
+    if (muted && this.isPlaying) {
+      console.log('🔇 [TTS] Stopping playback due to mute');
+      this.stop();
+    }
+  }
+  
+  /**
+   * Get current mute state
+   */
+  getIsMuted(): boolean {
+    return this.isMuted;
+  }
+
+  // ========================
+  // TTS PROVIDER CONTROL
+  // ========================
+
+  /**
+   * Set TTS provider
+   */
+  setTtsProvider(provider: TTSProvider): void {
+    console.log(`🎙️ [TTS] Provider changed: ${this.ttsProvider} → ${provider}`);
+    this.ttsProvider = provider;
+    this.saveSettings();
+  }
+  
+  /**
+   * Get current TTS provider
+   */
+  getTtsProvider(): TTSProvider {
+    return this.ttsProvider;
+  }
+  
+  /**
+   * Set OpenAI voice
+   */
+  setOpenaiVoice(voice: OpenAIVoice): void {
+    console.log(`🎙️ [TTS] OpenAI voice changed: ${this.openaiVoice} → ${voice}`);
+    this.openaiVoice = voice;
+    this.saveSettings();
+  }
+  
+  /**
+   * Get current OpenAI voice
+   */
+  getOpenaiVoice(): OpenAIVoice {
+    return this.openaiVoice;
+  }
+
+  // ========================
+  // SETTINGS PERSISTENCE
+  // ========================
+
+  /**
+   * Load settings from AsyncStorage
+   */
+  private async loadSettings(): Promise<void> {
+    try {
+      const AsyncStorage = await import('@react-native-async-storage/async-storage');
+      const settings = await AsyncStorage.default.getItem('tts_settings');
+      
+      if (settings) {
+        const parsed = JSON.parse(settings);
+        this.ttsProvider = parsed.provider || 'cartesia';
+        this.openaiVoice = parsed.voice || 'nova';
+        console.log(`✅ [TTS] Settings loaded: ${this.ttsProvider}/${this.openaiVoice}`);
+      }
+    } catch (error) {
+      console.warn('⚠️ [TTS] Failed to load settings:', error);
+    }
+  }
+  
+  /**
+   * Save settings to AsyncStorage
+   */
+  private async saveSettings(): Promise<void> {
+    try {
+      const AsyncStorage = await import('@react-native-async-storage/async-storage');
+      await AsyncStorage.default.setItem('tts_settings', JSON.stringify({
+        provider: this.ttsProvider,
+        voice: this.openaiVoice,
+      }));
+      console.log('✅ [TTS] Settings saved');
+    } catch (error) {
+      console.warn('⚠️ [TTS] Failed to save settings:', error);
+    }
+  }
+
+  /**
+   * Generate speech from text using selected provider
    */
   async speak(
     text: string,
@@ -51,6 +162,12 @@ class TTSService {
       autoPlay?: boolean;
     }
   ): Promise<boolean> {
+    // ПРОВЕРКА MUTE
+    if (this.isMuted) {
+      console.log(`🔇 [TTS] Muted - skipping speech: "${text.substring(0, 30)}..."`);
+      return true; // Возвращаем true чтобы не ломать логику
+    }
+    
     try {
       console.log(`🎙️ [TTS] Speaking: "${text.substring(0, 50)}..."`);
       
@@ -74,9 +191,111 @@ class TTSService {
   }
 
   /**
-   * Fetch audio file from Cartesia API using raw fetch
+   * Fetch audio file - automatically selects provider
    */
   private async fetchAudioFile(
+    text: string,
+    options?: {
+      emotion?: string;
+      speed?: number;
+      emotionLevel?: string[];
+    }
+  ): Promise<string | null> {
+    try {
+      // Выбор провайдера
+      if (this.ttsProvider === 'openai') {
+        console.log(`🎙️ [TTS] Using OpenAI TTS provider`);
+        return await this.fetchOpenAIAudioFile(text, options);
+      } else {
+        console.log(`🎙️ [TTS] Using Cartesia TTS provider`);
+        return await this.fetchCartesiaAudioFile(text, options);
+      }
+    } catch (error) {
+      console.error('❌ [TTS] fetchAudioFile error:', error);
+      return null;
+    }
+  }
+
+  // ========================
+  // OPENAI TTS METHODS
+  // ========================
+
+  /**
+   * Fetch audio file from OpenAI API
+   */
+  private async fetchOpenAIAudioFile(
+    text: string,
+    options?: {
+      emotion?: string; // Ignored in OpenAI, but kept for compatibility
+      speed?: number;
+      emotionLevel?: string[];
+    }
+  ): Promise<string | null> {
+    try {
+      if (!this.openaiApiKey) {
+        console.error('❌ [TTS] OpenAI API key not configured');
+        return null;
+      }
+      
+      console.log(`🎙️ [TTS] OpenAI TTS request...`);
+      console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
+      console.log(`🎙️ [TTS] Voice: ${this.openaiVoice}`);
+      console.log(`🎙️ [TTS] Speed: ${options?.speed || 1.0}x`);
+      
+      // OpenAI API request
+      const response = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.openaiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'tts-1',  // или 'tts-1-hd' для лучшего качества
+          input: text,
+          voice: this.openaiVoice,
+          speed: options?.speed || 1.0,
+          response_format: 'mp3',
+        }),
+      });
+      
+      console.log(`📥 [TTS] OpenAI Response status: ${response.status}`);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ [TTS] OpenAI API Error:`, errorText);
+        return null;
+      }
+      
+      // Получить аудио данные
+      const arrayBuffer = await response.arrayBuffer();
+      console.log(`✅ [TTS] OpenAI Audio received: ${arrayBuffer.byteLength} bytes`);
+      
+      // Сохранить в файл
+      const filename = `openai_speech_${Date.now()}.mp3`;
+      const filepath = `${FileSystem.cacheDirectory}${filename}`;
+      
+      const base64Audio = this.arrayBufferToBase64(arrayBuffer);
+      await FileSystem.writeAsStringAsync(filepath, base64Audio, {
+        encoding: 'base64',
+      });
+      
+      console.log(`💾 [TTS] OpenAI Audio saved: ${filepath}`);
+      return filepath;
+      
+    } catch (error) {
+      console.error('❌ [TTS] OpenAI TTS error:', error);
+      return null;
+    }
+  }
+
+  // ========================
+  // CARTESIA TTS METHODS
+  // ========================
+
+  /**
+   * Fetch audio file from Cartesia API using raw fetch
+   */
+  private async fetchCartesiaAudioFile(
     text: string,
     options?: {
       emotion?: string;
@@ -98,8 +317,8 @@ class TTSService {
       console.log(`🎭 [TTS] Emotion: ${options?.emotion || 'neutral'}`);
       console.log(`⚡ [TTS] Speed: ${options?.speed || 1.0}x`);
       
-      // Build minimal request (no experimental controls first)
-      const requestBody = {
+      // Build request with emotion controls
+      const requestBody: any = {
         model_id: "sonic-3",
         transcript: text,
         voice: {
@@ -113,6 +332,14 @@ class TTSService {
           sample_rate: 44100
         }
       };
+
+      // Add emotion controls if provided
+      if (options?.emotion || options?.emotionLevel) {
+        const emotionLevel = options.emotionLevel || [options.emotion || 'neutral'];
+        requestBody.voice.__experimental_controls = {
+          emotion: emotionLevel
+        };
+      }
       
       console.log(`📤 [TTS] Request:`, JSON.stringify(requestBody, null, 2));
       
@@ -256,6 +483,12 @@ class TTSService {
       emotionLevel?: string[];
     }
   ): Promise<Audio.Sound | null> {
+    // ПРОВЕРКА MUTE
+    if (this.isMuted) {
+      console.log(`🔇 [TTS] Muted - skipping prepare: "${text.substring(0, 30)}..."`);
+      return null;
+    }
+    
     try {
       console.log(`🎙️ [TTS] Preparing audio: "${text.substring(0, 50)}..."`);
       

@@ -17,6 +17,8 @@ import { DebugOverlay } from '../components/interview/DebugOverlay';
 import { ResultsModal } from '../components/interview/ResultsModal';
 import { HistoryPanel } from '../components/history/HistoryPanel';
 import * as historyStorage from '../services/history-storage';
+import TTSService from '../services/tts-service';
+import { TTSProvider, OpenAIVoice } from '../types';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -52,6 +54,10 @@ function VoiceInterviewScreen() {
     const [debugValue, setDebugValue] = useState("10");
     const [isDebugTtsMuted, setIsDebugTtsMuted] = useState(false);
     const [isSimulating, setIsSimulating] = useState(false);
+
+    // TTS Provider State
+    const [ttsProvider, setTtsProviderState] = useState<TTSProvider>('cartesia');
+    const [openaiVoice, setOpenaiVoice] = useState<OpenAIVoice>('nova');
 
     // Live Bubble State
     const [liveTranscript, setLiveTranscript] = useState("");
@@ -165,6 +171,22 @@ function VoiceInterviewScreen() {
         ? messages[messages.length - 1].text
         : "";
     const displayedAiText = useTypewriter(latestAiMessage, 30);
+    // Sync mute state with TTSService
+    useEffect(() => {
+        console.log('🔄 [SCREEN] isDebugTtsMuted changed:', isDebugTtsMuted);
+        TTSService.setMuted(isDebugTtsMuted);
+    }, [isDebugTtsMuted]);
+
+    // Load TTS settings when opening Control Panel
+    useEffect(() => {
+        if (showSettings) {
+            const currentProvider = TTSService.getTtsProvider();
+            const currentVoice = TTSService.getOpenaiVoice();
+            setTtsProviderState(currentProvider);
+            setOpenaiVoice(currentVoice);
+        }
+    }, [showSettings]);
+
     // Secret Shake Listener
     useEffect(() => {
         const subscription = Accelerometer.addListener(({ x, y, z }) => {
@@ -183,6 +205,20 @@ function VoiceInterviewScreen() {
             subscription.remove();
         };
     }, []);
+
+    // Handle TTS provider change
+    const handleTtsProviderChange = async (value: TTSProvider) => {
+        setTtsProviderState(value);
+        TTSService.setTtsProvider(value);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    };
+
+    // Handle OpenAI voice change
+    const handleOpenaiVoiceChange = async (voice: OpenAIVoice) => {
+        setOpenaiVoice(voice);
+        TTSService.setOpenaiVoice(voice);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    };
 
     // Transcript Animation
     useEffect(() => {
@@ -383,6 +419,9 @@ function VoiceInterviewScreen() {
                     topicSuccess={topicSuccess}
                     topicPatience={topicPatience}
                     metrics={metrics}
+                    // NEW: TTS Provider props
+                    ttsProvider={ttsProvider}
+                    openaiVoice={openaiVoice}
                 />
 
                 <View style={styles.header}>
@@ -425,6 +464,57 @@ function VoiceInterviewScreen() {
                             </View>
 
                             <ScrollView style={styles.modalContent}>
+                                <Text style={styles.sectionTitle}>Voice Provider</Text>
+                                <View style={styles.providerSection}>
+                                    <Slider
+                                        style={{ width: '100%', height: 40 }}
+                                        minimumValue={0}
+                                        maximumValue={1}
+                                        step={1}
+                                        value={ttsProvider === 'cartesia' ? 0 : 1}
+                                        onValueChange={(value) => handleTtsProviderChange(value === 0 ? 'cartesia' : 'openai')}
+                                        minimumTrackTintColor="#000"
+                                        maximumTrackTintColor="#E0E0E0"
+                                        thumbTintColor="#000"
+                                    />
+                                    <View style={styles.providerLabels}>
+                                        <Text style={[styles.providerLabel, ttsProvider === 'cartesia' && styles.providerLabelActive]}>Cartesia</Text>
+                                        <Text style={[styles.providerLabel, ttsProvider === 'openai' && styles.providerLabelActive]}>OpenAI</Text>
+                                    </View>
+                                </View>
+
+                                {ttsProvider === 'openai' && (
+                                    <View style={styles.openaiVoicesContainer}>
+                                        <Text style={styles.sectionSubtitle}>OpenAI Voice</Text>
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                            {[
+                                                { id: 'nova' as OpenAIVoice, label: 'Nova (F)' },
+                                                { id: 'alloy' as OpenAIVoice, label: 'Alloy (M/F)' },
+                                                { id: 'echo' as OpenAIVoice, label: 'Echo (M)' },
+                                                { id: 'fable' as OpenAIVoice, label: 'Fable (M-BR)' },
+                                                { id: 'onyx' as OpenAIVoice, label: 'Onyx (M-D)' },
+                                                { id: 'shimmer' as OpenAIVoice, label: 'Shimmer (F)' },
+                                            ].map(voice => (
+                                                <TouchableOpacity
+                                                    key={voice.id}
+                                                    style={[
+                                                        styles.voiceChip,
+                                                        openaiVoice === voice.id && styles.voiceChipActive
+                                                    ]}
+                                                    onPress={() => handleOpenaiVoiceChange(voice.id)}
+                                                >
+                                                    <Text style={[
+                                                        styles.voiceChipText,
+                                                        openaiVoice === voice.id && styles.voiceChipTextActive
+                                                    ]}>
+                                                        {voice.label}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    </View>
+                                )}
+
                                 <Text style={styles.sectionTitle}>1. Setup</Text>
                                 <TouchableOpacity style={styles.glassButton} onPress={pickResume}>
                                     <Ionicons name="document-text-outline" size={24} color="#333" />
@@ -475,6 +565,14 @@ function VoiceInterviewScreen() {
                         </View>
                     </BlurView>
                 </Modal>
+
+                {/* Muted Banner */}
+                {isDebugTtsMuted && (
+                    <View style={styles.mutedBanner}>
+                        <Ionicons name="volume-mute" size={16} color="#FFF" />
+                        <Text style={styles.mutedBannerText}>Audio Muted</Text>
+                    </View>
+                )}
 
                 {/* Chat Container */}
                 <View style={styles.chatContainer}>
@@ -537,12 +635,6 @@ function VoiceInterviewScreen() {
                     roleTitle={resumeFile?.name || "Interview Session"}
                 />
 
-                {/* HISTORY PANEL */}
-                <HistoryPanel
-                    visible={showHistory}
-                    onClose={() => setShowHistory(false)}
-                />
-
                 {/* Mic Controls */}
                 <View style={styles.controls}>
                     <TouchableOpacity
@@ -574,6 +666,12 @@ function VoiceInterviewScreen() {
                         ]} />
                     )}
                 </View>
+
+                {/* HISTORY PANEL - MUST BE LAST for proper z-index */}
+                <HistoryPanel
+                    visible={showHistory}
+                    onClose={() => setShowHistory(false)}
+                />
             </SafeAreaView>
         </GestureDetector>
     );
@@ -794,6 +892,73 @@ const styles = StyleSheet.create({
         backgroundColor: 'rgba(255,255,255,0.5)',
         padding: 15,
         borderRadius: 10,
+    },
+    // NEW: TTS Provider styles
+    providerSection: {
+        marginBottom: 20,
+        paddingHorizontal: 10,
+    },
+    providerLabels: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        paddingHorizontal: 10,
+        marginTop: 5,
+    },
+    providerLabel: {
+        fontSize: 14,
+        color: '#999',
+        fontWeight: '600',
+    },
+    providerLabelActive: {
+        color: '#000',
+    },
+    openaiVoicesContainer: {
+        marginTop: 12,
+        marginBottom: 20,
+    },
+    sectionSubtitle: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#666',
+        marginBottom: 10,
+    },
+    voiceChip: {
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+        backgroundColor: '#F0F0F0',
+        borderRadius: 20,
+        marginRight: 8,
+        borderWidth: 1,
+        borderColor: 'transparent',
+    },
+    voiceChipActive: {
+        backgroundColor: '#000',
+        borderColor: '#000',
+    },
+    voiceChipText: {
+        fontSize: 13,
+        fontWeight: '500',
+        color: '#666',
+    },
+    voiceChipTextActive: {
+        color: '#FFF',
+    },
+    // NEW: Muted banner styles
+    mutedBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#FF9F0A',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        marginHorizontal: 20,
+        marginTop: 10,
+        borderRadius: 8,
+    },
+    mutedBannerText: {
+        color: '#FFF',
+        fontSize: 13,
+        fontWeight: '600',
+        marginLeft: 6,
     },
 });
 

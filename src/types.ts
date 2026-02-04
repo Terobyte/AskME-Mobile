@@ -274,3 +274,23 @@ export interface CartesiaTTSRequest {
     sample_rate: number;
   };
 }
+
+// ============================================
+// TTS PROVIDER TYPES
+// ============================================
+
+/**
+ * TTSProvider: Text-to-Speech provider selection
+ */
+export type TTSProvider = 'cartesia' | 'openai';
+
+/**
+ * OpenAIVoice: Available voices for OpenAI TTS
+ */
+export type OpenAIVoice = 
+  | 'alloy'   // Сбалансированный мужской/женский
+  | 'echo'    // Мужской, мягкий
+  | 'fable'   // Мужской, британский
+  | 'onyx'    // Мужской, глубокий
+  | 'nova'    // Женский, дружелюбный
+  | 'shimmer'; // Женский, мягкий

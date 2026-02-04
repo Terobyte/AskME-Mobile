@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
-import { VibeConfig, EvaluationMetrics } from '../../types';
+import { VibeConfig, EvaluationMetrics, TTSProvider, OpenAIVoice } from '../../types';
 
 interface DebugOverlayProps {
     visible: boolean;
@@ -25,6 +25,9 @@ interface DebugOverlayProps {
     topicSuccess?: number;
     topicPatience?: number;
     metrics?: EvaluationMetrics | null;
+    // NEW: TTS Provider props
+    ttsProvider?: TTSProvider;
+    openaiVoice?: OpenAIVoice;
 }
 
 // ============================================
@@ -85,7 +88,10 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
     currentTopicIndex = 0,
     topicSuccess = 0,
     topicPatience = 0,
-    metrics = null
+    metrics = null,
+    // NEW: TTS Provider
+    ttsProvider = 'cartesia',
+    openaiVoice = 'nova'
 }) => {
     if (!visible) return null;
 
@@ -238,6 +244,31 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
                 {!currentVibe && (
                     <View style={styles.vibeSection}>
                         <Text style={styles.vibeNoData}>No vibe data yet (answer a question first)</Text>
+                    </View>
+                )}
+
+                {/* NEW: TTS Provider Info */}
+                {ttsProvider && (
+                    <View style={styles.ttsInfoSection}>
+                        <Text style={styles.sectionTitle}>🎙️ TTS Provider</Text>
+                        <View style={styles.ttsInfoCard}>
+                            <Text style={[
+                                styles.ttsProviderLabel,
+                                ttsProvider === 'cartesia' ? styles.cartesiaLabel : styles.openaiLabel
+                            ]}>
+                                {ttsProvider.toUpperCase()}
+                            </Text>
+                            {ttsProvider === 'openai' && (
+                                <Text style={styles.ttsVoiceLabel}>
+                                    Voice: {openaiVoice}
+                                </Text>
+                            )}
+                            {ttsProvider === 'cartesia' && (
+                                <Text style={styles.ttsVoiceLabel}>
+                                    Voice: Victoria
+                                </Text>
+                            )}
+                        </View>
                     </View>
                 )}
 
@@ -643,5 +674,37 @@ const styles = StyleSheet.create({
     metricValueLarge: {
         fontSize: 28,
         fontWeight: '900',
+    },
+    // NEW: TTS Info styles
+    ttsInfoSection: {
+        marginBottom: 16,
+        padding: 12,
+        backgroundColor: 'rgba(100, 100, 255, 0.08)',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(100, 100, 255, 0.25)',
+    },
+    ttsInfoCard: {
+        padding: 12,
+        backgroundColor: 'rgba(0, 0, 0, 0.3)',
+        borderRadius: 8,
+        alignItems: 'center',
+    },
+    ttsProviderLabel: {
+        fontSize: 20,
+        fontWeight: 'bold',
+        color: '#87CEEB',
+    },
+    cartesiaLabel: {
+        color: '#30D158',
+    },
+    openaiLabel: {
+        color: '#32ADE6',
+    },
+    ttsVoiceLabel: {
+        fontSize: 12,
+        color: '#888888',
+        marginTop: 4,
+        fontWeight: '600',
     },
 });

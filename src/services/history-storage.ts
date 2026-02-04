@@ -102,24 +102,29 @@ const generateSessionId = (): string => {
  * Get all saved sessions (sorted by date, newest first)
  */
 export const getHistory = async (): Promise<InterviewSession[]> => {
+    console.log('🔍 [HISTORY_STORAGE] getHistory() called');
     try {
         const file = getHistoryFile();
+        console.log('📁 [HISTORY_STORAGE] File exists:', file.exists);
+        console.log('📁 [HISTORY_STORAGE] File path:', file.uri);
 
         if (!file.exists) {
-            console.log('📂 [HISTORY] No history file exists yet');
+            console.log('⚠️ [HISTORY_STORAGE] No file, returning []');
             return [];
         }
 
         const content = file.text() as unknown as string;
+        console.log('📄 [HISTORY_STORAGE] Content length:', content?.length);
+
         const history = safeParseJSON(content);
+        console.log('✅ [HISTORY_STORAGE] Parsed sessions:', history.length);
 
         // Sort by timestamp (newest first)
         history.sort((a, b) => b.timestamp - a.timestamp);
 
-        console.log(`📚 [HISTORY] Loaded ${history.length} sessions`);
         return history;
     } catch (error) {
-        console.error('❌ [HISTORY] Failed to load:', error);
+        console.error('❌ [HISTORY_STORAGE] Error:', error);
         return [];
     }
 };

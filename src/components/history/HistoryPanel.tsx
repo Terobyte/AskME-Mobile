@@ -52,6 +52,7 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ visible, onClose }) 
     // Load history when panel opens
     useEffect(() => {
         if (visible) {
+            console.log('📱 [HISTORY_PANEL] Opening panel, visible:', visible);
             loadHistory();
             // Animate in
             translateX.value = withSpring(0, {
@@ -69,12 +70,14 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ visible, onClose }) 
 
     const loadHistory = async () => {
         setIsLoading(true);
+        console.log('📂 [HISTORY] Starting load...');
         try {
             const history = await getHistory();
+            console.log('✅ [HISTORY] Loaded sessions:', history.length);
+            console.log('📝 [HISTORY] First session:', history[0]?.id);
             setSessions(history);
-            console.log(`📚 [HISTORY] Loaded ${history.length} sessions`);
         } catch (error) {
-            console.error('❌ [HISTORY] Failed to load:', error);
+            console.error('❌ [HISTORY] Error:', error);
         } finally {
             setIsLoading(false);
         }
@@ -165,8 +168,6 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ visible, onClose }) 
     const animatedStyle = useAnimatedStyle(() => ({
         transform: [{ translateX: translateX.value }],
     }));
-
-    if (!visible) return null;
 
     if (!visible) return null;
 
@@ -277,17 +278,15 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     modalContainer: {
-        backgroundColor: 'rgba(30,30,30,0.3)',
         width: '90%',
-        borderRadius: 25,
+        backgroundColor: 'rgba(255, 255, 255, 0.95)', // Более белый фон
         maxHeight: '85%',
-        borderWidth: 1,
-        borderColor: 'rgba(255,255,255,0.1)',
+        borderRadius: 25,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.1,
+        shadowOpacity: 0.3,
         shadowRadius: 20,
-        elevation: 10,
+        elevation: 50, // Выше z-index
         overflow: 'hidden', // Ensure content doesn't spill out
     },
     modalHeader: {

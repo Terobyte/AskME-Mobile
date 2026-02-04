@@ -1,6 +1,6 @@
 /**
  * Favorites Storage Service
- * Persists favorite questions using expo-file-system (new API)
+ * Persists favorite questions using expo-file-system v19
  */
 
 import { File, Paths } from 'expo-file-system';
@@ -22,7 +22,7 @@ export interface FavoriteQuestion {
 }
 
 /**
- * Get the favorites file reference
+ * Get favorites file object using Paths API
  */
 const getFavoritesFile = (): File => {
     return new File(Paths.document, FAVORITES_FILENAME);
@@ -52,15 +52,22 @@ const safeParseJSON = (content: string): FavoriteQuestion[] => {
  * Get all saved favorites
  */
 export const getFavorites = async (): Promise<FavoriteQuestion[]> => {
+    console.log('⭐ [FAVORITES] getFavorites() called');
     try {
         const file = getFavoritesFile();
+        console.log('📁 [FAVORITES] File URI:', file.uri);
 
-        if (!file.exists) {
+        const info = file.info();
+        console.log('📁 [FAVORITES] File exists:', info.exists);
+
+        if (!info.exists) {
             console.log('📂 [FAVORITES] No favorites file exists yet');
             return [];
         }
 
-        const content = file.text() as unknown as string;
+        const content = await file.text();
+        console.log('📄 [FAVORITES] Content length:', content?.length);
+
         const favorites = safeParseJSON(content);
         console.log(`⭐ [FAVORITES] Loaded ${favorites.length} favorites`);
         return favorites;
@@ -87,6 +94,8 @@ export const toggleFavorite = async (question: FavoriteQuestion): Promise<{
     favorites: FavoriteQuestion[];
 }> => {
     try {
+        console.log(`⭐ [FAVORITES] Toggle favorite: ${question.topic} (id: ${question.id})`);
+        
         const favorites = await getFavorites();
         const existingIndex = favorites.findIndex(f => f.id === question.id);
 
@@ -107,11 +116,16 @@ export const toggleFavorite = async (question: FavoriteQuestion): Promise<{
             console.log(`⭐ [FAVORITES] Added: ${question.topic}`);
         }
 
-        // Save to file using new File API
+        // Save to file
         const file = getFavoritesFile();
         const jsonString = JSON.stringify(favorites, null, 2);
         file.write(jsonString);
-
+        
+        // Verify the file was written
+        const info = file.info();
+        console.log(`✅ [FAVORITES] File exists:`, info.exists);
+        console.log(`✅ [FAVORITES] File size:`, info.size, 'bytes');
+        
         console.log(`⭐ [FAVORITES] Total count: ${favorites.length}`);
         return { added, favorites };
     } catch (error) {
@@ -135,8 +149,15 @@ export const getFavoriteIds = async (): Promise<Set<string>> => {
  */
 export const clearFavorites = async (): Promise<void> => {
     try {
+        console.log('🗑️ [FAVORITES] Clearing all favorites');
         const file = getFavoritesFile();
         file.write('[]');
+        
+        // Verify the file was written
+        const info = file.info();
+        console.log(`✅ [FAVORITES] File exists:`, info.exists);
+        console.log(`✅ [FAVORITES] File size:`, info.size, 'bytes');
+        
         console.log('🗑️ [FAVORITES] Cleared all favorites');
     } catch (error) {
         console.error('❌ [FAVORITES] Failed to clear:', error);

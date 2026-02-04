@@ -742,6 +742,26 @@ Return ONLY valid JSON with no extra text.
   // --- 3. BATCH EVALUATOR (Topic-Level Aggregation with Gemini 2.5 Pro) ---
   async evaluateBatch(history: ChatMessage[]): Promise<QuestionResult[]> {
     console.log("📊 [BATCH EVAL] Starting topic-level aggregation...");
+    console.log(`📊 [BATCH EVAL] Input: ${history.length} messages`);
+    
+    // ===== DEBUG: ANALYZE INPUT =====
+    const assistantCount = history.filter(m => m.role === 'assistant').length;
+    const userCount = history.filter(m => m.role === 'user').length;
+    
+    console.log(`📊 [BATCH EVAL] Message breakdown:`);
+    console.log(`   Assistant: ${assistantCount}`);
+    console.log(`   User: ${userCount}`);
+    console.log(`   System: ${history.filter(m => m.role === 'system').length}`);
+    
+    if (assistantCount === 0) {
+      console.warn("⚠️ [BATCH EVAL] No assistant messages - cannot identify topics!");
+      return [];
+    }
+    
+    if (userCount === 0) {
+      console.warn("⚠️ [BATCH EVAL] No user messages - no answers to evaluate!");
+      return [];
+    }
 
     const prompt = `
       ROLE: Technical Evaluator & Mentor (JSON ONLY)
@@ -820,11 +840,28 @@ Return ONLY valid JSON with no extra text.
     try {
       // ✅ Use Gemini 2.5 Pro for deeper analysis
       console.log("📊 [BATCH EVAL] Using model: gemini-2.5-pro");
+      console.log("📊 [BATCH EVAL] Calling Gemini API...");
+      
       const raw = await this.callGemini(payload, "gemini-2.5-pro");
+      
+      console.log(`📊 [BATCH EVAL] Raw response length: ${raw?.length || 0}`);
+      console.log(`📊 [BATCH EVAL] Raw response (first 200 chars):`, raw?.substring(0, 200));
+      
       const clean = this.cleanJsonArray(raw);
+      console.log(`📊 [BATCH EVAL] Cleaned JSON (first 200 chars):`, clean?.substring(0, 200));
+      
       const results = JSON.parse(clean) as QuestionResult[];
+      
+      console.log(`📊 [BATCH EVAL] Parsed ${results.length} topic evaluations`);
 
-      console.log(`📊 [BATCH EVAL] Generated ${results.length} topic evaluations (not Q&A exchanges)`);
+      // Log each result
+      results.forEach((r, i) => {
+        console.log(`📊 [BATCH EVAL] Result ${i + 1}:`, {
+          topic: r.topic,
+          score: r.score,
+          userAnswer: r.userAnswer?.substring(0, 50) + "..."
+        });
+      });
 
       // Validate detailedFeedback exists
       results.forEach(r => {
@@ -837,6 +874,7 @@ Return ONLY valid JSON with no extra text.
       return results;
     } catch (e) {
       console.error("❌ [BATCH EVAL] Error:", e);
+      console.error("❌ [BATCH EVAL] Error message:", e instanceof Error ? e.message : String(e));
       return [];
     }
   }

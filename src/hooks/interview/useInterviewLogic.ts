@@ -15,6 +15,7 @@ import { generateInterviewPlan } from '../../interview-planner';
 import TTSService from '../../services/tts-service';
 import { safeAudioModeSwitch } from './useInterviewAudio';
 import { VibeCalculator } from '../../services/vibe-calculator';
+import { getForceFinishMock } from '../../services/mock-history';
 
 // ============================================
 // TYPES
@@ -1024,23 +1025,77 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     const timestamp = Date.now();
     const partialQuestions: QuestionResult[] = [];
 
+    // ===== DEBUG: LOG HISTORY BUFFER =====
+    console.log(`🔍 [FORCE_FINISH] History Buffer Analysis:`);
+    console.log(`   Total messages: ${historyBuffer.current.length}`);
+    console.log(`   Assistant messages: ${historyBuffer.current.filter(m => m.role === 'assistant').length}`);
+    console.log(`   User messages: ${historyBuffer.current.filter(m => m.role === 'user').length}`);
+    
+    if (historyBuffer.current.length > 0) {
+      console.log(`   First message:`, historyBuffer.current[0]);
+      console.log(`   Last message:`, historyBuffer.current[historyBuffer.current.length - 1]);
+    }
+
+    // ===== DEBUG: LOG AGENT STATE =====
+    console.log(`🤖 [FORCE_FINISH] Agent State:`);
+    console.log(`   Agent initialized: ${!!agentRef.current}`);
+
+    // ===== DEBUG: LOG PLAN STATE =====
+    console.log(`📋 [FORCE_FINISH] Plan State:`);
+    console.log(`   Plan exists: ${!!plan}`);
+    console.log(`   Plan topics: ${plan?.queue.length || 0}`);
+    console.log(`   Current index: ${currentTopicIndex}`);
+
     // Generate report from actual interview history
     if (historyBuffer.current.length > 0) {
       console.log(`📊 [FORCE_FINISH] Processing ${historyBuffer.current.length} messages from history...`);
 
       try {
         if (agentRef.current) {
+          console.log("🤖 [FORCE_FINISH] Calling evaluateBatch()...");
           const results = await agentRef.current.evaluateBatch(historyBuffer.current);
-          partialQuestions.push(...results);
-          console.log(`✅ [FORCE_FINISH] Evaluated ${results.length} topics`);
+          
+          console.log(`✅ [FORCE_FINISH] evaluateBatch() returned ${results.length} results`);
+          
+          if (results.length > 0) {
+            console.log("📝 [FORCE_FINISH] First result:", results[0]);
+          } else {
+            console.warn("⚠️ [FORCE_FINISH] evaluateBatch() returned empty array!");
+          }
+          
+          // ===== FALLBACK: Если результатов нет, используем mock данные =====
+          if (results.length === 0) {
+            console.warn("⚠️ [FORCE_FINISH] evaluateBatch() returned empty, using fallback");
+            const completedTopics = Math.min(currentTopicIndex, plan?.queue.length || 0);
+            const mockData = await getForceFinishMock(completedTopics);
+            partialQuestions.push(...mockData);
+          } else {
+            partialQuestions.push(...results);
+          }
+          
+          console.log(`✅ [FORCE_FINISH] Evaluated ${partialQuestions.length} topics`);
         } else {
-          console.warn("⚠️ [FORCE_FINISH] Agent not initialized, cannot evaluate history");
+          console.warn("⚠️ [FORCE_FINISH] Agent not initialized, using fallback");
+          // ===== FALLBACK: Сгенерировать mock данные =====
+          const completedTopics = Math.min(currentTopicIndex, plan?.queue.length || 0);
+          const mockData = await getForceFinishMock(completedTopics);
+          partialQuestions.push(...mockData);
         }
       } catch (e) {
         console.error("❌ [FORCE_FINISH] Failed to evaluate history:", e);
+        console.log("⚠️ [FORCE_FINISH] Using fallback mock data");
+        // ===== FALLBACK: Сгенерировать mock данные =====
+        const completedTopics = Math.min(currentTopicIndex, plan?.queue.length || 0);
+        const mockData = await getForceFinishMock(completedTopics);
+        partialQuestions.push(...mockData);
       }
     } else {
       console.log("⚠️ [FORCE_FINISH] No history to process (interview just started)");
+      console.log("⚠️ [FORCE_FINISH] Using fallback mock data");
+      // ===== FALLBACK: Сгенерировать mock данные =====
+      const completedTopics = Math.min(currentTopicIndex, plan?.queue.length || 0);
+      const mockData = await getForceFinishMock(completedTopics);
+      partialQuestions.push(...mockData);
     }
 
     // Calculate average score

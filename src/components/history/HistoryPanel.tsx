@@ -51,35 +51,50 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ visible, onClose }) 
 
     // Load history when panel opens
     useEffect(() => {
+        console.log('📱 [HISTORY_PANEL] useEffect triggered, visible:', visible);
+        
         if (visible) {
-            console.log('📱 [HISTORY_PANEL] Opening panel, visible:', visible);
+            console.log('📱 [HISTORY_PANEL] Panel opening, calling loadHistory()...');
             loadHistory();
             // Animate in
             translateX.value = withSpring(0, {
                 damping: 20,
                 stiffness: 90,
             });
+            console.log('📱 [HISTORY_PANEL] Animation started');
         } else {
             // Animate out
             translateX.value = withSpring(SCREEN_WIDTH, {
                 damping: 20,
                 stiffness: 90,
             });
+            console.log('📱 [HISTORY_PANEL] Panel closing');
         }
     }, [visible]);
 
     const loadHistory = async () => {
         setIsLoading(true);
-        console.log('📂 [HISTORY] Starting load...');
+        console.log('📂 [HISTORY_PANEL] loadHistory() called');
+        console.log('📂 [HISTORY_PANEL] Current sessions state length:', sessions.length);
+        
         try {
+            console.log('📂 [HISTORY_PANEL] Calling getHistory()...');
             const history = await getHistory();
-            console.log('✅ [HISTORY] Loaded sessions:', history.length);
-            console.log('📝 [HISTORY] First session:', history[0]?.id);
+            
+            console.log('✅ [HISTORY_PANEL] getHistory() returned:', history.length, 'sessions');
+            console.log('📝 [HISTORY_PANEL] First session:', JSON.stringify(history[0], null, 2));
+            console.log('📝 [HISTORY_PANEL] First session ID:', history[0]?.id);
+            
+            console.log('📝 [HISTORY_PANEL] Calling setSessions()...');
             setSessions(history);
+            
+            console.log('✅ [HISTORY_PANEL] setSessions() completed');
         } catch (error) {
-            console.error('❌ [HISTORY] Error:', error);
+            console.error('❌ [HISTORY_PANEL] Error in loadHistory():', error);
+            console.error('❌ [HISTORY_PANEL] Error stack:', error instanceof Error ? error.stack : 'No stack');
         } finally {
             setIsLoading(false);
+            console.log('📂 [HISTORY_PANEL] loadHistory() finished, isLoading:', false);
         }
     };
 
@@ -209,17 +224,21 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({ visible, onClose }) 
                                 </View>
                             ) : (
                                 <>
+                                    {console.log('🎨 [HISTORY_PANEL] Rendering sessions list, count:', sessions.length)}
                                     <Text style={styles.sectionTitle}>
                                         {sessions.length} SESSION{sessions.length !== 1 ? 'S' : ''}
                                     </Text>
-                                    {sessions.map((session) => (
-                                        <SessionCard
-                                            key={session.id}
-                                            session={session}
-                                            onPress={() => handleSessionPress(session)}
-                                            onDelete={() => handleDeleteSession(session.id)}
-                                        />
-                                    ))}
+                                    {sessions.map((session, index) => {
+                                        console.log(`🎨 [HISTORY_PANEL] Rendering card ${index + 1}/${sessions.length}: ${session.id}`);
+                                        return (
+                                            <SessionCard
+                                                key={session.id}
+                                                session={session}
+                                                onPress={() => handleSessionPress(session)}
+                                                onDelete={() => handleDeleteSession(session.id)}
+                                            />
+                                        );
+                                    })}
                                 </>
                             )}
                         </ScrollView>
@@ -279,8 +298,8 @@ const styles = StyleSheet.create({
     },
     modalContainer: {
         width: '90%',
-        backgroundColor: 'rgba(255, 255, 255, 0.95)', // Более белый фон
-        maxHeight: '85%',
+        height: '70%', // ← ЯВНАЯ ВЫСОТА (вместо maxHeight!)
+        backgroundColor: 'rgba(255, 255, 255, 0.98)', // ← Менее прозрачный
         borderRadius: 25,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 10 },
@@ -288,16 +307,18 @@ const styles = StyleSheet.create({
         shadowRadius: 20,
         elevation: 50, // Выше z-index
         overflow: 'hidden', // Ensure content doesn't spill out
+        borderWidth: 1, // ← Для видимости границ (можно убрать потом)
+        borderColor: 'rgba(0, 0, 0, 0.1)',
     },
     modalHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
         paddingHorizontal: 20,
-        paddingVertical: 20,
+        paddingVertical: 16, // ← Уменьшили с 20 до 16
         borderBottomWidth: 1,
-        borderBottomColor: 'rgba(255,255,255,0.1)',
-        backgroundColor: 'rgba(255,255,255,0.5)', // Slightly clearer header
+        borderBottomColor: 'rgba(0, 0, 0, 0.1)', // ← Более темная граница
+        backgroundColor: 'rgba(255, 255, 255, 0.7)', // ← Более белый фон
     },
     headerTitleRow: {
         flexDirection: 'row',
@@ -314,7 +335,8 @@ const styles = StyleSheet.create({
     },
     scrollContent: {
         padding: 20,
-        paddingBottom: 100, // Space for footer
+        paddingBottom: 90, // ← Уменьшили с 100 до 90
+        flexGrow: 1, // ← Добавили для растяжения
     },
     sectionTitle: {
         fontSize: 12,
@@ -342,10 +364,10 @@ const styles = StyleSheet.create({
         textAlign: 'center',
     },
     footer: {
-        padding: 20,
+        padding: 16, // ← Уменьшили с 20 до 16
         borderTopWidth: 1,
-        borderTopColor: 'rgba(0, 0, 0, 0.05)',
-        backgroundColor: 'rgba(255, 255, 255, 0.8)',
+        borderTopColor: 'rgba(0, 0, 0, 0.1)', // ← Более темная граница
+        backgroundColor: 'rgba(255, 255, 255, 0.95)', // ← Более белый фон
     },
     exportButton: {
         flexDirection: 'row',

@@ -148,20 +148,35 @@ function VoiceInterviewScreen() {
             setStatus('idle');
         },
         onInterviewComplete: async (results) => {
-            console.log("✅ [INTERVIEW] Interview Complete:", results);
+            console.log('='.repeat(60));
+            console.log('✅ [INTERVIEW] Interview Complete Callback TRIGGERED!');
+            console.log('📊 [INTERVIEW] Results:', JSON.stringify(results, null, 2));
 
             // Save to history
             try {
+                console.log('💾 [HISTORY] Attempting to save session...');
+                
                 const roleTitle = resumeFile?.name || jdText.substring(0, 50) || "Interview Session";
-                await historyStorage.saveSession(
+                console.log(`💾 [HISTORY] Role Title: ${roleTitle}`);
+                console.log(`💾 [HISTORY] Average Score: ${results.averageScore}`);
+                console.log(`💾 [HISTORY] Questions Count: ${results.questions.length}`);
+                console.log(`💾 [HISTORY] Termination Reason: ${results.terminationReason || 'completed'}`);
+                
+                const savedSession = await historyStorage.saveSession(
                     roleTitle,
                     results.averageScore,
                     results.overallSummary,
                     results.questions
                 );
-                console.log("✅ [HISTORY] Session saved to history");
+                
+                console.log('✅ [HISTORY] Session saved SUCCESSFULLY!');
+                console.log(`✅ [HISTORY] Session ID: ${savedSession.id}`);
+                console.log(`✅ [HISTORY] Questions count: ${results.questions.length}`);
+                console.log(`✅ [HISTORY] Timestamp: ${savedSession.timestamp}`);
             } catch (error) {
-                console.error("❌ [HISTORY] Failed to save session:", error);
+                console.error('❌ [HISTORY] Failed to save session');
+                console.error('❌ [HISTORY] Error:', error);
+                console.error('❌ [HISTORY] Stack:', error instanceof Error ? error.stack : 'No stack trace');
             }
         }
     });

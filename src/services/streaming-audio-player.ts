@@ -31,6 +31,7 @@ import {
 } from '../utils/audio-conversion';
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { SentenceChunker } from '../utils/sentence-chunker';
+import { SentenceDetector } from '../utils/sentence-detector';  // PHASE 3: Sentence detection
 import { cartesiaStreamingService } from './cartesia-streaming-service';
 
 /**
@@ -369,7 +370,7 @@ class ChunkedStreamingPlayer {
     }
 
     /**
-     * PHASE 2: Receive timestamps from Cartesia service in real-time
+     * PHASE 2-3: Receive timestamps from Cartesia service in real-time
      * Called directly by TTS service when timestamps arrive
      */
     public receiveTimestamps(timestamps: WordTimestamp[]): void {
@@ -381,6 +382,28 @@ class ChunkedStreamingPlayer {
 
         console.log(`   Total timestamps: ${this.incomingTimestamps.length} words`);
         console.log(`   Mode: ${this.chunkingMode}, Fast-start files: ${this.fastStartFilesCreated}`);
+
+        // PHASE 3: Detect sentence boundaries in real-time
+        if (this.chunkingMode === ChunkingMode.SENTENCE_MODE ||
+            this.chunkingMode === ChunkingMode.FAST_START) {
+
+            const boundaries = SentenceDetector.findCompletedSentences(
+                this.incomingTimestamps,
+                this.lastProcessedTimestampIndex
+            );
+
+            if (boundaries.length > 0) {
+                console.log(`✨ [Player] Detected ${boundaries.length} sentence boundaries:`);
+                boundaries.forEach((b, i) => {
+                    const duration = SentenceDetector.getSentenceDuration(
+                        this.incomingTimestamps,
+                        b,
+                        this.lastProcessedTimestampIndex
+                    );
+                    console.log(`   ${i + 1}. "${b.sentence.substring(0, 50)}..." (${duration.toFixed(0)}ms)`);
+                });
+            }
+        }
 
         // Trigger mode switch if ready (after 2 fast-start files)
         if (this.chunkingMode === ChunkingMode.FAST_START &&

@@ -12,23 +12,21 @@
  */
 
 import { STREAMING_CONFIG } from '../config/streaming-config';
-import { AudioChunk, CartesiaStreamingOptions } from '../types';
+import {
+    AudioChunk,
+    CartesiaStreamingOptions,
+    WordTimestamp,
+    CartesiaMessage,
+    CartesiaChunkMessage,
+    CartesiaTimestampsMessage,
+    CartesiaDoneMessage
+} from '../types';
 import { base64ToArrayBuffer } from '../utils/audio-conversion';
 
 /**
  * WebSocket connection state
  */
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
-
-/**
- * Cartesia WebSocket message types
- */
-interface CartesiaMessage {
-    context_id: string;
-    type: 'chunk' | 'done' | 'error';
-    data?: string;  // base64 PCM data
-    error?: string;
-}
 
 /**
  * Main WebSocket service class
@@ -46,10 +44,13 @@ class CartesiaStreamingService {
     private pingInterval: NodeJS.Timeout | null = null;
 
     // Message routing
-    private messageHandlers: Map<string, (message: CartesiaMessage) => void> = new Map();
+    private messageHandlers: Map<string, (message: any) => void> = new Map();
 
     // Active streams
     private activeContextIds: Set<string> = new Set();
+
+    // NEW: Timestamps storage
+    private timestampsStorage: Map<string, WordTimestamp[]> = new Map();
 
     // Configuration
     private readonly apiKey: string;
@@ -327,9 +328,10 @@ class CartesiaStreamingService {
             if (message.context_id !== contextId) return;
 
             // Handle chunk
-            if (message.type === 'chunk' && message.data) {
+            if (message.type === 'chunk') {
+                const chunkMsg = message as CartesiaChunkMessage;
                 try {
-                    const arrayBuffer = base64ToArrayBuffer(message.data);
+                    const arrayBuffer = base64ToArrayBuffer(chunkMsg.data);
                     const chunk: AudioChunk = {
                         data: arrayBuffer,
                         timestamp: Date.now(),
@@ -355,10 +357,28 @@ class CartesiaStreamingService {
                 }
             }
 
+            // NEW: Handle timestamps
+            if (message.type === 'timestamps') {
+                const timestampsMsg = message as CartesiaTimestampsMessage;
+                console.log(`🕐 [Cartesia WS] Received timestamps for ${timestampsMsg.word_timestamps.words.length} words`);
+
+                // Convert to WordTimestamp[]
+                const wordTimestamps: WordTimestamp[] = timestampsMsg.word_timestamps.words.map((word, i) => ({
+                    word,
+                    start: timestampsMsg.word_timestamps.start[i],
+                    end: timestampsMsg.word_timestamps.end[i]
+                }));
+
+                // Store timestamps
+                this.timestampsStorage.set(contextId, wordTimestamps);
+
+                console.log(`📝 [Cartesia WS] Sample timestamps:`, wordTimestamps.slice(0, 3));
+                console.log(`📝 [Cartesia WS] Total duration: ${wordTimestamps[wordTimestamps.length - 1]?.end}s`);
+            }
+
             // Handle completion
             if (message.type === 'done') {
-                console.log(`✅ [Cartesia WS] Generation complete (${chunkSequence} chunks)`);
-                isGenerating = false;
+                console.log(`✅ [Cartesia WS] Generation complete (${chunkSequence} chunks)`); \n                isGenerating = false;
 
                 if (options.onComplete) {
                     options.onComplete();
@@ -367,8 +387,9 @@ class CartesiaStreamingService {
 
             // Handle error
             if (message.type === 'error') {
-                console.error('❌ [Cartesia WS] Generation error:', message.error);
-                generationError = new Error(message.error || 'Unknown generation error');
+                const errorMsg = message as CartesiaErrorMessage;
+                console.error('❌ [Cartesia WS] Generation error:', errorMsg.error);
+                generationError = new Error(errorMsg.error || 'Unknown generation error');
                 isGenerating = false;
 
                 if (options.onError) {
@@ -380,7 +401,7 @@ class CartesiaStreamingService {
         // Register handler
         this.messageHandlers.set(contextId, handler);
 
-        // Send generation request
+        // Send generation request WITH add_timestamps
         const request = {
             context_id: contextId,
             model_id: 'sonic-3',
@@ -399,6 +420,7 @@ class CartesiaStreamingService {
                 encoding: 'pcm_s16le' as const,
                 sample_rate: 16000
             },
+            add_timestamps: true, // ⭐ ENABLE WORD TIMESTAMPS FOR SENTENCE CHUNKING
             ...(options.speed && { speed: options.speed })
         };
 
@@ -475,6 +497,25 @@ class CartesiaStreamingService {
      */
     getActiveStreamCount(): number {
         return this.activeContextIds.size;
+    }
+
+    // ========================
+    // TIMESTAMPS (NEW)
+    // ========================
+
+    /**
+     * Get word timestamps for a context ID
+     */
+    getTimestamps(contextId: string): WordTimestamp[] | null {
+        return this.timestampsStorage.get(contextId) || null;
+    }
+
+    /**
+     * Clear timestamps for a context ID
+     */
+    clearTimestamps(contextId: string): void {
+        this.timestampsStorage.delete(contextId);
+        console.log(`🧹 [Cartesia WS] Cleared timestamps for ${contextId}`);
     }
 }
 

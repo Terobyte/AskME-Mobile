@@ -336,7 +336,86 @@ export interface AudioChunk {
   timestamp: number;        // When received (Date.now())
   sequence: number;         // Sequential number (0, 1, 2, ...)
   sizeBytes: number;        // Chunk size in bytes
+
+  // Optional sentence metadata (if using sentence chunking)
+  sentenceMetadata?: {
+    sentence: string;
+    isSentenceBoundary: boolean;
+    durationMs: number;
+  };
 }
+
+// ============================================
+// SENTENCE CHUNKING TYPES
+// ============================================
+
+/**
+ * WordTimestamp: Word timing from Cartesia API
+ */
+export interface WordTimestamp {
+  word: string;
+  start: number;  // seconds from audio start
+  end: number;    // seconds from audio start
+}
+
+/**
+ * SentenceBoundary: Detected sentence boundary from timestamps
+ */
+export interface SentenceBoundary {
+  sentence: string;
+  startTime: number;  // seconds
+  endTime: number;    // seconds
+  wordCount: number;
+}
+
+/**
+ * SentenceChunk: PCM data for a single sentence
+ */
+export interface SentenceChunk {
+  pcmData: ArrayBuffer;
+  sentence: string;
+  startTimeSeconds: number;
+  endTimeSeconds: number;
+  durationMs: number;
+  wordCount: number;
+}
+
+/**
+ * Cartesia WebSocket message types
+ */
+export interface CartesiaChunkMessage {
+  type: 'chunk';
+  context_id: string;
+  data: string; // base64 encoded PCM
+}
+
+export interface CartesiaTimestampsMessage {
+  type: 'timestamps';
+  context_id: string;
+  word_timestamps: {
+    words: string[];
+    start: number[];
+    end: number[];
+  };
+  done: boolean;
+}
+
+export interface CartesiaDoneMessage {
+  type: 'done';
+  context_id: string;
+}
+
+export interface CartesiaErrorMessage {
+  type: 'error';
+  context_id: string;
+  error: string;
+}
+
+export type CartesiaMessage =
+  | CartesiaChunkMessage
+  | CartesiaTimestampsMessage
+  | CartesiaDoneMessage
+  | CartesiaErrorMessage;
 
 /**
  * StreamingPlayerState: Current state of the streaming audio player

@@ -338,9 +338,41 @@ class ChunkedStreamingPlayer {
     // Audio offset tracking
     private totalAudioDurationMs: number = 0;
 
-    // Tuning parameters (CHECKPOINT 0: increased for better sentence coverage)
-    private readonly CHUNKS_PER_FILE = 25; // ~1250ms per file at 16kHz
-    private readonly USE_SENTENCE_CHUNKING = true; // Feature flag
+    // PHASE 6: Centralized configuration for easy tuning
+    private readonly CONFIG = {
+        FAST_START: {
+            CHUNKS_PER_FILE: 25,        // ~1250ms per file at 16kHz
+            MAX_FILES: 2,               // Switch to SENTENCE_MODE after 2 files
+        },
+        SENTENCE: {
+            MIN_DURATION_MS: 500,       // Minimum sentence file duration
+            MAX_DURATION_MS: 2500,      // Maximum before force flush
+            LONG_SENTENCE_MS: 3000,     // Try sub-sentence split at this threshold
+        },
+        FALLBACK: {
+            CHUNKS_PER_FILE: 20,        // ~1000ms per file (no timestamps)
+        },
+        CROSSFADE: {
+            FAST_START_MS: 100,         // Crossfade for fast-start files
+            SENTENCE_MS: 120,           // Crossfade for sentence-based files
+            FALLBACK_MS: 100,           // Crossfade for fallback files
+        },
+        FEATURES: {
+            USE_SENTENCE_CHUNKING: true,  // Master feature flag
+            VERBOSE_LOGGING: true,         // PHASE 6: Detailed logs (set false for production)
+        }
+    };
+
+    // Backward compatibility
+    private get CHUNKS_PER_FILE() { return this.CONFIG.FAST_START.CHUNKS_PER_FILE; }
+    private get USE_SENTENCE_CHUNKING() { return this.CONFIG.FEATURES.USE_SENTENCE_CHUNKING; }
+
+    // PHASE 6: Conditional logging helper
+    private log(message: string, ...args: any[]): void {
+        if (this.CONFIG.FEATURES.VERBOSE_LOGGING) {
+            console.log(message, ...args);
+        }
+    }
 
     constructor(config?: Partial<StreamingPlayerConfig>) {
         this.config = {
@@ -503,7 +535,7 @@ class ChunkedStreamingPlayer {
                         this.totalAudioDurationMs = 0;
 
                         // PHASE 5: Switch to SENTENCE_MODE or FALLBACK after 2 fast-start files
-                        if (this.fastStartFilesCreated >= 2) {
+                        if (this.fastStartFilesCreated >= this.CONFIG.FAST_START.MAX_FILES) {
                             if (this.hasReceivedTimestamps) {
                                 this.switchToSentenceMode();
                             } else {
@@ -532,8 +564,8 @@ class ChunkedStreamingPlayer {
                     if (boundaries.length > 0) {
                         const lastBoundary = boundaries[boundaries.length - 1];
 
-                        // Create file if we have enough audio (min 500ms)
-                        if (this.totalAudioDurationMs >= 500) {
+                        // Create file if we have enough audio (min duration)
+                        if (this.totalAudioDurationMs >= this.CONFIG.SENTENCE.MIN_DURATION_MS) {
                             const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
                             fileIndex++;
 
@@ -548,7 +580,7 @@ class ChunkedStreamingPlayer {
                         }
                     }
                     // PHASE 5: Try sub-sentence splitting for long sentences (> 3s)
-                    else if (this.totalAudioDurationMs >= 3000 && boundaries.length === 0) {
+                    else if (this.totalAudioDurationMs >= this.CONFIG.SENTENCE.LONG_SENTENCE_MS && boundaries.length === 0) {
                         // Try splitting at commas, semicolons, or dashes
                         const subBoundaries = SentenceDetector.findSubSentenceBoundaries(
                             this.incomingTimestamps,
@@ -572,7 +604,7 @@ class ChunkedStreamingPlayer {
                         }
                     }
                     // Force flush if accumulated too much (max 2.5s) and no split points found
-                    else if (this.totalAudioDurationMs >= 2500) {
+                    else if (this.totalAudioDurationMs >= this.CONFIG.SENTENCE.MAX_DURATION_MS) {
                         console.warn(`⚠️ [SENTENCE] Force flush (max duration: ${this.totalAudioDurationMs.toFixed(0)}ms)`);
 
                         const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
@@ -587,9 +619,7 @@ class ChunkedStreamingPlayer {
 
                 // --- FALLBACK MODE: Large fixed chunks (no timestamps) ---
                 else if (this.chunkingMode === ChunkingMode.FALLBACK) {
-                    const FALLBACK_CHUNKS = 20; // ~1 second
-
-                    if (accumulatedChunks.length >= FALLBACK_CHUNKS) {
+                    if (accumulatedChunks.length >= this.CONFIG.FALLBACK.CHUNKS_PER_FILE) {
                         const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
                         fileIndex++;
 

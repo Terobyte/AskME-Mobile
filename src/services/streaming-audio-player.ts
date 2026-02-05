@@ -502,15 +502,27 @@ class ChunkedStreamingPlayer {
                         accumulatedChunks = [];
                         this.totalAudioDurationMs = 0;
 
-                        // Switch to SENTENCE_MODE after 2 fast-start files
-                        if (this.fastStartFilesCreated >= 2 && this.hasReceivedTimestamps) {
-                            this.switchToSentenceMode();
+                        // PHASE 5: Switch to SENTENCE_MODE or FALLBACK after 2 fast-start files
+                        if (this.fastStartFilesCreated >= 2) {
+                            if (this.hasReceivedTimestamps) {
+                                this.switchToSentenceMode();
+                            } else {
+                                // No timestamps received, use fallback mode
+                                this.switchToFallbackMode();
+                            }
                         }
                     }
                 }
 
                 // --- SENTENCE MODE: Create files on sentence boundaries ---
                 else if (this.chunkingMode === ChunkingMode.SENTENCE_MODE) {
+                    // PHASE 5: Safety check - ensure we have timestamps
+                    if (this.incomingTimestamps.length === 0) {
+                        console.warn('⚠️ [SENTENCE] No timestamps available, switching to FALLBACK');
+                        this.switchToFallbackMode();
+                        continue; // Re-process this chunk in FALLBACK mode
+                    }
+
                     // Check for completed sentences
                     const boundaries = SentenceDetector.findCompletedSentences(
                         this.incomingTimestamps,
@@ -535,7 +547,31 @@ class ChunkedStreamingPlayer {
                             this.lastProcessedTimestampIndex = lastBoundary.wordIndex + 1;
                         }
                     }
-                    // Force flush if accumulated too much (max 2.5s)
+                    // PHASE 5: Try sub-sentence splitting for long sentences (> 3s)
+                    else if (this.totalAudioDurationMs >= 3000 && boundaries.length === 0) {
+                        // Try splitting at commas, semicolons, or dashes
+                        const subBoundaries = SentenceDetector.findSubSentenceBoundaries(
+                            this.incomingTimestamps,
+                            this.lastProcessedTimestampIndex
+                        );
+
+                        if (subBoundaries.length > 0) {
+                            const lastSubBoundary = subBoundaries[subBoundaries.length - 1];
+
+                            console.log(`✂️ [SENTENCE] Splitting long sentence at comma/dash (${this.totalAudioDurationMs.toFixed(0)}ms)`);
+
+                            const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                            fileIndex++;
+
+                            await this.audioQueue.enqueue(filepath);
+
+                            // Reset for next segment
+                            accumulatedChunks = [];
+                            this.totalAudioDurationMs = 0;
+                            this.lastProcessedTimestampIndex = lastSubBoundary.wordIndex + 1;
+                        }
+                    }
+                    // Force flush if accumulated too much (max 2.5s) and no split points found
                     else if (this.totalAudioDurationMs >= 2500) {
                         console.warn(`⚠️ [SENTENCE] Force flush (max duration: ${this.totalAudioDurationMs.toFixed(0)}ms)`);
 
@@ -587,6 +623,16 @@ class ChunkedStreamingPlayer {
 
             this.state = 'completed';
             console.log('✅ [Chunked Player] Playback completed (gapless!)');
+
+            // PHASE 5: Enhanced statistics logging
+            console.log('📊 [Player] Playback Statistics:');
+            console.log(`  Total files created: ${fileIndex}`);
+            console.log(`  Fast-start files: ${this.fastStartFilesCreated}`);
+            console.log(`  Sentence/Fallback files: ${fileIndex - this.fastStartFilesCreated}`);
+            console.log(`  Final mode: ${this.chunkingMode}`);
+            console.log(`  Timestamps received: ${this.incomingTimestamps.length} words`);
+            console.log(`  Sentences processed: ${this.lastProcessedTimestampIndex} words`);
+
             this.logStats();
 
             // NEW: Attempt sentence re-chunking (if enabled and have context)

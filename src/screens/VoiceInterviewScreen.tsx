@@ -8,7 +8,6 @@ import { BlurView } from 'expo-blur';
 import Slider from '@react-native-community/slider';
 import { InterviewMode, ResumeData } from '../types';
 import * as Haptics from 'expo-haptics';
-import { Accelerometer } from 'expo-sensors';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 import { useTypewriter } from '../hooks/useTypewriter';
@@ -157,20 +156,20 @@ function VoiceInterviewScreen() {
             // Save to history
             try {
                 console.log('💾 [HISTORY] Attempting to save session...');
-                
+
                 const roleTitle = resumeFile?.name || jdText.substring(0, 50) || "Interview Session";
                 console.log(`💾 [HISTORY] Role Title: ${roleTitle}`);
                 console.log(`💾 [HISTORY] Average Score: ${results.averageScore}`);
                 console.log(`💾 [HISTORY] Questions Count: ${results.questions.length}`);
                 console.log(`💾 [HISTORY] Termination Reason: ${results.terminationReason || 'completed'}`);
-                
+
                 const savedSession = await historyStorage.saveSession(
                     roleTitle,
                     results.averageScore,
                     results.overallSummary,
                     results.questions
                 );
-                
+
                 console.log('✅ [HISTORY] Session saved SUCCESSFULLY!');
                 console.log(`✅ [HISTORY] Session ID: ${savedSession.id}`);
                 console.log(`✅ [HISTORY] Questions count: ${results.questions.length}`);
@@ -204,24 +203,12 @@ function VoiceInterviewScreen() {
         }
     }, [showSettings]);
 
-    // Secret Shake Listener
-    useEffect(() => {
-        const subscription = Accelerometer.addListener(({ x, y, z }) => {
-            const acceleration = Math.sqrt(x * x + y * y + z * z);
-            // Threshold for shake (approx 1.78g)
-            if (acceleration >= 1.78) {
-                setShowDebug(prev => !prev);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            }
-        });
-
-        // Update interval to 100ms
-        Accelerometer.setUpdateInterval(100);
-
-        return () => {
-            subscription.remove();
-        };
-    }, []);
+    // PHASE 1.2: Simple handler for opening debug overlay
+    const handleLogoPress = () => {
+        console.log('📱 [Logo] Pressed - Opening debug overlay');
+        setShowDebug(true);  // Only opens, doesn't toggle!
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    };
 
     // Handle TTS provider change
     const handleTtsProviderChange = async (value: TTSProvider) => {
@@ -274,25 +261,25 @@ function VoiceInterviewScreen() {
             if (result.canceled === false) {
                 const file = result.assets[0];
                 setResumeFile(file);
-                
+
                 const fileSize = file.size || 0;
                 console.log("📄 [PICK_RESUME] File selected:", file.name);
                 console.log("📄 [PICK_RESUME] File URI:", file.uri);
                 console.log("📄 [PICK_RESUME] File size:", fileSize);
-                
+
                 // Показываем индикатор загрузки
                 setResumeText("Reading PDF...");
-                
+
                 try {
                     // Создаем экземпляр File из URI
                     const fileInstance = new File(file.uri);
-                    
+
                     // Читаем PDF как base64 используя новый API
                     const pdfBase64 = fileInstance.base64Sync();
-                    
+
                     console.log("📄 [PICK_RESUME] PDF read successfully");
                     console.log(`📄 [PICK_RESUME] Base64 length: ${pdfBase64.length}`);
-                    
+
                     // Создаем ResumeData объект
                     const resumeDataObj: ResumeData = {
                         text: "PDF Resume Loaded", // Fallback текст
@@ -301,13 +288,13 @@ function VoiceInterviewScreen() {
                         usePdfDirectly: true,
                         fileSize: fileSize
                     };
-                    
+
                     // Сохраняем ResumeData для инициализации интервью
                     setResumeData(resumeDataObj);
                     setResumeText(`✅ PDF Loaded: ${file.name} (${(fileSize / 1024).toFixed(0)} KB)`);
-                    
+
                     console.log("📄 [PICK_RESUME] ResumeData created successfully");
-                    
+
                 } catch (readError) {
                     console.error("❌ [PICK_RESUME] Failed to read PDF:", readError);
                     Alert.alert(
@@ -344,10 +331,10 @@ function VoiceInterviewScreen() {
         try {
             // Передаем ResumeData или string в зависимости от типа
             const resumeInput = resumeData || resumeText;
-            
+
             console.log("📄 [START_INTERVIEW] Resume input type:", typeof resumeInput);
             console.log("📄 [START_INTERVIEW] Using PDF:", typeof resumeInput === 'object' && 'usePdfDirectly' in resumeInput);
-            
+
             await initializeInterview(resumeInput, jdText, mode);
         } catch (error) {
             Alert.alert("Error", "Failed to initialize interview.");
@@ -491,7 +478,10 @@ function VoiceInterviewScreen() {
                 />
 
                 <View style={styles.header}>
-                    <Text style={{ fontWeight: 'bold', fontSize: 18 }}>AskME AI</Text>
+                    {/* PHASE 1.3: Logo is now clickable to open debug */}
+                    <TouchableOpacity onPress={handleLogoPress} activeOpacity={0.7}>
+                        <Text style={{ fontWeight: 'bold', fontSize: 18 }}>AskME AI</Text>
+                    </TouchableOpacity>
 
                     {/* Button group */}
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>

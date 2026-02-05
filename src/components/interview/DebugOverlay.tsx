@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Modal, TouchableWithoutFeedback } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
@@ -97,6 +97,36 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
 }) => {
     if (!visible) return null;
 
+    // PHASE 2.2: Triple tap state
+    const [tapCount, setTapCount] = useState(0);
+    const tapTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Triple tap handler
+    const handleDebugOverlayPress = () => {
+        console.log(`🖱️ [Debug Overlay] Tap ${tapCount + 1}/3`);
+
+        const newCount = tapCount + 1;
+        setTapCount(newCount);
+
+        // Clear previous timer
+        if (tapTimerRef.current) {
+            clearTimeout(tapTimerRef.current);
+        }
+
+        // Check for triple tap
+        if (newCount >= 3) {
+            console.log('🖱️ [Debug Overlay] Triple tap detected - CLOSING');
+            onClose();
+            setTapCount(0);
+        } else {
+            // Reset after 2 seconds
+            tapTimerRef.current = setTimeout(() => {
+                console.log('⏱️ [Debug Overlay] Tap timeout - Resetting count');
+                setTapCount(0);
+            }, 2000);
+        }
+    };
+
     // Helper to determine if a value is a quality level
     const isQualityLevel = qualityLevels.some(l => l.value === debugValue);
     const isSpecialAction = specialActions.some(a => a.value === debugValue);
@@ -138,15 +168,23 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
             {/* OUTER LAYER - Click to close */}
             <TouchableWithoutFeedback onPress={onClose}>
                 <View style={styles.modalBackground}>
-                    {/* INNER LAYER - Click does NOT close */}
-                    <TouchableWithoutFeedback onPress={() => { }}>
+                    {/* PHASE 2: Wrap debugOverlay in TouchableOpacity for triple-tap */}
+                    <TouchableOpacity
+                        activeOpacity={1}
+                        onPress={handleDebugOverlayPress}
+                    >
                         <View style={styles.debugOverlay}>
                             <ScrollView showsVerticalScrollIndicator={false}>
+                                {/* PHASE 2.1: X button removed */}
                                 <View style={styles.debugHeader}>
                                     <Text style={styles.debugTitle}>🛠️ DEBUG</Text>
-                                    <TouchableOpacity onPress={onClose}>
-                                        <Ionicons name="close-circle" size={24} color="#FF3B30" />
-                                    </TouchableOpacity>
+
+                                    {/* PHASE 2.3: Tap indicator */}
+                                    {tapCount > 0 && (
+                                        <Text style={styles.tapIndicator}>
+                                            {tapCount}/3 taps
+                                        </Text>
+                                    )}
                                 </View>
 
                                 {/* NEW: Live Metrics Section */}
@@ -397,7 +435,7 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
                                 </TouchableOpacity>
                             </ScrollView>
                         </View>
-                    </TouchableWithoutFeedback>
+                    </TouchableOpacity>
                 </View>
             </TouchableWithoutFeedback>
         </Modal>
@@ -433,6 +471,16 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: 'bold',
         letterSpacing: 1,
+    },
+    // PHASE 2.3: Tap indicator style
+    tapIndicator: {
+        fontSize: 12,
+        color: '#FF9F0A',
+        fontWeight: 'bold',
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        backgroundColor: 'rgba(255, 159, 10, 0.15)',
+        borderRadius: 6,
     },
     debugSection: {
         marginBottom: 20,

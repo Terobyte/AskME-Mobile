@@ -132,190 +132,223 @@ class AudioQueue {
 
         // Create new promise for this playback
         this.playCurrentPromise = (async () => {
-            try {
-                if (this.currentIndex >= this.queue.length) {
-                    console.log('✅ [AudioQueue] Queue complete');
-                    this._isPlaying = false;
+            if (this.currentIndex >= this.queue.length) {
+                console.log('✅ [AudioQueue] Queue complete');
+                this._isPlaying = false;
 
-                    if (this.completionResolve) {
-                        this.completionResolve();
-                    }
-
-                    return;
+                if (this.completionResolve) {
+                    this.completionResolve();
                 }
 
-                const current = this.queue[this.currentIndex];
-                const next = this.queue[this.currentIndex + 1];
+                return;
+            }
 
-                console.log(`🔊 [AudioQueue] Playing chunk ${this.currentIndex + 1}/${this.queue.length}`);
+            const current = this.queue[this.currentIndex];
+            const next = this.queue[this.currentIndex + 1];
 
-                // Track if cross-fade was used
-                let crossFadeStarted = false;
-                let crossFadeCompleted = false;
-                let crossFadeTimeout: NodeJS.Timeout | null = null;
+            console.log(`🔊 [AudioQueue] Playing chunk ${this.currentIndex + 1}/${this.queue.length}`);
 
-                // Setup completion handler
-                current.sound.setOnPlaybackStatusUpdate(async (status) => {
-                    if (!status.isLoaded) return;
+            // Track if cross-fade was used
+            let crossFadeStarted = false;
+            let crossFadeCompleted = false;
+            let crossFadeTimeout: NodeJS.Timeout | null = null;
 
-                    if (status.didJustFinish) {
-                        const finishTime = Date.now();
+            // Setup completion handler
+            current.sound.setOnPlaybackStatusUpdate(async (status) => {
+                if (!status.isLoaded) return;
 
-                        // FIX: Prevent concurrent transitions
-                        if (this._isTransitioning) {
-                            console.log('⏭️ [AudioQueue] Transition already in progress (from crossfade), skipping didJustFinish');
-                            return;
+                if (status.didJustFinish) {
+                    const finishTime = Date.now();
+
+                    // FIX: More precise transition check
+                    // Skip ONLY if cross-fade is IN PROGRESS (started but not completed)
+                    if (this._isTransitioning && crossFadeStarted && !crossFadeCompleted) {
+                        console.log('⏭️ [AudioQueue] Cross-fade in progress, skipping didJustFinish');
+                        return;
+                    }
+
+                    // If cross-fade completed, we should continue normally
+                    if (crossFadeCompleted) {
+                        console.log('✅ [AudioQueue] Cross-fade was completed, processing didJustFinish normally');
+                    }
+
+                    // Set transition flag
+                    this._isTransitioning = true;
+
+                    // Cancel scheduled cross-fade if it hasn't started yet
+                    if (crossFadeTimeout && !crossFadeStarted) {
+                        console.log('🚫 [AudioQueue] Cancelling scheduled crossfade (file finished first)');
+                        clearTimeout(crossFadeTimeout);
+                        crossFadeTimeout = null;
+                    }
+
+                    // Calculate time since this chunk started
+                    const chunkDuration = finishTime - this.lastTransitionTime;
+                    console.log(`✅ [AudioQueue] Chunk ${this.currentIndex + 1} finished (duration: ${chunkDuration}ms)`);
+
+                    // UPDATE lastTransitionTime HERE (when chunk finishes)
+                    this.lastTransitionTime = finishTime;
+
+                    // Clear handler
+                    current.sound.setOnPlaybackStatusUpdate(null);
+
+                    // Move to next IMMEDIATELY
+                    this.currentIndex++;
+
+                    // If crossfade was completed, next is already playing
+                    if (crossFadeCompleted && next) {
+                        try {
+                            const nextStatus = await next.sound.getStatusAsync();
+                            if (nextStatus.isLoaded && nextStatus.isPlaying) {
+                                console.log(`🎵 [AudioQueue] Seamless transition via completed cross-fade`);
+                                // Ensure full volume
+                                await next.sound.setVolumeAsync(1.0);
+
+                                // Reset transition flag
+                                this._isTransitioning = false;
+
+                                // FIX: Clear promise BEFORE recursive call
+                                this.playCurrentPromise = null;
+
+                                // Continue to next
+                                this.playCurrent();
+                                return;
+                            }
+                        } catch (error) {
+                            console.warn('⚠️ [AudioQueue] Error checking next status:', error);
                         }
+                    }
 
-                        // Set transition flag
-                        this._isTransitioning = true;
+                    // Reset transition flag before continuing
+                    this._isTransitioning = false;
 
-                        // Cancel scheduled cross-fade if it hasn't started yet
-                        if (crossFadeTimeout && !crossFadeStarted) {
-                            console.log('🚫 [AudioQueue] Cancelling scheduled crossfade (file finished first)');
-                            clearTimeout(crossFadeTimeout);
-                            crossFadeTimeout = null;
-                        }
+                    // FIX: Clear promise BEFORE recursive call
+                    this.playCurrentPromise = null;
 
-                        // Calculate time since this chunk started
-                        const chunkDuration = finishTime - this.lastTransitionTime;
-                        console.log(`✅ [AudioQueue] Chunk ${this.currentIndex + 1} finished (duration: ${chunkDuration}ms)`);
+                    // Fallback: normal transition
+                    this.playCurrent();
+                }
+            });
 
-                        // UPDATE lastTransitionTime HERE (when chunk finishes)
-                        this.lastTransitionTime = finishTime;
+            // Start playback and measure gap from previous finish
+            try {
+                const playStartTime = Date.now();
 
-                        // Clear handler
-                        current.sound.setOnPlaybackStatusUpdate(null);
+                if (this.currentIndex > 0 && this.lastTransitionTime > 0) {
+                    // Calculate REAL gap from last chunk finish to this chunk start
+                    const actualGap = playStartTime - this.lastTransitionTime;
+                    console.log(`⏱️ [AudioQueue] GAP: ${actualGap}ms (from previous finish to current start)`);
 
-                        // Move to next IMMEDIATELY
-                        this.currentIndex++;
+                    if (actualGap > 50) {
+                        console.warn(`⚠️ [AudioQueue] LARGE GAP DETECTED: ${actualGap}ms`);
+                    }
+                }
 
-                        // If crossfade was completed, next is already playing
-                        if (crossFadeCompleted && next) {
-                            try {
-                                const nextStatus = await next.sound.getStatusAsync();
-                                if (nextStatus.isLoaded && nextStatus.isPlaying) {
-                                    console.log(`🎵 [AudioQueue] Seamless transition via completed cross-fade`);
-                                    // Ensure full volume
-                                    await next.sound.setVolumeAsync(1.0);
+                // FIX: Check if chunk is already playing (from cross-fade)
+                const statusBefore = await current.sound.getStatusAsync();
+                if (statusBefore.isLoaded && statusBefore.isPlaying) {
+                    console.log(`🎵 [AudioQueue] Chunk ${this.currentIndex + 1} already playing (from cross-fade), skipping playAsync`);
+                } else {
+                    // Start playback normally
+                    await current.sound.playAsync();
+                    const playLatency = Date.now() - playStartTime;
+                    console.log(`🎵 [AudioQueue] playAsync() latency: ${playLatency}ms`);
+                }
+
+                // NEW: Schedule cross-fade based on duration (ONLY if there's a next chunk)
+                if (next) {
+                    const status = await current.sound.getStatusAsync();
+                    if (status.isLoaded && status.durationMillis) {
+                        const triggerTime = status.durationMillis - this.CROSSFADE_MS;
+
+                        if (triggerTime > 0) {
+                            console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms`);
+
+                            crossFadeTimeout = setTimeout(async () => {
+                                // FIX: Check if already transitioning via didJustFinish
+                                if (this._isTransitioning) {
+                                    console.log('⏭️ [AudioQueue] File already finished, skipping crossfade');
+                                    return;
+                                }
+
+                                // Set transition flag
+                                this._isTransitioning = true;
+                                crossFadeStarted = true;
+
+                                console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade`);
+
+                                try {
+                                    // Start fade-out of current + fade-in of next
+                                    const fadeSteps = 10;
+                                    const stepDuration = this.CROSSFADE_MS / fadeSteps;
+
+                                    // Start next chunk at volume 0
+                                    await next.sound.setVolumeAsync(0.0);
+                                    await next.sound.playAsync();
+                                    console.log(`▶️ [AudioQueue] Next chunk started at 0% volume`);
+
+                                    // Simultaneous fade
+                                    for (let i = 1; i <= fadeSteps; i++) {
+                                        const progress = i / fadeSteps;
+
+                                        // Fade current OUT, next IN
+                                        await Promise.all([
+                                            current.sound.setVolumeAsync(1.0 - progress),
+                                            next.sound.setVolumeAsync(progress)
+                                        ]);
+
+                                        if (i < fadeSteps) {
+                                            await new Promise(resolve => setTimeout(resolve, stepDuration));
+                                        }
+                                    }
+
+                                    console.log(`✨ [AudioQueue] Cross-fade complete!`);
+                                    crossFadeCompleted = true;
 
                                     // Reset transition flag
                                     this._isTransitioning = false;
 
-                                    // Continue to next
+                                    // FIX: Manually trigger transition to next chunk
+                                    // (because didJustFinish was skipped)
+                                    console.log(`🔄 [AudioQueue] Manually transitioning to next chunk after cross-fade`);
+
+                                    // Clear current chunk's handler (it already finished during cross-fade)
+                                    current.sound.setOnPlaybackStatusUpdate(null);
+
+                                    // Move to next
+                                    this.currentIndex++;
+                                    this.lastTransitionTime = Date.now();
+
+                                    // Clear promise and call playCurrent
+                                    this.playCurrentPromise = null;
                                     this.playCurrent();
-                                    return;
+
+                                } catch (error) {
+                                    console.error('❌ [AudioQueue] Cross-fade error:', error);
+                                    this._isTransitioning = false;
                                 }
-                            } catch (error) {
-                                console.warn('⚠️ [AudioQueue] Error checking next status:', error);
-                            }
-                        }
-
-                        // Reset transition flag before continuing
-                        this._isTransitioning = false;
-
-                        // Fallback: normal transition
-                        this.playCurrent();
-                    }
-                });
-
-                // Start playback and measure gap from previous finish
-                try {
-                    const playStartTime = Date.now();
-
-                    if (this.currentIndex > 0 && this.lastTransitionTime > 0) {
-                        // Calculate REAL gap from last chunk finish to this chunk start
-                        const actualGap = playStartTime - this.lastTransitionTime;
-                        console.log(`⏱️ [AudioQueue] GAP: ${actualGap}ms (from previous finish to current start)`);
-
-                        if (actualGap > 50) {
-                            console.warn(`⚠️ [AudioQueue] LARGE GAP DETECTED: ${actualGap}ms`);
+                            }, triggerTime);
                         }
                     }
-
-                    await current.sound.playAsync();
-                    const playLatency = Date.now() - playStartTime;
-                    console.log(`🎵 [AudioQueue] playAsync() latency: ${playLatency}ms`);
-
-                    // NEW: Schedule cross-fade based on duration
-                    if (next) {
-                        const status = await current.sound.getStatusAsync();
-                        if (status.isLoaded && status.durationMillis) {
-                            const triggerTime = status.durationMillis - this.CROSSFADE_MS;
-
-                            if (triggerTime > 0) {
-                                console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms`);
-
-                                crossFadeTimeout = setTimeout(async () => {
-                                    // FIX: Check if already transitioning via didJustFinish
-                                    if (this._isTransitioning) {
-                                        console.log('⏭️ [AudioQueue] File already finished, skipping crossfade');
-                                        return;
-                                    }
-
-                                    // Set transition flag
-                                    this._isTransitioning = true;
-                                    crossFadeStarted = true;
-
-                                    console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade`);
-
-                                    try {
-                                        // Start fade-out of current + fade-in of next
-                                        const fadeSteps = 10;
-                                        const stepDuration = this.CROSSFADE_MS / fadeSteps;
-
-                                        // Start next chunk at volume 0
-                                        await next.sound.setVolumeAsync(0.0);
-                                        await next.sound.playAsync();
-                                        console.log(`▶️ [AudioQueue] Next chunk started at 0% volume`);
-
-                                        // Simultaneous fade
-                                        for (let i = 1; i <= fadeSteps; i++) {
-                                            const progress = i / fadeSteps;
-
-                                            // Fade current OUT, next IN
-                                            await Promise.all([
-                                                current.sound.setVolumeAsync(1.0 - progress),
-                                                next.sound.setVolumeAsync(progress)
-                                            ]);
-
-                                            if (i < fadeSteps) {
-                                                await new Promise(resolve => setTimeout(resolve, stepDuration));
-                                            }
-                                        }
-
-                                        console.log(`✨ [AudioQueue] Cross-fade complete!`);
-                                        crossFadeCompleted = true;
-
-                                        // Reset transition flag
-                                        this._isTransitioning = false;
-
-                                    } catch (error) {
-                                        console.error('❌ [AudioQueue] Cross-fade error:', error);
-                                        this._isTransitioning = false;
-                                    }
-                                }, triggerTime);
-                            }
-                        }
-                    }
-
-                } catch (error) {
-                    console.error('❌ [AudioQueue] Playback error:', error);
-
-                    // Cancel scheduled cross-fade
-                    if (crossFadeTimeout) {
-                        clearTimeout(crossFadeTimeout);
-                    }
-
-                    // Reset flags
-                    this._isTransitioning = false;
-
-                    this.currentIndex++;
-                    this.playCurrent();
                 }
-            } finally {
-                // Clear promise reference
+
+            } catch (error) {
+                console.error('❌ [AudioQueue] Playback error:', error);
+
+                // Cancel scheduled cross-fade
+                if (crossFadeTimeout) {
+                    clearTimeout(crossFadeTimeout);
+                }
+
+                // Reset flags
+                this._isTransitioning = false;
+
+                this.currentIndex++;
+
+                // FIX: Clear promise BEFORE recursive call
                 this.playCurrentPromise = null;
+
+                this.playCurrent();
             }
         })();
 

@@ -244,14 +244,27 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       historyBuffer.current.push({ role: 'assistant', content: text });
 
       if (player) {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
+          // FIX: Добавляем timeout для предотвращения вечного ожидания
+          const timeout = setTimeout(() => {
+            console.error('⏰ [Sync] Playback timeout (60s) - forcing resolve');
+            player.setOnPlaybackStatusUpdate(null);
+            reject(new Error('Playback timeout'));
+          }, 60000); // 60 секунд максимум
+
           player.setOnPlaybackStatusUpdate((status) => {
             if (status.isLoaded && status.didJustFinish) {
+              clearTimeout(timeout);
               player.setOnPlaybackStatusUpdate(null);
               resolve();
             }
           });
-          player.playAsync();
+
+          player.playAsync().catch((error) => {
+            clearTimeout(timeout);
+            console.error('❌ [Sync] playAsync error:', error);
+            reject(error);
+          });
         });
       }
 
@@ -265,15 +278,18 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         console.error(`⚠️ [TTS DEBUG] Expected: ~${text.length * 100}ms (100ms per char)`);
       }
 
+      console.log('✅ [Sync] Playback completed successfully');
+
     } catch (e) {
-      console.error("Sync Error:", e);
+      console.error("❌ Sync Error:", e);
       const ttsEnd = Date.now();
       const ttsDuration = ttsEnd - ttsStart;
       console.error(`❌ [TTS DEBUG] Failed after ${ttsDuration}ms`);
     } finally {
+      // FIX: ВСЕГДА вызываем onAIEnd в finally для разблокировки микрофона
       setIsProcessing(false);
-      // Notify audio hook that AI finished speaking
       onAIEnd?.();
+      console.log('✅ [Sync] Cleanup complete, onAIEnd called');
     }
   };
 

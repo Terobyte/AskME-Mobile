@@ -659,42 +659,83 @@ class TTSService {
         console.log('🌊 [TTS] Using streaming for prepareAudio...');
 
         try {
-          // Start streaming playback (plays immediately)
-          const streamingPromise = this.speakCartesiaStreaming(text, {
-            ...options,
-            autoPlay: true
-          });
+          // FIX: НЕ запускаем streaming сразу, создаем Promise для отложенного запуска
+          let streamingPromise: Promise<boolean> | null = null;
+          let isPlaybackStarted = false;
+          let statusCallback: ((status: any) => void) | null = null;
 
-          // Create a mock Sound object that resolves when streaming completes
           const mockSound = {
             playAsync: async () => {
-              console.log('🎵 [TTS Streaming Mock] Waiting for streaming completion...');
-              await streamingPromise;
-              console.log('✅ [TTS Streaming Mock] Playback complete');
-            },
-            setOnPlaybackStatusUpdate: (callback: any) => {
-              // Immediately trigger "finished" callback after streaming completes
-              streamingPromise.then(() => {
-                if (callback) {
-                  callback({
-                    isLoaded: true,
-                    didJustFinish: true,
-                    durationMillis: 0,
-                    positionMillis: 0
+              console.log('🎵 [TTS Streaming Mock] playAsync called');
+
+              // Запускаем streaming ТОЛЬКО при первом вызове playAsync
+              if (!isPlaybackStarted) {
+                isPlaybackStarted = true;
+                console.log('▶️ [TTS Streaming Mock] Starting streaming playback...');
+
+                try {
+                  streamingPromise = this.speakCartesiaStreaming(text, {
+                    ...options,
+                    autoPlay: true
                   });
+
+                  await streamingPromise;
+                  console.log('✅ [TTS Streaming Mock] Playback complete');
+
+                  // FIX: Вызываем callback СРАЗУ после завершения
+                  if (statusCallback) {
+                    console.log('📢 [TTS Streaming Mock] Triggering didJustFinish from playAsync');
+                    statusCallback({
+                      isLoaded: true,
+                      didJustFinish: true,
+                      durationMillis: 0,
+                      positionMillis: 0
+                    });
+                  }
+                } catch (error) {
+                  console.error('❌ [TTS Streaming Mock] Playback error:', error);
+
+                  // FIX: Вызываем callback даже при ошибке для предотвращения deadlock
+                  if (statusCallback) {
+                    console.log('📢 [TTS Streaming Mock] Triggering didJustFinish (error case)');
+                    statusCallback({
+                      isLoaded: true,
+                      didJustFinish: true,
+                      durationMillis: 0,
+                      positionMillis: 0
+                    });
+                  }
                 }
-              });
+              } else {
+                console.warn('⚠️ [TTS Streaming Mock] playAsync called multiple times, ignoring');
+              }
             },
+
+            setOnPlaybackStatusUpdate: (callback: any) => {
+              console.log('🔄 [TTS Streaming Mock] setOnPlaybackStatusUpdate called');
+
+              // FIX: Просто сохраняем callback, он будет вызван из playAsync
+              statusCallback = callback;
+            },
+
             stopAsync: async () => {
               console.log('🛑 [TTS Streaming Mock] Stop requested');
               await chunkedStreamingPlayer.stop();
+              isPlaybackStarted = false;
+              streamingPromise = null;
+              statusCallback = null;
             },
+
             unloadAsync: async () => {
-              console.log('🗑️ [TTS Streaming Mock] Unload (no-op)');
+              console.log('🗑️ [TTS Streaming Mock] Unload');
+              await chunkedStreamingPlayer.stop();
+              isPlaybackStarted = false;
+              streamingPromise = null;
+              statusCallback = null;
             }
           } as any as Audio.Sound;
 
-          console.log('✅ [TTS] Streaming mock Sound returned');
+          console.log('✅ [TTS] Streaming mock Sound created (playback deferred)');
           return mockSound;
 
         } catch (error) {

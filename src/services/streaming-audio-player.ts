@@ -1,15 +1,16 @@
 /**
- * Chunked Streaming Audio Player
+ * Chunked Streaming Audio Player with Gapless Playback
  * 
- * Implements "Chunked Files" strategy for streaming audio playback.
- * Creates multiple mini WAV files and plays them sequentially with preloading.
+ * Implements "Chunked Files" strategy with AudioQueue for seamless playback.
+ * Creates multiple mini WAV files and plays them with preloading for zero gaps.
  * 
  * Strategy:
  * - Accumulate 5-7 chunks (~200-300ms of audio)
  * - Create WAV file and save to cache
+ * - PRELOAD into AudioQueue (not playing yet)
  * - Play first file after minimum buffer
- * - Preload next file during playback
- * - Seamless transition between files
+ * - While playing chunk N, chunk N+1 is already loaded
+ * - Instant transition between chunks (< 10ms gap)
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
@@ -28,19 +29,285 @@ import {
 import { STREAMING_CONFIG } from '../config/streaming-config';
 
 /**
- * Chunked streaming player implementation
+ * Audio Queue for gapless playback
+ * Preloads next chunk while current chunk is playing
+ */
+class AudioQueue {
+    private queue: {
+        sound: Audio.Sound;
+        filepath: string;
+        isPreloaded: boolean;
+    }[] = [];
+
+    private currentIndex: number = 0;
+    private _isPlaying: boolean = false;
+    private lastTransitionTime: number = 0;
+    private completionPromise: Promise<void> | null = null;
+    private completionResolve: (() => void) | null = null;
+    // NEW: Cross-fade settings
+    private readonly CROSSFADE_MS = 50; // 50ms overlap (increased for reliability)
+
+    /**
+     * Enqueue a sound file (preload it)
+     */
+    async enqueue(filepath: string): Promise<void> {
+        console.log(`📦 [AudioQueue] Preloading: ${filepath}`);
+
+        const { sound } = await Audio.Sound.createAsync(
+            { uri: filepath },
+            { shouldPlay: false, volume: 1.0 }  // Don't play yet!
+        );
+
+        this.queue.push({
+            sound,
+            filepath,
+            isPreloaded: true
+        });
+
+        console.log(`✅ [AudioQueue] Enqueued (total: ${this.queue.length})`);
+    }
+
+    /**
+     * Start playback of the queue
+     */
+    async start(): Promise<void> {
+        if (this.queue.length === 0) {
+            console.warn('⚠️ [AudioQueue] Cannot start - queue is empty');
+            return;
+        }
+
+        if (this._isPlaying) {
+            console.warn('⚠️ [AudioQueue] Already playing');
+            return;
+        }
+
+        console.log('🎵 [AudioQueue] Starting playback queue...');
+        this._isPlaying = true;
+        this.currentIndex = 0;
+        this.lastTransitionTime = Date.now();
+
+        // Create completion promise
+        this.completionPromise = new Promise<void>((resolve) => {
+            this.completionResolve = resolve;
+        });
+
+        // Start playing current
+        await this.playCurrent();
+    }
+
+    /**
+     * Play current chunk with SCHEDULED volume-based cross-fade
+     */
+    private async playCurrent(): Promise<void> {
+        if (this.currentIndex >= this.queue.length) {
+            console.log('✅ [AudioQueue] Queue complete');
+            this._isPlaying = false;
+
+            if (this.completionResolve) {
+                this.completionResolve();
+            }
+
+            return;
+        }
+
+        const current = this.queue[this.currentIndex];
+        const next = this.queue[this.currentIndex + 1];
+
+        console.log(`🔊 [AudioQueue] Playing chunk ${this.currentIndex + 1}/${this.queue.length}`);
+
+        // Track if cross-fade was used
+        let crossFadeStarted = false;
+        let crossFadeTimeout: NodeJS.Timeout | null = null;
+
+        // Setup completion handler
+        current.sound.setOnPlaybackStatusUpdate(async (status) => {
+            if (!status.isLoaded) return;
+
+            if (status.didJustFinish) {
+                const finishTime = Date.now();
+
+                // Cancel scheduled cross-fade if exists
+                if (crossFadeTimeout) {
+                    clearTimeout(crossFadeTimeout);
+                }
+
+                // Calculate time since this chunk started
+                const chunkDuration = finishTime - this.lastTransitionTime;
+                console.log(`✅ [AudioQueue] Chunk ${this.currentIndex + 1} finished (duration: ${chunkDuration}ms)`);
+
+                // UPDATE lastTransitionTime HERE (when chunk finishes)
+                this.lastTransitionTime = finishTime;
+
+                // Clear handler
+                current.sound.setOnPlaybackStatusUpdate(null);
+
+                // Move to next IMMEDIATELY
+                this.currentIndex++;
+
+                // If next is already playing from cross-fade, just continue
+                if (next && crossFadeStarted) {
+                    try {
+                        const nextStatus = await next.sound.getStatusAsync();
+                        if (nextStatus.isLoaded && nextStatus.isPlaying) {
+                            console.log(`🎵 [AudioQueue] Seamless transition via cross-fade`);
+                            // Ensure full volume
+                            await next.sound.setVolumeAsync(1.0);
+                            // Continue to next
+                            this.playCurrent();
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn('⚠️ [AudioQueue] Error checking next status:', error);
+                    }
+                }
+
+                // Fallback: normal transition
+                this.playCurrent();
+            }
+        });
+
+        // Start playback and measure gap from previous finish
+        try {
+            const playStartTime = Date.now();
+
+            if (this.currentIndex > 0 && this.lastTransitionTime > 0) {
+                // Calculate REAL gap from last chunk finish to this chunk start
+                const actualGap = playStartTime - this.lastTransitionTime;
+                console.log(`⏱️ [AudioQueue] GAP: ${actualGap}ms (from previous finish to current start)`);
+
+                if (actualGap > 50) {
+                    console.warn(`⚠️ [AudioQueue] LARGE GAP DETECTED: ${actualGap}ms`);
+                }
+            }
+
+            await current.sound.playAsync();
+            const playLatency = Date.now() - playStartTime;
+            console.log(`🎵 [AudioQueue] playAsync() latency: ${playLatency}ms`);
+
+            // NEW: Schedule cross-fade based on duration
+            if (next) {
+                const status = await current.sound.getStatusAsync();
+                if (status.isLoaded && status.durationMillis) {
+                    const triggerTime = status.durationMillis - this.CROSSFADE_MS;
+
+                    if (triggerTime > 0) {
+                        console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms`);
+
+                        crossFadeTimeout = setTimeout(async () => {
+                            if (!crossFadeStarted) {
+                                crossFadeStarted = true;
+                                console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade`);
+
+                                try {
+                                    // Start fade-out of current + fade-in of next
+                                    const fadeSteps = 10;
+                                    const stepDuration = this.CROSSFADE_MS / fadeSteps;
+
+                                    // Start next chunk at volume 0
+                                    await next.sound.setVolumeAsync(0.0);
+                                    await next.sound.playAsync();
+                                    console.log(`▶️ [AudioQueue] Next chunk started at 0% volume`);
+
+                                    // Simultaneous fade
+                                    for (let i = 1; i <= fadeSteps; i++) {
+                                        const progress = i / fadeSteps;
+
+                                        // Fade current OUT, next IN
+                                        await Promise.all([
+                                            current.sound.setVolumeAsync(1.0 - progress),
+                                            next.sound.setVolumeAsync(progress)
+                                        ]);
+
+                                        if (i < fadeSteps) {
+                                            await new Promise(resolve => setTimeout(resolve, stepDuration));
+                                        }
+                                    }
+
+                                    console.log(`✨ [AudioQueue] Cross-fade complete!`);
+                                } catch (error) {
+                                    console.error('❌ [AudioQueue] Cross-fade error:', error);
+                                }
+                            }
+                        }, triggerTime);
+                    }
+                }
+            }
+
+        } catch (error) {
+            console.error('❌ [AudioQueue] Playback error:', error);
+
+            // Cancel scheduled cross-fade
+            if (crossFadeTimeout) {
+                clearTimeout(crossFadeTimeout);
+            }
+
+            this.currentIndex++;
+            this.playCurrent();
+        }
+    }
+
+    /**
+     * Wait for queue to complete
+     */
+    async waitForCompletion(): Promise<void> {
+        if (this.completionPromise) {
+            await this.completionPromise;
+        }
+    }
+
+    /**
+     * Stop and cleanup
+     */
+    async stop(): Promise<void> {
+        console.log('🛑 [AudioQueue] Stopping...');
+        this._isPlaying = false;
+
+        for (const item of this.queue) {
+            try {
+                await item.sound.stopAsync();
+                await item.sound.unloadAsync();
+            } catch (error) {
+                // Ignore
+            }
+        }
+
+        this.queue = [];
+        this.currentIndex = 0;
+
+        if (this.completionResolve) {
+            this.completionResolve();
+        }
+
+        console.log('✅ [AudioQueue] Stopped and cleaned');
+    }
+
+    /**
+     * Check if playing
+     */
+    get isPlaying(): boolean {
+        return this._isPlaying;
+    }
+
+    /**
+     * Get queue length
+     */
+    get length(): number {
+        return this.queue.length;
+    }
+}
+
+/**
+ * Chunked streaming player implementation with gapless playback
  */
 class ChunkedStreamingPlayer {
     private state: StreamingPlayerState = 'idle';
     private chunkFiles: string[] = [];
-    private currentSound: Audio.Sound | null = null;
-    private playbackPromise: Promise<void> | null = null;
+    private audioQueue: AudioQueue = new AudioQueue();
     private config: StreamingPlayerConfig;
     private metrics: Partial<StreamingMetrics>;
 
     // Tuning parameters
     private readonly CHUNKS_PER_FILE = 5; // ~200-250ms per file at 16kHz
-    private readonly MAX_QUEUE_SIZE = 10; // Max files in queue
 
     constructor(config?: Partial<StreamingPlayerConfig>) {
         this.config = {
@@ -70,20 +337,19 @@ class ChunkedStreamingPlayer {
     }
 
     /**
-     * Play audio stream from AsyncGenerator
+     * Play audio stream from AsyncGenerator with gapless playback
      */
     async playStream(
         chunkGenerator: AsyncGenerator<AudioChunk, void, unknown>
     ): Promise<void> {
-        console.log('🎵 [Chunked Player] Starting playback...');
+        console.log('🎵 [Chunked Player] Starting playback with gapless preloading...');
         this.state = 'buffering';
         this.metrics = this.createEmptyMetrics();
         this.metrics.generationStart = Date.now();
 
         let accumulatedChunks: AudioChunk[] = [];
         let fileIndex = 0;
-        let isFirstFile = true;
-        let playbackQueue: Promise<void>[] = [];
+        let playbackStarted = false;
 
         try {
             // Set audio mode for playback
@@ -118,8 +384,11 @@ class ChunkedStreamingPlayer {
 
                     console.log(`📦 [Chunked Player] Created file #${fileIndex}: ${duration.toFixed(0)}ms`);
 
-                    // Play first file immediately after min buffer
-                    if (isFirstFile) {
+                    // PRELOAD into queue (не играем сразу!)
+                    await this.audioQueue.enqueue(filepath);
+
+                    // Start playback after min buffer
+                    if (!playbackStarted) {
                         const bufferDuration = calculateAudioDuration(
                             accumulatedChunks.reduce((sum, c) => sum + c.sizeBytes, 0)
                         );
@@ -129,11 +398,10 @@ class ChunkedStreamingPlayer {
                             this.state = 'playing';
                             this.metrics.firstPlayTime = Date.now();
 
-                            // Start playing first file
-                            const playPromise = this.playFileSequence();
-                            playbackQueue.push(playPromise);
+                            // START QUEUE PLAYBACK
+                            await this.audioQueue.start();
 
-                            isFirstFile = false;
+                            playbackStarted = true;
                         }
                     }
 
@@ -146,20 +414,21 @@ class ChunkedStreamingPlayer {
                 const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
                 console.log(`📦 [Chunked Player] Created final file`);
 
-                if (isFirstFile) {
+                await this.audioQueue.enqueue(filepath);
+
+                if (!playbackStarted) {
                     this.state = 'playing';
                     this.metrics.firstPlayTime = Date.now();
-                    const playPromise = this.playFileSequence();
-                    playbackQueue.push(playPromise);
+                    await this.audioQueue.start();
                 }
             }
 
-            // Wait for all playback to complete
-            console.log(`⏳ [Chunked Player] Waiting for playback completion (${this.chunkFiles.length} files)...`);
-            await Promise.all(playbackQueue);
+            // Wait for queue to complete
+            console.log(`⏳ [Chunked Player] Waiting for playback completion (${this.audioQueue.length} files)...`);
+            await this.audioQueue.waitForCompletion();
 
             this.state = 'completed';
-            console.log('✅ [Chunked Player] Playback completed');
+            console.log('✅ [Chunked Player] Playback completed (gapless!)');
             this.logStats();
 
         } catch (error) {
@@ -194,98 +463,14 @@ class ChunkedStreamingPlayer {
     }
 
     /**
-     * Play files sequentially
-     */
-    private async playFileSequence(): Promise<void> {
-        let currentIndex = 0;
-
-        while (currentIndex < this.chunkFiles.length || this.state === 'buffering') {
-            // Wait for next file if still buffering
-            while (currentIndex >= this.chunkFiles.length && this.state === 'buffering') {
-                await new Promise(resolve => setTimeout(resolve, 50));
-            }
-
-            // Check if we have a file to play
-            if (currentIndex < this.chunkFiles.length) {
-                const filepath = this.chunkFiles[currentIndex];
-
-                try {
-                    await this.playFile(filepath);
-                    currentIndex++;
-                } catch (error) {
-                    console.error(`❌ [Chunked Player] Error playing file ${currentIndex}:`, error);
-                    // Continue to next file
-                    currentIndex++;
-                }
-            } else {
-                // No more files and not buffering, we're done
-                break;
-            }
-        }
-    }
-
-    /**
-     * Play a single file and wait for completion
-     */
-    private async playFile(filepath: string): Promise<void> {
-        return new Promise(async (resolve, reject) => {
-            try {
-                console.log(`🔊 [Chunked Player] Playing: ${filepath}`);
-
-                const { sound } = await Audio.Sound.createAsync(
-                    { uri: filepath },
-                    { shouldPlay: true, volume: 1.0 }
-                );
-
-                this.currentSound = sound;
-
-                // Wait for playback to complete
-                sound.setOnPlaybackStatusUpdate((status) => {
-                    if (!status.isLoaded) {
-                        return;
-                    }
-
-                    if (status.didJustFinish) {
-                        console.log(`✅ [Chunked Player] File finished`);
-                        sound.unloadAsync();
-                        this.currentSound = null;
-                        resolve();
-                    }
-                });
-
-                // Timeout safeguard (5 seconds)
-                setTimeout(() => {
-                    if (this.currentSound === sound) {
-                        console.warn('⚠️ [Chunked Player] Playback timeout, forcing completion');
-                        sound.unloadAsync();
-                        this.currentSound = null;
-                        resolve();
-                    }
-                }, 5000);
-
-            } catch (error) {
-                console.error('❌ [Chunked Player] Play file error:', error);
-                reject(error);
-            }
-        });
-    }
-
-    /**
      * Stop playback
      */
     async stop(): Promise<void> {
         console.log('🛑 [Chunked Player] Stopping...');
         this.state = 'idle';
 
-        if (this.currentSound) {
-            try {
-                await this.currentSound.stopAsync();
-                await this.currentSound.unloadAsync();
-            } catch (error) {
-                console.error('❌ [Chunked Player] Stop error:', error);
-            }
-            this.currentSound = null;
-        }
+        // Stop audio queue
+        await this.audioQueue.stop();
 
         await this.cleanup();
     }
@@ -296,15 +481,8 @@ class ChunkedStreamingPlayer {
     private async cleanup(): Promise<void> {
         console.log(`🧹 [Chunked Player] Cleaning up ${this.chunkFiles.length} files...`);
 
-        // Unload any active sound
-        if (this.currentSound) {
-            try {
-                await this.currentSound.unloadAsync();
-            } catch (error) {
-                // Ignore
-            }
-            this.currentSound = null;
-        }
+        // Stop audio queue
+        await this.audioQueue.stop();
 
         // Delete temporary files
         for (const filepath of this.chunkFiles) {

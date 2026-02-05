@@ -525,13 +525,18 @@ class TTSService {
       this.isStreaming = true;
 
       // Store context for reference
-      let streamContextId: string | null = null;
+      // Play the stream
+      this.isStreaming = true;
 
       if (options?.autoPlay !== false) {
-        // Extract contextId from timestamps storage (last entry)
-        // NOTE: This is a workaround - ideally generateAudioStream should return contextId
-        const timestampKeys = Array.from((cartesiaStreamingService as any).timestampsStorage?.keys() || []);
-        streamContextId = timestampKeys[timestampKeys.length - 1] || null;
+        await chunkedStreamingPlayer.playStream(chunkGenerator, {
+          originalText: text,
+          enableSentenceChunking: true
+        });
+        console.log('✅ [TTS Streaming] Playback complete');
+      }
+
+      this.isStreaming = false;
 
         await chunkedStreamingPlayer.playStream(chunkGenerator, {
           originalText: text,

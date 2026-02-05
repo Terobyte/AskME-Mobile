@@ -59,15 +59,14 @@ TRANSITION:
 
 ## 📋 ПОШАГОВЫЙ ПЛАН РЕАЛИЗАЦИИ
 
-### ✅ **CHECKPOINT 0: Подготовка** (10 мин)
+### ✅ **CHECKPOINT 0: Подготовка** (10 мин) - **COMPLETE**
 
 **Цель:** Увеличить размер чанков для текущей версии как временное улучшение.
 
 **Действия:**
-- [ ] Увеличить `CHUNKS_PER_FILE` с 12 до 18 в `streaming-audio-player.ts`
-- [ ] Увеличить `CROSSFADE_MS` до 120ms
-- [ ] Тестировать: проверить что артефакты стали реже
-- [ ] Git commit: "temp: increase chunk size to 18 for better sentence coverage"
+- [x] Увеличить `CHUNKS_PER_FILE` с 12 до 25 в `streaming-audio-player.ts`
+- [x] Увеличить `CROSSFADE_MS` до 120ms
+- [x] Git commit: "checkpoint 0: increase CHUNKS_PER_FILE to 25 (~1250ms coverage)"
 
 **Файлы:**
 - `src/services/streaming-audio-player.ts`

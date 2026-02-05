@@ -1,16 +1,28 @@
 /**
- * Chunked Streaming Audio Player with Gapless Playback
+ * Sentence-Aware Streaming Audio Player with Gapless Playback
  * 
- * Implements "Chunked Files" strategy with AudioQueue for seamless playback.
- * Creates multiple mini WAV files and plays them with preloading for zero gaps.
+ * Implements hybrid chunking strategy for zero artifacts and low latency:
  * 
- * Strategy:
- * - Accumulate 5-7 chunks (~200-300ms of audio)
- * - Create WAV file and save to cache
- * - PRELOAD into AudioQueue (not playing yet)
- * - Play first file after minimum buffer
- * - While playing chunk N, chunk N+1 is already loaded
- * - Instant transition between chunks (< 10ms gap)
+ * **FAST_START Mode (first ~1.6s):**
+ * - Fixed-size chunks (25 chunks ~1250ms each)
+ * - Low latency playback start (< 200ms)
+ * - 2 files for initial buffer
+ * 
+ * **SENTENCE_MODE (main playback):**
+ * - Dynamic file creation on sentence boundaries (. ! ?)
+ * - Real-time timestamp processing from Cartesia API
+ * - Min duration: 500ms, Max: 2.5s
+ * - Sub-sentence splitting for long sentences (commas, semicolons)
+ * 
+ * **FALLBACK Mode (no timestamps):**
+ * - Large fixed chunks (~1s) as safety fallback
+ * 
+ * **Features:**
+ * - Gapless playback with AudioQueue preloading
+ * - 120ms crossfade between files
+ * - Automatic mode switching based on timestamp availability
+ * - Real-time sentence boundary detection
+ * - Zero mid-sentence artifacts
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
@@ -664,11 +676,6 @@ class ChunkedStreamingPlayer {
             console.log(`  Sentences processed: ${this.lastProcessedTimestampIndex} words`);
 
             this.logStats();
-
-            // NEW: Attempt sentence re-chunking (if enabled and have context)
-            if (enableSentenceChunking && this.currentContextId) {
-                await this.attemptSentenceRechunking();
-            }
 
         } catch (error) {
             console.error('❌ [Chunked Player] Playback error:', error);

@@ -453,6 +453,7 @@ export interface CartesiaStreamingOptions {
   onComplete?: () => void;
   onError?: (error: Error) => void;
   onFirstChunk?: (latency: number) => void;
+  onTimestampsReceived?: (timestamps: WordTimestamp[]) => void;  // PHASE 2: Real-time timestamps
 }
 
 /**

@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
-import { TTSProvider, OpenAIVoice } from '../types';
+import { TTSProvider, OpenAIVoice, WordTimestamp } from '../types';  // PHASE 2: Added WordTimestamp
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { cartesiaStreamingService } from './cartesia-streaming-service';
 import { chunkedStreamingPlayer } from './streaming-audio-player';
@@ -518,17 +518,35 @@ class TTSService {
         },
         onComplete: () => {
           console.log('✅ [TTS Streaming] Generation complete');
-        }
+        },
+        // PHASE 2: Will be connected below
+        onTimestampsReceived: undefined as any
       });
 
       // Play the stream with sentence chunking
       this.isStreaming = true;
 
       if (options?.autoPlay !== false) {
-        await chunkedStreamingPlayer.playStream(chunkGenerator, {
+        // PHASE 2: Create shared handler variable
+        let playerTimestampHandler: ((timestamps: WordTimestamp[]) => void) | undefined;
+
+        const playPromise = chunkedStreamingPlayer.playStream(chunkGenerator, {
           originalText: text,
-          enableSentenceChunking: true
+          enableSentenceChunking: true,
+          // PHASE 2: Receive handler from player
+          onTimestampsReceived: (handler) => {
+            playerTimestampHandler = handler;
+          }
         });
+
+        // PHASE 2: Wire up Cartesia → Player connection
+        // Note: This is a workaround - ideally the generator would handle this
+        const cartesiaOptions = (chunkGenerator as any)._options;
+        if (cartesiaOptions && playerTimestampHandler) {
+          cartesiaOptions.onTimestampsReceived = playerTimestampHandler;
+        }
+
+        await playPromise;
         console.log('✅ [TTS Streaming] Playback complete');
       }
 

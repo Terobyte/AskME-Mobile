@@ -377,6 +377,7 @@ class ChunkedStreamingPlayer {
             originalText?: string;
             contextId?: string;
             enableSentenceChunking?: boolean;
+            onTimestampsReceived?: (timestamps: WordTimestamp[]) => void;  // PHASE 2: Real-time timestamps
         }
     ): Promise<void> {
         console.log('🎵 [Chunked Player] Starting playback with gapless preloading...');
@@ -395,6 +396,30 @@ class ChunkedStreamingPlayer {
 
         // Reset accumulation
         this.accumulatedPcmData = [];
+
+        // PHASE 2: Setup timestamp reception handler
+        const onTimestampsReceived = (timestamps: WordTimestamp[]) => {
+            console.log(`📝 [Player] Received ${timestamps.length} timestamps`);
+
+            // Accumulate timestamps
+            this.incomingTimestamps.push(...timestamps);
+            this.hasReceivedTimestamps = true;
+
+            console.log(`   Total timestamps: ${this.incomingTimestamps.length} words`);
+            console.log(`   Mode: ${this.chunkingMode}, Fast-start files: ${this.fastStartFilesCreated}`);
+
+            // Trigger mode switch if ready (after 2 fast-start files)
+            if (this.chunkingMode === ChunkingMode.FAST_START &&
+                this.fastStartFilesCreated >= 2) {
+                this.switchToSentenceMode();
+            }
+        };
+
+        // PHASE 2: Provide the handler back via callback (so TTS service can connect it)
+        if (options?.onTimestampsReceived && enableSentenceChunking) {
+            // Store our handler for TTS service to call
+            (options as any)._timestampHandler = onTimestampsReceived;
+        }
 
         let accumulatedChunks: AudioChunk[] = [];
         let fileIndex = 0;

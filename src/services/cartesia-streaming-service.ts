@@ -375,6 +375,12 @@ class CartesiaStreamingService {
 
                 console.log(`📝 [Cartesia WS] Sample timestamps:`, wordTimestamps.slice(0, 3));
                 console.log(`📝 [Cartesia WS] Total duration: ${wordTimestamps[wordTimestamps.length - 1]?.end}s`);
+
+                // PHASE 2: Call real-time callback immediately
+                if (options.onTimestampsReceived) {
+                    options.onTimestampsReceived(wordTimestamps);
+                    console.log(`✅ [Cartesia WS] Timestamps delivered to player`);
+                }
             }
 
             // Handle completion

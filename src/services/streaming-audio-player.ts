@@ -317,7 +317,7 @@ class ChunkedStreamingPlayer {
     private originalText: string = '';
 
     // Tuning parameters (CHECKPOINT 0: increased for better sentence coverage)
-    private readonly CHUNKS_PER_FILE = 18; // ~900ms per file at 16kHz
+    private readonly CHUNKS_PER_FILE = 25; // ~1250ms per file at 16kHz
     private readonly USE_SENTENCE_CHUNKING = true; // Feature flag
 
     constructor(config?: Partial<StreamingPlayerConfig>) {

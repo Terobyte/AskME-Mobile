@@ -519,34 +519,20 @@ class TTSService {
         onComplete: () => {
           console.log('✅ [TTS Streaming] Generation complete');
         },
-        // PHASE 2: Will be connected below
-        onTimestampsReceived: undefined as any
+        // PHASE 2: Forward timestamps directly to player
+        onTimestampsReceived: (timestamps) => {
+          chunkedStreamingPlayer.receiveTimestamps(timestamps);
+        }
       });
 
       // Play the stream with sentence chunking
       this.isStreaming = true;
 
       if (options?.autoPlay !== false) {
-        // PHASE 2: Create shared handler variable
-        let playerTimestampHandler: ((timestamps: WordTimestamp[]) => void) | undefined;
-
-        const playPromise = chunkedStreamingPlayer.playStream(chunkGenerator, {
+        await chunkedStreamingPlayer.playStream(chunkGenerator, {
           originalText: text,
-          enableSentenceChunking: true,
-          // PHASE 2: Receive handler from player
-          onTimestampsReceived: (handler) => {
-            playerTimestampHandler = handler;
-          }
+          enableSentenceChunking: true
         });
-
-        // PHASE 2: Wire up Cartesia → Player connection
-        // Note: This is a workaround - ideally the generator would handle this
-        const cartesiaOptions = (chunkGenerator as any)._options;
-        if (cartesiaOptions && playerTimestampHandler) {
-          cartesiaOptions.onTimestampsReceived = playerTimestampHandler;
-        }
-
-        await playPromise;
         console.log('✅ [TTS Streaming] Playback complete');
       }
 

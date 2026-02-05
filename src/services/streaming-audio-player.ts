@@ -50,7 +50,7 @@ class AudioQueue {
     private completionPromise: Promise<void> | null = null;
     private completionResolve: (() => void) | null = null;
     // NEW: Cross-fade settings
-    private readonly CROSSFADE_MS = 50; // 50ms overlap (increased for reliability)
+    private readonly CROSSFADE_MS = 100; // 100ms overlap for smoother transitions with longer chunks
 
     /**
      * Enqueue a sound file (preload it)
@@ -317,7 +317,7 @@ class ChunkedStreamingPlayer {
     private originalText: string = '';
 
     // Tuning parameters
-    private readonly CHUNKS_PER_FILE = 5; // ~200-250ms per file at 16kHz
+    private readonly CHUNKS_PER_FILE = 12; // ~600ms per file at 16kHz (reduces mid-sentence breaks)
     private readonly USE_SENTENCE_CHUNKING = true; // Feature flag
 
     constructor(config?: Partial<StreamingPlayerConfig>) {

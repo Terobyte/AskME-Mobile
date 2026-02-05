@@ -521,26 +521,12 @@ class TTSService {
         }
       });
 
-      // Play the stream WITH sentence chunking context
-      this.isStreaming = true;
-
-      // Store context for reference
-      // Play the stream
+      // Play the stream with sentence chunking
       this.isStreaming = true;
 
       if (options?.autoPlay !== false) {
         await chunkedStreamingPlayer.playStream(chunkGenerator, {
           originalText: text,
-          enableSentenceChunking: true
-        });
-        console.log('✅ [TTS Streaming] Playback complete');
-      }
-
-      this.isStreaming = false;
-
-        await chunkedStreamingPlayer.playStream(chunkGenerator, {
-          originalText: text,
-          contextId: streamContextId,
           enableSentenceChunking: true
         });
         console.log('✅ [TTS Streaming] Playback complete');

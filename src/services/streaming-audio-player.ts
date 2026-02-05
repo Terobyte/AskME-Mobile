@@ -452,7 +452,7 @@ class ChunkedStreamingPlayer {
                 shouldDuckAndroid: true,
             });
 
-            // Process chunks from generator
+            // PHASE 4: Process chunks with adaptive mode-based chunking
             for await (const chunk of chunkGenerator) {
                 this.metrics.totalChunks = (this.metrics.totalChunks || 0) + 1;
                 this.metrics.totalBytes = (this.metrics.totalBytes || 0) + chunk.sizeBytes;
@@ -464,46 +464,106 @@ class ChunkedStreamingPlayer {
                     console.log(`🎯 [Chunked Player] First chunk in ${latency}ms`);
                 }
 
-                // NEW: Accumulate PCM data for sentence chunking
+                // Accumulate PCM data for sentence chunking
                 if (enableSentenceChunking) {
                     this.accumulatedPcmData.push(chunk.data);
                 }
 
                 accumulatedChunks.push(chunk);
 
-                // Create file when we have enough chunks
-                if (accumulatedChunks.length >= this.CHUNKS_PER_FILE) {
-                    const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
-                    fileIndex++;
+                // Track audio duration
+                const chunkDuration = calculateAudioDuration(chunk.sizeBytes);
+                this.totalAudioDurationMs += chunkDuration;
 
-                    const duration = calculateAudioDuration(
-                        accumulatedChunks.reduce((sum, c) => sum + c.sizeBytes, 0)
-                    );
+                // --- FAST_START MODE: Fixed-size chunks for low latency ---
+                if (this.chunkingMode === ChunkingMode.FAST_START) {
+                    if (accumulatedChunks.length >= this.CHUNKS_PER_FILE) {
+                        const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                        fileIndex++;
+                        this.fastStartFilesCreated++;
 
-                    console.log(`📦 [Chunked Player] Created file #${fileIndex}: ${duration.toFixed(0)}ms`);
-
-                    // PRELOAD into queue (не играем сразу!)
-                    await this.audioQueue.enqueue(filepath);
-
-                    // Start playback after min buffer
-                    if (!playbackStarted) {
-                        const bufferDuration = calculateAudioDuration(
+                        const duration = calculateAudioDuration(
                             accumulatedChunks.reduce((sum, c) => sum + c.sizeBytes, 0)
                         );
 
-                        if (bufferDuration >= this.config.minBufferMs) {
-                            console.log(`✅ [Chunked Player] Min buffer reached (${bufferDuration.toFixed(0)}ms)`);
+                        console.log(`📦 [FAST_START] File #${fileIndex}: ${duration.toFixed(0)}ms (${this.fastStartFilesCreated}/2)`);
+
+                        await this.audioQueue.enqueue(filepath);
+
+                        // Start playback after first file
+                        if (!playbackStarted) {
+                            console.log(`✅ [Player] Starting playback (latency: ${Date.now() - (this.metrics.generationStart || 0)}ms)`);
                             this.state = 'playing';
                             this.metrics.firstPlayTime = Date.now();
-
-                            // START QUEUE PLAYBACK
                             await this.audioQueue.start();
-
                             playbackStarted = true;
                         }
-                    }
 
-                    accumulatedChunks = [];
+                        accumulatedChunks = [];
+                        this.totalAudioDurationMs = 0;
+
+                        // Switch to SENTENCE_MODE after 2 fast-start files
+                        if (this.fastStartFilesCreated >= 2 && this.hasReceivedTimestamps) {
+                            this.switchToSentenceMode();
+                        }
+                    }
+                }
+
+                // --- SENTENCE MODE: Create files on sentence boundaries ---
+                else if (this.chunkingMode === ChunkingMode.SENTENCE_MODE) {
+                    // Check for completed sentences
+                    const boundaries = SentenceDetector.findCompletedSentences(
+                        this.incomingTimestamps,
+                        this.lastProcessedTimestampIndex
+                    );
+
+                    if (boundaries.length > 0) {
+                        const lastBoundary = boundaries[boundaries.length - 1];
+
+                        // Create file if we have enough audio (min 500ms)
+                        if (this.totalAudioDurationMs >= 500) {
+                            const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                            fileIndex++;
+
+                            console.log(`📦 [SENTENCE] File #${fileIndex}: "${lastBoundary.sentence.substring(0, 40)}..." (${this.totalAudioDurationMs.toFixed(0)}ms)`);
+
+                            await this.audioQueue.enqueue(filepath);
+
+                            // Reset for next sentence
+                            accumulatedChunks = [];
+                            this.totalAudioDurationMs = 0;
+                            this.lastProcessedTimestampIndex = lastBoundary.wordIndex + 1;
+                        }
+                    }
+                    // Force flush if accumulated too much (max 2.5s)
+                    else if (this.totalAudioDurationMs >= 2500) {
+                        console.warn(`⚠️ [SENTENCE] Force flush (max duration: ${this.totalAudioDurationMs.toFixed(0)}ms)`);
+
+                        const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                        fileIndex++;
+
+                        await this.audioQueue.enqueue(filepath);
+
+                        accumulatedChunks = [];
+                        this.totalAudioDurationMs = 0;
+                    }
+                }
+
+                // --- FALLBACK MODE: Large fixed chunks (no timestamps) ---
+                else if (this.chunkingMode === ChunkingMode.FALLBACK) {
+                    const FALLBACK_CHUNKS = 20; // ~1 second
+
+                    if (accumulatedChunks.length >= FALLBACK_CHUNKS) {
+                        const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                        fileIndex++;
+
+                        console.log(`📦 [FALLBACK] File #${fileIndex}: ${this.totalAudioDurationMs.toFixed(0)}ms`);
+
+                        await this.audioQueue.enqueue(filepath);
+
+                        accumulatedChunks = [];
+                        this.totalAudioDurationMs = 0;
+                    }
                 }
             }
 

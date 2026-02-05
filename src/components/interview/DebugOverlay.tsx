@@ -446,14 +446,16 @@ const styles = StyleSheet.create({
     modalBackground: {
         flex: 1,
         backgroundColor: 'rgba(0, 0, 0, 0.5)',
-        justifyContent: 'flex-end',
+        justifyContent: 'center',
+        alignItems: 'center',
     },
     debugOverlay: {
         backgroundColor: '#1C1C1E',
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
-        padding: 20,
-        maxHeight: '80%',
+        padding: 14,  // COMPACT: 20 → 14
+        maxHeight: '90%',  // COMPACT: 85% → 90%
+        width: '92%',  // COMPACT: Added width
         shadowColor: '#000',
         shadowOffset: { width: 0, height: -5 },
         shadowOpacity: 0.3,
@@ -464,32 +466,32 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 20,
+        marginBottom: 12,  // COMPACT: 20 → 12
     },
     debugTitle: {
         color: '#FFF',
-        fontSize: 18,
+        fontSize: 16,  // COMPACT: 18 → 16
         fontWeight: 'bold',
-        letterSpacing: 1,
+        letterSpacing: 0.8,  // COMPACT: 1 → 0.8
     },
     // PHASE 2.3: Tap indicator style
     tapIndicator: {
-        fontSize: 12,
+        fontSize: 11,  // COMPACT: 12 → 11
         color: '#FF9F0A',
         fontWeight: 'bold',
-        paddingHorizontal: 8,
-        paddingVertical: 3,
+        paddingHorizontal: 6,  // COMPACT: 8 → 6
+        paddingVertical: 2,  // COMPACT: 3 → 2
         backgroundColor: 'rgba(255, 159, 10, 0.15)',
-        borderRadius: 6,
+        borderRadius: 4,  // COMPACT: 6 → 4
     },
     debugSection: {
-        marginBottom: 20,
+        marginBottom: 12,  // COMPACT: 20 → 12
     },
     debugLabel: {
         color: '#8E8E93',
-        fontSize: 12,
+        fontSize: 10,  // COMPACT: 12 → 10
         fontWeight: '600',
-        marginBottom: 10,
+        marginBottom: 6,  // COMPACT: 10 → 6
         textTransform: 'uppercase',
     },
     debugRow: {
@@ -552,30 +554,30 @@ const styles = StyleSheet.create({
 
     // NEW: Vibe section styles
     vibeSection: {
-        marginBottom: 16,
-        padding: 12,
+        marginBottom: 10,  // COMPACT: 16 → 10
+        padding: 8,  // COMPACT: 12 → 8
         backgroundColor: 'rgba(100, 100, 255, 0.08)',
-        borderRadius: 10,
+        borderRadius: 8,  // COMPACT: 10 → 8
         borderWidth: 1,
         borderColor: 'rgba(100, 100, 255, 0.25)',
     },
     vibeSectionTitle: {
-        fontSize: 15,
+        fontSize: 13,  // COMPACT: 15 → 13
         fontWeight: '700',
         color: '#FFFFFF',
-        marginBottom: 10,
-        letterSpacing: 0.5,
+        marginBottom: 6,  // COMPACT: 10 → 6
+        letterSpacing: 0.3,  // COMPACT: 0.5 → 0.3
     },
     vibeCard: {
-        padding: 12,
+        padding: 8,  // COMPACT: 12 → 8
         backgroundColor: 'rgba(0, 0, 0, 0.35)',
-        borderRadius: 8,
+        borderRadius: 6,  // COMPACT: 8 → 6
     },
     vibeHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 8,
+        marginBottom: 6,  // COMPACT: 8 → 6
     },
     vibeLabel: {
         fontSize: 20,
@@ -646,25 +648,25 @@ const styles = StyleSheet.create({
 
     // NEW: Live Metrics Section Styles
     liveMetricsSection: {
-        marginBottom: 20,
-        padding: 16,
+        marginBottom: 12,  // COMPACT: 20 → 12
+        padding: 10,  // COMPACT: 16 → 10
         backgroundColor: 'rgba(16, 185, 129, 0.08)',
-        borderRadius: 12,
+        borderRadius: 10,  // COMPACT: 12 → 10
         borderWidth: 1,
         borderColor: 'rgba(16, 185, 129, 0.25)',
     },
     sectionTitle: {
-        fontSize: 13,
+        fontSize: 11,  // COMPACT: 13 → 11
         fontWeight: '700',
         color: '#10B981',
-        marginBottom: 12,
-        letterSpacing: 1.5,
+        marginBottom: 8,  // COMPACT: 12 → 8
+        letterSpacing: 1.2,  // COMPACT: 1.5 → 1.2
     },
     topicCard: {
         backgroundColor: 'rgba(0, 0, 0, 0.3)',
-        padding: 12,
-        borderRadius: 8,
-        marginBottom: 16,
+        padding: 8,  // COMPACT: 12 → 8
+        borderRadius: 6,  // COMPACT: 8 → 6
+        marginBottom: 10,  // COMPACT: 16 → 10
     },
     topicNumber: {
         fontSize: 11,
@@ -673,21 +675,21 @@ const styles = StyleSheet.create({
         marginBottom: 4,
     },
     topicName: {
-        fontSize: 16,
+        fontSize: 14,  // COMPACT: 16 → 14
         color: '#FFFFFF',
         fontWeight: 'bold',
-        lineHeight: 22,
+        lineHeight: 18,  // COMPACT: 22 → 18
     },
     progressSection: {
-        marginBottom: 16,
+        marginBottom: 10,  // COMPACT: 16 → 10
     },
     progressItem: {
-        marginBottom: 12,
+        marginBottom: 8,  // COMPACT: 12 → 8
     },
     progressLabelRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
-        marginBottom: 6,
+        marginBottom: 4,  // COMPACT: 6 → 4
     },
     progressLabel: {
         fontSize: 10,
@@ -700,9 +702,9 @@ const styles = StyleSheet.create({
         fontWeight: '800',
     },
     progressTrack: {
-        height: 8,
+        height: 5,  // COMPACT: 8 → 5
         backgroundColor: 'rgba(255, 255, 255, 0.1)',
-        borderRadius: 4,
+        borderRadius: 3,  // COMPACT: 4 → 3
         overflow: 'hidden',
     },
     progressBar: {
@@ -712,14 +714,14 @@ const styles = StyleSheet.create({
     metricsGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 8,
+        gap: 6,  // COMPACT: 8 → 6
     },
     metricCard: {
         flex: 1,
         minWidth: '45%',
         backgroundColor: 'rgba(0, 0, 0, 0.3)',
-        padding: 12,
-        borderRadius: 8,
+        padding: 8,  // COMPACT: 12 → 8
+        borderRadius: 6,  // COMPACT: 8 → 6
         alignItems: 'center',
     },
     overallCard: {
@@ -727,33 +729,33 @@ const styles = StyleSheet.create({
         backgroundColor: 'rgba(255, 255, 255, 0.05)',
     },
     metricLabel: {
-        fontSize: 10,
+        fontSize: 9,  // COMPACT: 10 → 9
         color: '#888888',
         fontWeight: '600',
-        marginBottom: 4,
+        marginBottom: 3,  // COMPACT: 4 → 3
         textTransform: 'uppercase',
     },
     metricValue: {
-        fontSize: 20,
+        fontSize: 18,  // COMPACT: 20 → 18
         fontWeight: 'bold',
     },
     metricValueLarge: {
-        fontSize: 28,
+        fontSize: 24,  // COMPACT: 28 → 24
         fontWeight: '900',
     },
     // NEW: TTS Info styles
     ttsInfoSection: {
-        marginBottom: 16,
-        padding: 12,
+        marginBottom: 10,  // COMPACT: 16 → 10
+        padding: 8,  // COMPACT: 12 → 8
         backgroundColor: 'rgba(100, 100, 255, 0.08)',
-        borderRadius: 10,
+        borderRadius: 8,  // COMPACT: 10 → 8
         borderWidth: 1,
         borderColor: 'rgba(100, 100, 255, 0.25)',
     },
     ttsInfoCard: {
-        padding: 12,
+        padding: 8,  // COMPACT: 12 → 8
         backgroundColor: 'rgba(0, 0, 0, 0.3)',
-        borderRadius: 8,
+        borderRadius: 6,  // COMPACT: 8 → 6
         alignItems: 'center',
     },
     ttsProviderLabel: {

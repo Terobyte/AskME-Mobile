@@ -19,14 +19,19 @@ import {
     StreamingPlayerState,
     StreamingPlayerConfig,
     AudioChunk,
-    StreamingMetrics
+    StreamingMetrics,
+    WordTimestamp,
+    SentenceChunk
 } from '../types';
 import {
     createWavFile,
     arrayBufferToBase64,
-    calculateAudioDuration
+    calculateAudioDuration,
+    mergePCMChunks
 } from '../utils/audio-conversion';
 import { STREAMING_CONFIG } from '../config/streaming-config';
+import { SentenceChunker } from '../utils/sentence-chunker';
+import { cartesiaStreamingService } from './cartesia-streaming-service';
 
 /**
  * Audio Queue for gapless playback
@@ -306,8 +311,14 @@ class ChunkedStreamingPlayer {
     private config: StreamingPlayerConfig;
     private metrics: Partial<StreamingMetrics>;
 
+    // NEW: Sentence chunking state
+    private accumulatedPcmData: ArrayBuffer[] = [];
+    private currentContextId: string | null = null;
+    private originalText: string = '';
+
     // Tuning parameters
     private readonly CHUNKS_PER_FILE = 5; // ~200-250ms per file at 16kHz
+    private readonly USE_SENTENCE_CHUNKING = true; // Feature flag
 
     constructor(config?: Partial<StreamingPlayerConfig>) {
         this.config = {
@@ -337,15 +348,32 @@ class ChunkedStreamingPlayer {
     }
 
     /**
-     * Play audio stream from AsyncGenerator with gapless playback
+     * Play audio stream from AsyncGenerator with optional sentence chunking
      */
     async playStream(
-        chunkGenerator: AsyncGenerator<AudioChunk, void, unknown>
+        chunkGenerator: AsyncGenerator<AudioChunk, void, unknown>,
+        options?: {
+            originalText?: string;
+            contextId?: string;
+            enableSentenceChunking?: boolean;
+        }
     ): Promise<void> {
         console.log('🎵 [Chunked Player] Starting playback with gapless preloading...');
+
+        const enableSentenceChunking = options?.enableSentenceChunking !== false && this.USE_SENTENCE_CHUNKING;
+
+        if (enableSentenceChunking) {
+            console.log('✨ [Chunked Player] Sentence chunking ENABLED');
+        }
+
         this.state = 'buffering';
         this.metrics = this.createEmptyMetrics();
         this.metrics.generationStart = Date.now();
+        this.originalText = options?.originalText || '';
+        this.currentContextId = options?.contextId || null;
+
+        // Reset accumulation
+        this.accumulatedPcmData = [];
 
         let accumulatedChunks: AudioChunk[] = [];
         let fileIndex = 0;
@@ -369,6 +397,11 @@ class ChunkedStreamingPlayer {
                     this.metrics.firstChunkTime = Date.now();
                     const latency = this.metrics.firstChunkTime - (this.metrics.generationStart || 0);
                     console.log(`🎯 [Chunked Player] First chunk in ${latency}ms`);
+                }
+
+                // NEW: Accumulate PCM data for sentence chunking
+                if (enableSentenceChunking) {
+                    this.accumulatedPcmData.push(chunk.data);
                 }
 
                 accumulatedChunks.push(chunk);
@@ -431,6 +464,11 @@ class ChunkedStreamingPlayer {
             console.log('✅ [Chunked Player] Playback completed (gapless!)');
             this.logStats();
 
+            // NEW: Attempt sentence re-chunking (if enabled and have context)
+            if (enableSentenceChunking && this.currentContextId) {
+                await this.attemptSentenceRechunking();
+            }
+
         } catch (error) {
             console.error('❌ [Chunked Player] Playback error:', error);
             this.state = 'error';
@@ -460,6 +498,58 @@ class ChunkedStreamingPlayer {
 
         this.chunkFiles.push(filepath);
         return filepath;
+    }
+
+    /**
+     * NEW: Attempt sentence re-chunking using timestamps
+     */
+    private async attemptSentenceRechunking(): Promise<void> {
+        if (!this.currentContextId || !this.originalText) {
+            console.log('ℹ️ [Chunked Player] Skipping sentence re-chunking (no context/text)');
+            return;
+        }
+
+        // Get timestamps from service
+        const timestamps = cartesiaStreamingService.getTimestamps(this.currentContextId);
+
+        if (!timestamps || timestamps.length === 0) {
+            console.warn('⚠️ [Chunked Player] No timestamps available for sentence chunking');
+            return;
+        }
+
+        console.log(`📝 [Chunked Player] Attempting sentence re-chunking with ${timestamps.length} timestamps...`);
+
+        try {
+            // Merge all accumulated PCM data
+            const fullPcmData = mergePCMChunks(this.accumulatedPcmData);
+
+            console.log(`📦 [Chunked Player] Full PCM data: ${fullPcmData.byteLength} bytes`);
+
+            // Apply sentence chunking
+            const sentenceChunks = SentenceChunker.chunkBySentences(
+                fullPcmData,
+                timestamps,
+                this.originalText,
+                this.config.chunkSampleRate
+            );
+
+            console.log(`✅ [Chunked Player] Created ${sentenceChunks.length} sentence chunks`);
+
+            // Log quality of chunking
+            sentenceChunks.forEach((chunk, i) => {
+                console.log(`  ${i + 1}. "${chunk.sentence.substring(0, 40)}..." (${chunk.durationMs}ms, ${chunk.wordCount} words)`);
+            });
+
+            // TODO: В будущем можно сохранить sentence chunks для next playback
+            // (опционально можно кешировать для повторного использования)
+
+            // Clear timestamps from storage
+            cartesiaStreamingService.clearTimestamps(this.currentContextId);
+
+        } catch (error) {
+            console.error('❌ [Chunked Player] Sentence re-chunking failed:', error);
+            // Non-critical error, just log
+        }
     }
 
     /**
@@ -494,6 +584,12 @@ class ChunkedStreamingPlayer {
         }
 
         this.chunkFiles = [];
+
+        // NEW: Clear sentence chunking state
+        this.accumulatedPcmData = [];
+        this.currentContextId = null;
+        this.originalText = '';
+
         console.log('✅ [Chunked Player] Cleanup complete');
     }
 

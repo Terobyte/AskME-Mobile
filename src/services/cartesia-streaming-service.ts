@@ -19,7 +19,8 @@ import {
     CartesiaMessage,
     CartesiaChunkMessage,
     CartesiaTimestampsMessage,
-    CartesiaDoneMessage
+    CartesiaDoneMessage,
+    CartesiaErrorMessage
 } from '../types';
 import { base64ToArrayBuffer } from '../utils/audio-conversion';
 
@@ -378,7 +379,8 @@ class CartesiaStreamingService {
 
             // Handle completion
             if (message.type === 'done') {
-                console.log(`✅ [Cartesia WS] Generation complete (${chunkSequence} chunks)`); \n                isGenerating = false;
+                console.log(`✅ [Cartesia WS] Generation complete (${chunkSequence} chunks)`);
+                isGenerating = false;
 
                 if (options.onComplete) {
                     options.onComplete();

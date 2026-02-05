@@ -521,11 +521,23 @@ class TTSService {
         }
       });
 
-      // Play the stream
+      // Play the stream WITH sentence chunking context
       this.isStreaming = true;
 
+      // Store context for reference
+      let streamContextId: string | null = null;
+
       if (options?.autoPlay !== false) {
-        await chunkedStreamingPlayer.playStream(chunkGenerator);
+        // Extract contextId from timestamps storage (last entry)
+        // NOTE: This is a workaround - ideally generateAudioStream should return contextId
+        const timestampKeys = Array.from((cartesiaStreamingService as any).timestampsStorage?.keys() || []);
+        streamContextId = timestampKeys[timestampKeys.length - 1] || null;
+
+        await chunkedStreamingPlayer.playStream(chunkGenerator, {
+          originalText: text,
+          contextId: streamContextId,
+          enableSentenceChunking: true
+        });
         console.log('✅ [TTS Streaming] Playback complete');
       }
 

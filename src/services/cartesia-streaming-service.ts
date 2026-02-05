@@ -272,6 +272,12 @@ class CartesiaStreamingService {
         try {
             const message: CartesiaMessage = JSON.parse(data);
 
+            // ⬅️ FIX: Ignore system messages without context_id (pongs, status, etc.)
+            if (!message.context_id) {
+                // Silently ignore - these are system-level messages (pongs, etc.)
+                return;
+            }
+
             // Route to appropriate handler
             const handler = this.messageHandlers.get(message.context_id);
             if (handler) {

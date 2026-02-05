@@ -55,6 +55,8 @@ class AudioQueue {
         sound: Audio.Sound;
         filepath: string;
         isPreloaded: boolean;
+        sentenceChunk?: SentenceChunk;  // PHASE 1: Store sentence metadata
+        durationMs?: number;             // PHASE 2: Store chunk duration
     }[] = [];
 
     private currentIndex: number = 0;
@@ -67,13 +69,24 @@ class AudioQueue {
     private _isTransitioning: boolean = false;      // Prevents concurrent transitions
     private playCurrentPromise: Promise<void> | null = null;  // Ensures sequential playback
 
-    // NEW: Cross-fade settings
-    private readonly CROSSFADE_MS = 120; // 120ms overlap (CHECKPOINT 0: increased with larger chunks)
+    // FIX: Safety timeout for final chunk
+    private finalChunkSafetyTimeout: NodeJS.Timeout | null = null;
+    private readonly FINAL_CHUNK_SAFETY_MS = 500; // Safety timeout after expected finish
+
+    // PHASE 2: Adaptive cross-fade settings
+    private readonly CROSSFADE_LONG = 120;   // 120ms for long chunks (>2s)
+    private readonly CROSSFADE_SHORT = 40;   // 40ms for short chunks (<1s)
+    private readonly MICRO_PAUSE_MS = 20;    // PHASE 3: Micro-pause when no crossfade
 
     /**
      * Enqueue a sound file (preload it)
+     * PHASE 1: Now accepts optional sentence metadata and duration
      */
-    async enqueue(filepath: string): Promise<void> {
+    async enqueue(
+        filepath: string,
+        sentenceChunk?: SentenceChunk,
+        durationMs?: number
+    ): Promise<void> {
         console.log(`📦 [AudioQueue] Preloading: ${filepath}`);
 
         const { sound } = await Audio.Sound.createAsync(
@@ -84,10 +97,60 @@ class AudioQueue {
         this.queue.push({
             sound,
             filepath,
-            isPreloaded: true
+            isPreloaded: true,
+            sentenceChunk,
+            durationMs
         });
 
         console.log(`✅ [AudioQueue] Enqueued (total: ${this.queue.length})`);
+    }
+
+    /**
+     * PHASE 1: Determine if cross-fade should be used based on natural pauses
+     * Returns true if there's punctuation at the end of current chunk (natural pause)
+     */
+    private shouldUseCrossfade(currentIndex: number): boolean {
+        const current = this.queue[currentIndex];
+        const next = this.queue[currentIndex + 1];
+
+        // No crossfade if no next chunk
+        if (!next) {
+            return false;
+        }
+
+        // FIX: If no sentence metadata (Force flush case), DON'T use crossfade
+        // We don't know where the sentence boundary is, so crossfade is unsafe
+        if (!current.sentenceChunk) {
+            console.log(`⚠️ [Crossfade] No sentence metadata (Force flush?), skipping crossfade for safety`);
+            return false;
+        }
+
+        // Get last word of current chunk
+        const sentence = current.sentenceChunk.sentence.trim();
+        const lastWord = sentence.split(' ').pop() || '';
+
+        // Check for punctuation (natural pause)
+        const hasPunctuation = /[.!?,;:]$/.test(lastWord);
+
+        if (hasPunctuation) {
+            console.log(`✅ [Crossfade] Natural pause detected ("${lastWord}"), using crossfade`);
+            return true;
+        } else {
+            console.log(`⚠️ [Crossfade] No pause detected ("${lastWord}"), skipping crossfade`);
+            return false;
+        }
+    }
+
+    /**
+     * PHASE 2: Get adaptive crossfade duration based on chunk length
+     * Short chunks (<1s) get shorter crossfade to avoid cutting off words
+     */
+    private getCrossfadeDuration(durationMs: number): number {
+        if (durationMs > 2000) {
+            return this.CROSSFADE_LONG; // 120ms for long chunks
+        } else {
+            return this.CROSSFADE_SHORT; // 40ms for short chunks
+        }
     }
 
     /**
@@ -145,25 +208,42 @@ class AudioQueue {
 
             const current = this.queue[this.currentIndex];
             const next = this.queue[this.currentIndex + 1];
+            const isFinalChunk = !next;
 
-            console.log(`🔊 [AudioQueue] Playing chunk ${this.currentIndex + 1}/${this.queue.length}`);
+            console.log(`🔊 [AudioQueue] Playing chunk ${this.currentIndex + 1}/${this.queue.length}${isFinalChunk ? ' [FINAL]' : ''}`);
 
             // Track if cross-fade was used
             let crossFadeStarted = false;
             let crossFadeCompleted = false;
             let crossFadeTimeout: NodeJS.Timeout | null = null;
+            let didFinishHandled = false; // FIX: Track if didJustFinish was processed
 
             // Setup completion handler
             current.sound.setOnPlaybackStatusUpdate(async (status) => {
                 if (!status.isLoaded) return;
 
                 if (status.didJustFinish) {
+                    // FIX: Prevent duplicate handling
+                    if (didFinishHandled) {
+                        console.log('⏭️ [AudioQueue] didJustFinish already handled, skipping');
+                        return;
+                    }
+                    didFinishHandled = true;
+
+                    // FIX: Clear safety timeout if it exists
+                    if (this.finalChunkSafetyTimeout) {
+                        clearTimeout(this.finalChunkSafetyTimeout);
+                        this.finalChunkSafetyTimeout = null;
+                        console.log('✅ [AudioQueue] Safety timeout cancelled (normal finish)');
+                    }
+
                     const finishTime = Date.now();
 
                     // FIX: More precise transition check
                     // Skip ONLY if cross-fade is IN PROGRESS (started but not completed)
                     if (this._isTransitioning && crossFadeStarted && !crossFadeCompleted) {
                         console.log('⏭️ [AudioQueue] Cross-fade in progress, skipping didJustFinish');
+                        didFinishHandled = false; // Reset flag - cross-fade will handle it
                         return;
                     }
 
@@ -219,6 +299,23 @@ class AudioQueue {
                         }
                     }
 
+                    // PHASE 3: Add micro-pause ONLY for force-flush (no metadata)
+                    // ⭐ FIX: Don't add pause for mid-word transitions (causes artifacts!)
+                    const usedCrossfade = crossFadeCompleted || crossFadeStarted;
+                    const currentChunk = this.queue[this.currentIndex - 1]; // Just finished chunk
+
+                    if (!usedCrossfade && next) {
+                        // Check if this is a force-flush (no sentence metadata)
+                        if (!currentChunk?.sentenceChunk) {
+                            // Force flush case - add micro-pause for safety
+                            console.log(`⏸️ [AudioQueue] Adding ${this.MICRO_PAUSE_MS}ms micro-pause (force flush)`);
+                            await new Promise(resolve => setTimeout(resolve, this.MICRO_PAUSE_MS));
+                        } else {
+                            // Word boundary without punctuation - GAPLESS transition
+                            console.log(`🔗 [AudioQueue] Gapless transition (no punctuation, no pause)`);
+                        }
+                    }
+
                     // Reset transition flag before continuing
                     this._isTransitioning = false;
 
@@ -255,14 +352,48 @@ class AudioQueue {
                     console.log(`🎵 [AudioQueue] playAsync() latency: ${playLatency}ms`);
                 }
 
-                // NEW: Schedule cross-fade based on duration (ONLY if there's a next chunk)
-                if (next) {
+                // FIX: Safety timeout for final chunk - if didJustFinish never fires
+                if (isFinalChunk) {
                     const status = await current.sound.getStatusAsync();
                     if (status.isLoaded && status.durationMillis) {
-                        const triggerTime = status.durationMillis - this.CROSSFADE_MS;
+                        const expectedDuration = status.durationMillis;
+                        const safetyDelay = expectedDuration + this.FINAL_CHUNK_SAFETY_MS;
+
+                        console.log(`⏰ [AudioQueue] Setting safety timeout for final chunk: ${safetyDelay}ms (duration: ${expectedDuration}ms)`);
+
+                        this.finalChunkSafetyTimeout = setTimeout(async () => {
+                            if (!didFinishHandled && this._isPlaying) {
+                                console.warn('⚠️ [AudioQueue] SAFETY TIMEOUT fired for final chunk!');
+                                console.warn('   didJustFinish never fired - forcing completion...');
+
+                                // Force cleanup
+                                didFinishHandled = true;
+                                current.sound.setOnPlaybackStatusUpdate(null);
+                                this._isPlaying = false;
+                                this.playCurrentPromise = null;
+                                this._isTransitioning = false;
+
+                                if (this.completionResolve) {
+                                    console.log('✅ [AudioQueue] Forced completion via safety timeout');
+                                    this.completionResolve();
+                                }
+                            }
+                        }, safetyDelay);
+                    }
+                }
+
+                // PHASE 1-2: Conditionally schedule cross-fade based on natural pauses
+                const useCrossfade = this.shouldUseCrossfade(this.currentIndex);
+
+                if (next && useCrossfade) {
+                    const status = await current.sound.getStatusAsync();
+                    if (status.isLoaded && status.durationMillis) {
+                        // PHASE 2: Use adaptive crossfade duration
+                        const crossfadeDuration = this.getCrossfadeDuration(status.durationMillis);
+                        const triggerTime = status.durationMillis - crossfadeDuration;
 
                         if (triggerTime > 0) {
-                            console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms`);
+                            console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms (duration: ${crossfadeDuration}ms)`);
 
                             crossFadeTimeout = setTimeout(async () => {
                                 // FIX: Check if already transitioning via didJustFinish
@@ -275,12 +406,12 @@ class AudioQueue {
                                 this._isTransitioning = true;
                                 crossFadeStarted = true;
 
-                                console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade`);
+                                console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade (${crossfadeDuration}ms)`);
 
                                 try {
                                     // Start fade-out of current + fade-in of next
                                     const fadeSteps = 10;
-                                    const stepDuration = this.CROSSFADE_MS / fadeSteps;
+                                    const stepDuration = crossfadeDuration / fadeSteps;
 
                                     // Start next chunk at volume 0
                                     await next.sound.setVolumeAsync(0.0);
@@ -330,6 +461,9 @@ class AudioQueue {
                             }, triggerTime);
                         }
                     }
+                } else if (next && !useCrossfade) {
+                    // PHASE 3: Add micro-pause when crossfade is skipped
+                    console.log(`🚫 [AudioQueue] Crossfade skipped, will add ${this.MICRO_PAUSE_MS}ms micro-pause`);
                 }
 
             } catch (error) {
@@ -370,6 +504,12 @@ class AudioQueue {
     async stop(): Promise<void> {
         console.log('🛑 [AudioQueue] Stopping...');
         this._isPlaying = false;
+
+        // FIX: Clear safety timeout
+        if (this.finalChunkSafetyTimeout) {
+            clearTimeout(this.finalChunkSafetyTimeout);
+            this.finalChunkSafetyTimeout = null;
+        }
 
         // FIX: Reset synchronization flags
         this._isTransitioning = false;
@@ -440,6 +580,9 @@ class ChunkedStreamingPlayer {
 
     // Timestamp accumulation
     private incomingTimestamps: WordTimestamp[] = [];
+
+    // FIX: Track audio offset for FAST_START → SENTENCE_MODE sync
+    private fastStartAudioOffsetMs: number = 0;  // Total audio created in FAST_START mode
     private lastProcessedTimestampIndex: number = 0;
 
     // Audio offset tracking
@@ -452,8 +595,8 @@ class ChunkedStreamingPlayer {
             MAX_FILES: 2,               // Switch to SENTENCE_MODE after 2 files
         },
         SENTENCE: {
-            MIN_DURATION_MS: 500,       // Minimum sentence file duration
-            MAX_DURATION_MS: 2500,      // Maximum before force flush
+            MIN_DURATION_MS: 1000,      // Minimum sentence file duration (increased from 500ms)
+            MAX_DURATION_MS: 3500,      // Maximum before force flush (increased from 2500ms)
             LONG_SENTENCE_MS: 3000,     // Try sub-sentence split at this threshold
         },
         FALLBACK: {
@@ -614,9 +757,55 @@ class ChunkedStreamingPlayer {
                 const chunkDuration = calculateAudioDuration(chunk.sizeBytes);
                 this.totalAudioDurationMs += chunkDuration;
 
-                // --- FAST_START MODE: Fixed-size chunks for low latency ---
+                // --- FAST_START MODE: Word-boundary aware chunks for low latency ---
                 if (this.chunkingMode === ChunkingMode.FAST_START) {
-                    if (accumulatedChunks.length >= this.CHUNKS_PER_FILE) {
+                    // ⭐ SMART FAST_START: Use word boundaries when timestamps available
+                    const minChunksReached = accumulatedChunks.length >= this.CHUNKS_PER_FILE;
+
+                    // Check if we should create a file
+                    let shouldCreateFile = false;
+                    let lastWordBoundary: string | null = null;
+
+                    if (minChunksReached) {
+                        if (this.hasReceivedTimestamps && this.incomingTimestamps.length > 0) {
+                            // ⭐ SMART MODE: Find word boundary based on accumulated audio duration
+                            // Current audio duration tells us where we are in the timestamps
+                            const currentAudioTimeSeconds = this.totalAudioDurationMs / 1000;
+
+                            // Find the last complete word before or at current position
+                            let lastCompleteWordIndex = -1;
+                            for (let i = 0; i < this.incomingTimestamps.length; i++) {
+                                if (this.incomingTimestamps[i].end <= currentAudioTimeSeconds + 0.1) { // 100ms tolerance
+                                    lastCompleteWordIndex = i;
+                                }
+                            }
+
+                            if (lastCompleteWordIndex >= 0) {
+                                const lastWord = this.incomingTimestamps[lastCompleteWordIndex];
+                                lastWordBoundary = lastWord.word;
+
+                                // Check if this word ends with punctuation (natural break point)
+                                const hasPunctuation = /[.!?,;:]$/.test(lastWord.word);
+
+                                // Always cut at word boundaries to avoid mid-word artifacts
+                                shouldCreateFile = true;
+
+                                // ⭐ FIX: Sync timestamp index so SENTENCE_MODE continues from here
+                                this.lastProcessedTimestampIndex = lastCompleteWordIndex + 1;
+
+                                console.log(`🎯 [FAST_START] Word boundary: "${lastWord.word}" at ${lastWord.end.toFixed(2)}s (punctuation: ${hasPunctuation}, syncIdx: ${this.lastProcessedTimestampIndex})`);
+                            } else {
+                                // No complete word yet, continue accumulating
+                                console.log(`⏳ [FAST_START] Waiting for word boundary (audio: ${currentAudioTimeSeconds.toFixed(2)}s)`);
+                            }
+                        } else {
+                            // Legacy mode: no timestamps, cut by chunk count
+                            shouldCreateFile = true;
+                            console.log(`⚠️ [FAST_START] No timestamps, using legacy chunk-count mode`);
+                        }
+                    }
+
+                    if (shouldCreateFile) {
                         const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
                         fileIndex++;
                         this.fastStartFilesCreated++;
@@ -625,9 +814,23 @@ class ChunkedStreamingPlayer {
                             accumulatedChunks.reduce((sum, c) => sum + c.sizeBytes, 0)
                         );
 
-                        console.log(`📦 [FAST_START] File #${fileIndex}: ${duration.toFixed(0)}ms (${this.fastStartFilesCreated}/2)`);
+                        const boundaryInfo = lastWordBoundary ? ` [→"${lastWordBoundary}"]` : '';
+                        console.log(`📦 [FAST_START] File #${fileIndex}: ${duration.toFixed(0)}ms (${this.fastStartFilesCreated}/2)${boundaryInfo}`);
 
-                        await this.audioQueue.enqueue(filepath);
+                        // ⭐ NEW: Create pseudo-sentence metadata for better crossfade decisions
+                        let sentenceChunk: SentenceChunk | undefined = undefined;
+                        if (lastWordBoundary) {
+                            sentenceChunk = {
+                                pcmData: new ArrayBuffer(0),
+                                sentence: `...${lastWordBoundary}`, // Mark as partial with last word
+                                startTimeSeconds: 0,
+                                endTimeSeconds: this.totalAudioDurationMs / 1000,
+                                durationMs: duration,
+                                wordCount: 1
+                            };
+                        }
+
+                        await this.audioQueue.enqueue(filepath, sentenceChunk, duration);
 
                         // Start playback after first file
                         if (!playbackStarted) {
@@ -637,6 +840,10 @@ class ChunkedStreamingPlayer {
                             await this.audioQueue.start();
                             playbackStarted = true;
                         }
+
+                        // FIX: Track total audio offset from FAST_START for SENTENCE_MODE sync
+                        this.fastStartAudioOffsetMs += this.totalAudioDurationMs;
+                        console.log(`📊 [FAST_START] Audio offset updated: ${this.fastStartAudioOffsetMs}ms`);
 
                         accumulatedChunks = [];
                         this.totalAudioDurationMs = 0;
@@ -678,7 +885,20 @@ class ChunkedStreamingPlayer {
 
                             console.log(`📦 [SENTENCE] File #${fileIndex}: "${lastBoundary.sentence.substring(0, 40)}..." (${this.totalAudioDurationMs.toFixed(0)}ms)`);
 
-                            await this.audioQueue.enqueue(filepath);
+                            // PHASE 1: Create SentenceChunk metadata for intelligent crossfade
+                            const startTimeSeconds = this.incomingTimestamps[this.lastProcessedTimestampIndex]?.start || 0;
+                            const wordCount = lastBoundary.wordIndex - this.lastProcessedTimestampIndex + 1;
+
+                            const sentenceChunk: SentenceChunk = {
+                                pcmData: new ArrayBuffer(0), // Not needed for crossfade logic
+                                sentence: lastBoundary.sentence,
+                                startTimeSeconds: startTimeSeconds,
+                                endTimeSeconds: lastBoundary.endTimeSeconds,
+                                durationMs: this.totalAudioDurationMs,
+                                wordCount: wordCount
+                            };
+
+                            await this.audioQueue.enqueue(filepath, sentenceChunk, this.totalAudioDurationMs);
 
                             // Reset for next sentence
                             accumulatedChunks = [];
@@ -702,7 +922,20 @@ class ChunkedStreamingPlayer {
                             const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
                             fileIndex++;
 
-                            await this.audioQueue.enqueue(filepath);
+                            // PHASE 1: Create SentenceChunk for sub-sentence boundary
+                            const startTimeSeconds = this.incomingTimestamps[this.lastProcessedTimestampIndex]?.start || 0;
+                            const wordCount = lastSubBoundary.wordIndex - this.lastProcessedTimestampIndex + 1;
+
+                            const sentenceChunk: SentenceChunk = {
+                                pcmData: new ArrayBuffer(0),
+                                sentence: lastSubBoundary.sentence,
+                                startTimeSeconds: startTimeSeconds,
+                                endTimeSeconds: lastSubBoundary.endTimeSeconds,
+                                durationMs: this.totalAudioDurationMs,
+                                wordCount: wordCount
+                            };
+
+                            await this.audioQueue.enqueue(filepath, sentenceChunk, this.totalAudioDurationMs);
 
                             // Reset for next segment
                             accumulatedChunks = [];
@@ -717,7 +950,8 @@ class ChunkedStreamingPlayer {
                         const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
                         fileIndex++;
 
-                        await this.audioQueue.enqueue(filepath);
+                        // PHASE 1: No sentence metadata for force flush (no natural boundary)
+                        await this.audioQueue.enqueue(filepath, undefined, this.totalAudioDurationMs);
 
                         accumulatedChunks = [];
                         this.totalAudioDurationMs = 0;
@@ -732,7 +966,8 @@ class ChunkedStreamingPlayer {
 
                         console.log(`📦 [FALLBACK] File #${fileIndex}: ${this.totalAudioDurationMs.toFixed(0)}ms`);
 
-                        await this.audioQueue.enqueue(filepath);
+                        // PHASE 2: Pass duration for adaptive crossfade (no sentence metadata in fallback)
+                        await this.audioQueue.enqueue(filepath, undefined, this.totalAudioDurationMs);
 
                         accumulatedChunks = [];
                         this.totalAudioDurationMs = 0;
@@ -740,17 +975,29 @@ class ChunkedStreamingPlayer {
                 }
             }
 
-            // Handle remaining chunks
+            // Handle remaining chunks - but ONLY if there's meaningful audio
             if (accumulatedChunks.length > 0) {
-                const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
-                console.log(`📦 [Chunked Player] Created final file`);
+                // Calculate duration FIRST to check if it's worth creating
+                const finalDuration = calculateAudioDuration(
+                    accumulatedChunks.reduce((sum, c) => sum + c.sizeBytes, 0)
+                );
 
-                await this.audioQueue.enqueue(filepath);
+                // ⭐ FIX: Skip very short final chunks (<50ms) - they cause playback issues
+                const MIN_FINAL_DURATION_MS = 50;
 
-                if (!playbackStarted) {
-                    this.state = 'playing';
-                    this.metrics.firstPlayTime = Date.now();
-                    await this.audioQueue.start();
+                if (finalDuration >= MIN_FINAL_DURATION_MS) {
+                    const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                    console.log(`📦 [Chunked Player] Created final file (${finalDuration.toFixed(0)}ms)`);
+
+                    await this.audioQueue.enqueue(filepath, undefined, finalDuration);
+
+                    if (!playbackStarted) {
+                        this.state = 'playing';
+                        this.metrics.firstPlayTime = Date.now();
+                        await this.audioQueue.start();
+                    }
+                } else {
+                    console.log(`⚠️ [Chunked Player] Skipping final file (too short: ${finalDuration.toFixed(0)}ms < ${MIN_FINAL_DURATION_MS}ms)`);
                 }
             }
 
@@ -809,7 +1056,16 @@ class ChunkedStreamingPlayer {
     private switchToSentenceMode(): void {
         console.log('🔄 [Player] Switching to SENTENCE_MODE');
         console.log(`   Fast-start files created: ${this.fastStartFilesCreated}`);
+        console.log(`   Fast-start audio offset: ${this.fastStartAudioOffsetMs}ms`);
         console.log(`   Timestamps received: ${this.incomingTimestamps.length} words`);
+        console.log(`   Starting from timestamp index: ${this.lastProcessedTimestampIndex}`);
+
+        // Debug: show which word we're starting from
+        if (this.incomingTimestamps[this.lastProcessedTimestampIndex]) {
+            const startWord = this.incomingTimestamps[this.lastProcessedTimestampIndex];
+            console.log(`   Starting at word: "${startWord.word}" (${startWord.start.toFixed(2)}s)`);
+        }
+
         this.chunkingMode = ChunkingMode.SENTENCE_MODE;
     }
 
@@ -918,6 +1174,7 @@ class ChunkedStreamingPlayer {
         this.incomingTimestamps = [];
         this.lastProcessedTimestampIndex = 0;
         this.totalAudioDurationMs = 0;
+        this.fastStartAudioOffsetMs = 0;  // FIX: Reset audio offset
 
         console.log('✅ [Chunked Player] Cleanup complete');
     }

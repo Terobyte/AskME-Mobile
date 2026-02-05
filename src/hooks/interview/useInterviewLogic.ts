@@ -564,7 +564,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           // Step 3: Detect absurd errors (for Amused vibe)
           const isAbsurd = VibeCalculator.detectAbsurdError(
             textToFinalize,
-            analysis.issues
+            analysis.issues || [] // ⬅️ FIX: Provide empty array if issues is undefined
           );
 
           if (isAbsurd) {

@@ -302,6 +302,15 @@ class AudioQueue {
 }
 
 /**
+ * Chunking modes for adaptive streaming
+ */
+enum ChunkingMode {
+    FAST_START = 'fast_start',      // First 2 files for low latency
+    SENTENCE_MODE = 'sentence',      // Sentence-based chunking with timestamps
+    FALLBACK = 'fallback'            // Time-based fallback if no timestamps
+}
+
+/**
  * Chunked streaming player implementation with gapless playback
  */
 class ChunkedStreamingPlayer {
@@ -315,6 +324,18 @@ class ChunkedStreamingPlayer {
     private accumulatedPcmData: ArrayBuffer[] = [];
     private currentContextId: string | null = null;
     private originalText: string = '';
+
+    // PHASE 1: Adaptive chunking state
+    private chunkingMode: ChunkingMode = ChunkingMode.FAST_START;
+    private fastStartFilesCreated: number = 0;
+    private hasReceivedTimestamps: boolean = false;
+
+    // Timestamp accumulation
+    private incomingTimestamps: WordTimestamp[] = [];
+    private lastProcessedTimestampIndex: number = 0;
+
+    // Audio offset tracking
+    private totalAudioDurationMs: number = 0;
 
     // Tuning parameters (CHECKPOINT 0: increased for better sentence coverage)
     private readonly CHUNKS_PER_FILE = 25; // ~1250ms per file at 16kHz
@@ -501,6 +522,24 @@ class ChunkedStreamingPlayer {
     }
 
     /**
+     * PHASE 1: Switch to sentence-based chunking mode
+     */
+    private switchToSentenceMode(): void {
+        console.log('🔄 [Player] Switching to SENTENCE_MODE');
+        console.log(`   Fast-start files created: ${this.fastStartFilesCreated}`);
+        console.log(`   Timestamps received: ${this.incomingTimestamps.length} words`);
+        this.chunkingMode = ChunkingMode.SENTENCE_MODE;
+    }
+
+    /**
+     * PHASE 1: Switch to fallback mode (no timestamps)
+     */
+    private switchToFallbackMode(): void {
+        console.warn('⚠️ [Player] Switching to FALLBACK mode (no timestamps)');
+        this.chunkingMode = ChunkingMode.FALLBACK;
+    }
+
+    /**
      * NEW: Attempt sentence re-chunking using timestamps
      */
     private async attemptSentenceRechunking(): Promise<void> {
@@ -589,6 +628,14 @@ class ChunkedStreamingPlayer {
         this.accumulatedPcmData = [];
         this.currentContextId = null;
         this.originalText = '';
+
+        // PHASE 1: Clear adaptive chunking state
+        this.chunkingMode = ChunkingMode.FAST_START;
+        this.fastStartFilesCreated = 0;
+        this.hasReceivedTimestamps = false;
+        this.incomingTimestamps = [];
+        this.lastProcessedTimestampIndex = 0;
+        this.totalAudioDurationMs = 0;
 
         console.log('✅ [Chunked Player] Cleanup complete');
     }

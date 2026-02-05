@@ -12,10 +12,10 @@ export default function App() {
   return (
     <NavigationContainer>
       <Stack.Navigator initialRouteName="Interview">
-        <Stack.Screen 
-          name="Interview" 
-          component={VoiceInterviewScreen} 
-          options={{ headerShown: false }} 
+        <Stack.Screen
+          name="Interview"
+          component={VoiceInterviewScreen}
+          options={{ headerShown: false }}
         />
       </Stack.Navigator>
     </NavigationContainer>

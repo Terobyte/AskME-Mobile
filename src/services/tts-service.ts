@@ -1,11 +1,16 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { TTSProvider, OpenAIVoice } from '../types';
+import { STREAMING_CONFIG } from '../config/streaming-config';
+import { cartesiaStreamingService } from './cartesia-streaming-service';
+import { chunkedStreamingPlayer } from './streaming-audio-player';
 
 /**
  * Text-to-Speech Service supporting Cartesia and OpenAI APIs
  * 
  * Uses raw fetch (no SDK) to avoid React Native incompatibility with Node.js modules.
+ * 
+ * NEW: Supports WebSocket streaming for Cartesia (Phase 1-3)
  */
 class TTSService {
   private soundObjects: Audio.Sound[] = [];
@@ -19,6 +24,10 @@ class TTSService {
   private ttsProvider: TTSProvider = 'cartesia';
   private openaiVoice: OpenAIVoice = 'nova';
   private openaiApiKey?: string;
+
+  // NEW: Streaming state
+  private isStreaming: boolean = false;
+  private currentStreamContextId: string | null = null;
 
   constructor() {
     this.initialize();
@@ -152,6 +161,9 @@ class TTSService {
 
   /**
    * Generate speech from text using selected provider
+   * 
+   * NEW: Automatically uses streaming for Cartesia if enabled (STREAMING_CONFIG.enabled)
+   * Falls back to REST API on streaming errors
    */
   async speak(
     text: string,
@@ -171,6 +183,24 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Speaking: "${text.substring(0, 50)}..."`);
 
+      // NEW: Try streaming first if enabled and using Cartesia
+      if (STREAMING_CONFIG.enabled && this.ttsProvider === 'cartesia') {
+        console.log('🌊 [TTS] Attempting streaming playback...');
+
+        try {
+          const success = await this.speakCartesiaStreaming(text, options);
+          if (success) {
+            console.log('✅ [TTS] Streaming playback successful');
+            return true;
+          }
+
+          console.warn('⚠️ [TTS] Streaming failed, falling back to REST API');
+        } catch (error) {
+          console.error('❌ [TTS] Streaming error, falling back to REST API:', error);
+        }
+      }
+
+      // Standard (REST API) path
       const audioFile = await this.fetchAudioFile(text, options);
 
       if (!audioFile) {
@@ -308,7 +338,7 @@ class TTSService {
       console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
 
       // ⚠️ TEMPORARY HARDCODE - FOR TESTING ONLY
-      const API_KEY = "sk_car_v24CHZgbZT7RRQC1mmsZbi";  // ← Your real key from dashboard
+      const API_KEY = "sk_car_8H5cHPGLMuZpaeXxqWNNve";  // ← Your real key from dashboard
       const VOICE_ID = "e07c00bc-4134-4eae-9ea4-1a55fb45746b";
 
       console.log("⚠️⚠️⚠️ [TTS] Using HARDCODED key (TEST MODE)");
@@ -424,6 +454,91 @@ class TTSService {
     }
   }
 
+  // ========================
+  // STREAMING TTS METHODS (Phase 3)
+  // ========================
+
+  /**
+   * Speak using Cartesia WebSocket streaming
+   * 
+   * NEW: Phase 3 - Streaming implementation
+   * Uses WebSocket for real-time audio generation and chunked playback
+   */
+  private async speakCartesiaStreaming(
+    text: string,
+    options?: {
+      emotion?: string;
+      speed?: number;
+      emotionLevel?: string[];
+      autoPlay?: boolean;
+    }
+  ): Promise<boolean> {
+    try {
+      console.log('🌊 [TTS Streaming] Starting WebSocket generation...');
+
+      const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID || "e07c00bc-4134-4eae-9ea4-1a55fb45746b";
+
+      // Stop any previous streaming playback
+      if (this.isStreaming) {
+        console.log('🛑 [TTS Streaming] Stopping previous stream...');
+        await chunkedStreamingPlayer.stop();
+        this.isStreaming = false;
+      }
+
+      // Map speed number to Cartesia speed string
+      let speedString: 'slowest' | 'slow' | 'normal' | 'fast' | 'fastest' = 'normal';
+      if (options?.speed) {
+        if (options.speed <= 0.75) speedString = 'slowest';
+        else if (options.speed <= 0.9) speedString = 'slow';
+        else if (options.speed >= 1.25) speedString = 'fastest';
+        else if (options.speed >= 1.1) speedString = 'fast';
+      }
+
+      // Map emotion to Cartesia emotion array
+      const emotionLevel = options?.emotionLevel || (options?.emotion ? [options.emotion] : undefined);
+
+      console.log('🎙️ [TTS Streaming] Options:', {
+        voiceId: VOICE_ID,
+        speed: speedString,
+        emotion: emotionLevel,
+        textLength: text.length
+      });
+
+      // Create audio stream generator
+      const chunkGenerator = cartesiaStreamingService.generateAudioStream({
+        voiceId: VOICE_ID,
+        text: text,
+        emotion: emotionLevel,
+        speed: speedString,
+        onFirstChunk: (latency) => {
+          console.log(`🎯 [TTS Streaming] First chunk in ${latency}ms`);
+        },
+        onError: (error) => {
+          console.error('❌ [TTS Streaming] Generation error:', error);
+        },
+        onComplete: () => {
+          console.log('✅ [TTS Streaming] Generation complete');
+        }
+      });
+
+      // Play the stream
+      this.isStreaming = true;
+
+      if (options?.autoPlay !== false) {
+        await chunkedStreamingPlayer.playStream(chunkGenerator);
+        console.log('✅ [TTS Streaming] Playback complete');
+      }
+
+      this.isStreaming = false;
+      return true;
+
+    } catch (error) {
+      console.error('❌ [TTS Streaming] Error:', error);
+      this.isStreaming = false;
+      throw error;
+    }
+  }
+
   /**
    * Play audio file
    */
@@ -475,11 +590,25 @@ class TTSService {
   }
 
   /**
-   * Stop all audio playback
+   * Stop all audio playback (including streaming)
+   * 
+   * NEW: Also stops streaming playback if active
    */
   async stop(): Promise<void> {
     console.log("⏹️ [TTS] Stopping all audio...");
 
+    // NEW: Stop streaming if active
+    if (this.isStreaming) {
+      console.log("🛑 [TTS] Stopping streaming playback...");
+      try {
+        await chunkedStreamingPlayer.stop();
+        this.isStreaming = false;
+      } catch (error) {
+        console.error("❌ [TTS] Error stopping streaming:", error);
+      }
+    }
+
+    // Stop regular playback
     for (const sound of this.soundObjects) {
       try {
         await sound.stopAsync();
@@ -498,6 +627,8 @@ class TTSService {
   /**
    * Preload audio and return a player object for manual control
    * This method is used by the interview logic for synchronized playback
+   * 
+   * NEW: Uses streaming if enabled (plays immediately, returns mock Sound)
    */
   async prepareAudio(
     text: string,
@@ -516,6 +647,56 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Preparing audio: "${text.substring(0, 50)}..."`);
 
+      // NEW: Try streaming if enabled for Cartesia
+      if (STREAMING_CONFIG.enabled && this.ttsProvider === 'cartesia') {
+        console.log('🌊 [TTS] Using streaming for prepareAudio...');
+
+        try {
+          // Start streaming playback (plays immediately)
+          const streamingPromise = this.speakCartesiaStreaming(text, {
+            ...options,
+            autoPlay: true
+          });
+
+          // Create a mock Sound object that resolves when streaming completes
+          const mockSound = {
+            playAsync: async () => {
+              console.log('🎵 [TTS Streaming Mock] Waiting for streaming completion...');
+              await streamingPromise;
+              console.log('✅ [TTS Streaming Mock] Playback complete');
+            },
+            setOnPlaybackStatusUpdate: (callback: any) => {
+              // Immediately trigger "finished" callback after streaming completes
+              streamingPromise.then(() => {
+                if (callback) {
+                  callback({
+                    isLoaded: true,
+                    didJustFinish: true,
+                    durationMillis: 0,
+                    positionMillis: 0
+                  });
+                }
+              });
+            },
+            stopAsync: async () => {
+              console.log('🛑 [TTS Streaming Mock] Stop requested');
+              await chunkedStreamingPlayer.stop();
+            },
+            unloadAsync: async () => {
+              console.log('🗑️ [TTS Streaming Mock] Unload (no-op)');
+            }
+          } as any as Audio.Sound;
+
+          console.log('✅ [TTS] Streaming mock Sound returned');
+          return mockSound;
+
+        } catch (error) {
+          console.error('❌ [TTS] Streaming failed in prepareAudio, falling back:', error);
+          // Fall through to REST API
+        }
+      }
+
+      // Standard (REST API) path
       const audioFile = await this.fetchAudioFile(text, options);
 
       if (!audioFile) {

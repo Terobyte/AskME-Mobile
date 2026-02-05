@@ -291,7 +291,7 @@ export type TTSProvider = 'cartesia' | 'openai';
 /**
  * OpenAIVoice: Available voices for OpenAI TTS
  */
-export type OpenAIVoice = 
+export type OpenAIVoice =
   | 'alloy'   // Сбалансированный мужской/женский
   | 'echo'    // Мужской, мягкий
   | 'fable'   // Мужской, британский
@@ -310,16 +310,86 @@ export type OpenAIVoice =
 export interface ResumeData {
   /** Fallback текст (заглушка или извлеченный текст) */
   text: string;
-  
+
   /** Локальный путь к PDF файлу */
   pdfUri: string;
-  
+
   /** Base64 код PDF (опционально, для inline data) */
   pdfBase64?: string;
-  
+
   /** Флаг: загружать PDF напрямую в Gemini */
   usePdfDirectly: boolean;
-  
+
   /** Размер файла в байтах (для выбора метода загрузки) */
   fileSize?: number;
+}
+
+// ============================================
+// STREAMING TTS TYPES
+// ============================================
+
+/**
+ * AudioChunk: Single chunk of PCM audio data from WebSocket stream
+ */
+export interface AudioChunk {
+  data: ArrayBuffer;        // PCM audio data
+  timestamp: number;        // When received (Date.now())
+  sequence: number;         // Sequential number (0, 1, 2, ...)
+  sizeBytes: number;        // Chunk size in bytes
+}
+
+/**
+ * StreamingPlayerState: Current state of the streaming audio player
+ */
+export type StreamingPlayerState =
+  | 'idle'        // Not active
+  | 'connecting'  // Connecting to WebSocket
+  | 'buffering'   // Accumulating minimum buffer
+  | 'playing'     // Playing audio
+  | 'completed'   // Generation completed
+  | 'error';      // Error occurred
+
+/**
+ * StreamingPlayerConfig: Configuration for streaming audio player
+ */
+export interface StreamingPlayerConfig {
+  minBufferMs: number;      // Minimum buffer before starting (200ms)
+  targetBufferMs: number;   // Target buffer size (1000ms)
+  chunkSampleRate: number;  // Sample rate in Hz (16000)
+  maxRetries: number;       // Max reconnection attempts (3)
+  strategy: 'hybrid' | 'chunked';  // From PoC results
+}
+
+/**
+ * CartesiaStreamingOptions: Options for WebSocket streaming generation
+ */
+export interface CartesiaStreamingOptions {
+  voiceId: string;
+  text: string;
+  emotion?: string[];
+  speed?: 'slowest' | 'slow' | 'normal' | 'fast' | 'fastest';
+
+  // Callbacks
+  onChunk?: (chunk: AudioChunk) => void;
+  onComplete?: () => void;
+  onError?: (error: Error) => void;
+  onFirstChunk?: (latency: number) => void;
+}
+
+/**
+ * StreamingMetrics: Performance metrics for streaming playback
+ */
+export interface StreamingMetrics {
+  generationStart: number;    // Timestamp of start
+  firstChunkTime: number | null;  // Timestamp of first chunk
+  firstPlayTime: number | null;   // Timestamp of playback start
+  totalChunks: number;        // Total chunk count
+  totalBytes: number;         // Total bytes received
+  bufferUnderruns: number;    // Number of buffer underruns
+  averageChunkSize: number;   // Average chunk size in bytes
+
+  // Calculated getters
+  get timeToFirstChunk(): number | null;
+  get timeToFirstPlay(): number | null;
+  get totalLatency(): number | null;
 }

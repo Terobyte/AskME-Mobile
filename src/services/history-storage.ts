@@ -7,6 +7,8 @@
 import { File, Paths } from 'expo-file-system';
 import { QuestionResult } from '../types';
 import * as Clipboard from 'expo-clipboard';
+import * as Sharing from 'expo-sharing';
+import { Alert } from 'react-native';
 
 const HISTORY_FILENAME = 'interview_history.json';
 
@@ -154,7 +156,7 @@ export const saveSession = async (
         console.warn('⚠️ [HISTORY_STORAGE] Saving session with EMPTY questions array!');
         console.warn('This may indicate Force Finish was called with empty results');
         console.warn('Or evaluateBatch() returned empty array');
-        
+
         // Add placeholder question
         questions = [{
             topic: 'No Data Available',
@@ -213,12 +215,12 @@ export const saveSession = async (
 
         // Save to file
         const jsonString = JSON.stringify(history, null, 2);
-        
+
         console.log(`📝 [HISTORY_STORAGE] Writing to file...`);
         console.log(`📝 [HISTORY_STORAGE] JSON size:`, jsonString.length, 'chars');
-        
+
         file.write(jsonString);
-        
+
         // Verify the file was written
         const info = file.info();
         console.log(`✅ [HISTORY_STORAGE] File exists:`, info.exists);
@@ -238,8 +240,8 @@ export const saveSession = async (
     } catch (error) {
         console.error('❌ [HISTORY] Failed to save session:', error);
         if (error instanceof Error) {
-          console.error('❌ [HISTORY] Error message:', error.message);
-          console.error('❌ [HISTORY] Error stack:', error.stack);
+            console.error('❌ [HISTORY] Error message:', error.message);
+            console.error('❌ [HISTORY] Error stack:', error.stack);
         }
         throw error;
     }
@@ -253,45 +255,45 @@ export const saveSession = async (
  * @returns Success boolean
  */
 export const updateQuestionAdvice = async (
-  sessionId: string,
-  topicName: string,
-  advice: string
+    sessionId: string,
+    topicName: string,
+    advice: string
 ): Promise<boolean> => {
-  try {
-    console.log(`💾 [ADVICE] Updating advice for session ${sessionId}, topic "${topicName}"`);
-    
-    // Load existing history
-    const file = getHistoryFile();
-    const history = await getHistory();
-    
-    // Find the session
-    const sessionIndex = history.findIndex((s: InterviewSession) => s.id === sessionId);
-    if (sessionIndex === -1) {
-      console.error(`❌ [ADVICE] Session ${sessionId} not found`);
-      return false;
+    try {
+        console.log(`💾 [ADVICE] Updating advice for session ${sessionId}, topic "${topicName}"`);
+
+        // Load existing history
+        const file = getHistoryFile();
+        const history = await getHistory();
+
+        // Find the session
+        const sessionIndex = history.findIndex((s: InterviewSession) => s.id === sessionId);
+        if (sessionIndex === -1) {
+            console.error(`❌ [ADVICE] Session ${sessionId} not found`);
+            return false;
+        }
+
+        // Find the question
+        const questionIndex = history[sessionIndex].questions.findIndex(
+            (q: SessionQuestion) => q.topic === topicName
+        );
+        if (questionIndex === -1) {
+            console.error(`❌ [ADVICE] Question "${topicName}" not found in session`);
+            return false;
+        }
+
+        // Update the advice
+        history[sessionIndex].questions[questionIndex].advice = advice;
+
+        // Save back to file
+        file.write(JSON.stringify(history, null, 2));
+        console.log(`✅ [ADVICE] Successfully updated advice for "${topicName}"`);
+
+        return true;
+    } catch (error) {
+        console.error('❌ [ADVICE] Error updating advice:', error);
+        return false;
     }
-    
-    // Find the question
-    const questionIndex = history[sessionIndex].questions.findIndex(
-      (q: SessionQuestion) => q.topic === topicName
-    );
-    if (questionIndex === -1) {
-      console.error(`❌ [ADVICE] Question "${topicName}" not found in session`);
-      return false;
-    }
-    
-    // Update the advice
-    history[sessionIndex].questions[questionIndex].advice = advice;
-    
-    // Save back to file
-    file.write(JSON.stringify(history, null, 2));
-    console.log(`✅ [ADVICE] Successfully updated advice for "${topicName}"`);
-    
-    return true;
-  } catch (error) {
-    console.error('❌ [ADVICE] Error updating advice:', error);
-    return false;
-  }
 };
 
 /**
@@ -374,21 +376,20 @@ export const getFavoriteSessions = async (): Promise<InterviewSession[]> => {
  */
 export const exportHistoryDebug = async (): Promise<void> => {
     console.log('📤 [EXPORT] Starting export...');
-    
+
     const history = await getHistory();
     console.log('📤 [EXPORT] Found', history.length, 'sessions');
-    
+
     // Check for empty history - RETURN EARLY
     if (history.length === 0) {
         console.warn('⚠️ [EXPORT] No sessions to export!');
-        const { Alert } = await import('react-native');
         Alert.alert(
             'No History to Export',
             'No interview history to export. Complete an interview first.'
         );
         return;
     }
-    
+
     const debugData = history.map(session => ({
         id: session.id,
         role: session.role,
@@ -413,26 +414,22 @@ export const exportHistoryDebug = async (): Promise<void> => {
 
     const jsonString = JSON.stringify(debugData, null, 2);
     console.log('📤 [EXPORT] JSON size:', jsonString.length, 'chars');
-    
+
     const timestamp = Date.now();
     const filename = `interview_history_${timestamp}.json`;
     const file = new File(Paths.cache, filename);
     console.log('📤 [EXPORT] File URI:', file.uri);
 
     try {
-        // Static imports
-        const Sharing = await import('expo-sharing');
-        const { Alert } = await import('react-native');
-
         // Save to cache directory
         file.write(jsonString);
         console.log('📤 [EXPORT] File written successfully');
-        
+
         // Verify file was created
         const info = file.info();
         console.log('📤 [EXPORT] File exists:', info.exists);
         console.log('📤 [EXPORT] File size:', info.size, 'bytes');
-        
+
         if (!info.exists) {
             console.error('❌ [EXPORT] File was not created!');
             Alert.alert('Export Error', 'Failed to create export file');
@@ -442,7 +439,7 @@ export const exportHistoryDebug = async (): Promise<void> => {
         // Check if sharing is available
         const isAvailable = await Sharing.isAvailableAsync();
         console.log('📤 [EXPORT] Sharing available:', isAvailable);
-        
+
         if (isAvailable) {
             await Sharing.shareAsync(info.uri || file.uri, {
                 mimeType: 'application/json',
@@ -464,15 +461,13 @@ export const exportHistoryDebug = async (): Promise<void> => {
             console.error('❌ [EXPORT] Error message:', error.message);
             console.error('❌ [EXPORT] Error stack:', error.stack);
         }
-        
+
         // Fallback: copy to clipboard
         try {
-            const { Alert } = await import('react-native');
             await Clipboard.setStringAsync(jsonString);
             Alert.alert('Export Error', 'History copied to clipboard as fallback');
         } catch (e) {
             console.error('❌ [EXPORT] Clipboard fallback failed:', e);
-            const { Alert } = await import('react-native');
             Alert.alert('Export Failed', 'Could not export or copy to clipboard. Please try again.');
         }
     }

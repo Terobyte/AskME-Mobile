@@ -11,10 +11,10 @@ class TTSService {
   private soundObjects: Audio.Sound[] = [];
   private isPlaying: boolean = false;
   private isInitialized: boolean = false;
-  
+
   // NEW: Mute state
   private isMuted: boolean = false;
-  
+
   // NEW: TTS Provider selection
   private ttsProvider: TTSProvider = 'cartesia';
   private openaiVoice: OpenAIVoice = 'nova';
@@ -28,10 +28,10 @@ class TTSService {
 
   private async initialize(): Promise<void> {
     if (this.isInitialized) return;
-    
+
     try {
       console.log("🔊 [TTS] Initializing audio...");
-      
+
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
@@ -41,10 +41,10 @@ class TTSService {
         interruptionModeIOS: InterruptionModeIOS.DuckOthers,
         interruptionModeAndroid: InterruptionModeAndroid.DuckOthers
       });
-      
+
       this.isInitialized = true;
       console.log("✅ [TTS] Audio initialized");
-      
+
     } catch (error) {
       console.error("❌ [TTS] Initialization failed:", error);
     }
@@ -60,14 +60,14 @@ class TTSService {
   setMuted(muted: boolean): void {
     console.log(`🔇 [TTS] Mute state changed: ${muted}`);
     this.isMuted = muted;
-    
+
     // Если включаем mute во время воспроизведения - остановить
     if (muted && this.isPlaying) {
       console.log('🔇 [TTS] Stopping playback due to mute');
       this.stop();
     }
   }
-  
+
   /**
    * Get current mute state
    */
@@ -87,14 +87,14 @@ class TTSService {
     this.ttsProvider = provider;
     this.saveSettings();
   }
-  
+
   /**
    * Get current TTS provider
    */
   getTtsProvider(): TTSProvider {
     return this.ttsProvider;
   }
-  
+
   /**
    * Set OpenAI voice
    */
@@ -103,7 +103,7 @@ class TTSService {
     this.openaiVoice = voice;
     this.saveSettings();
   }
-  
+
   /**
    * Get current OpenAI voice
    */
@@ -122,7 +122,7 @@ class TTSService {
     try {
       const AsyncStorage = await import('@react-native-async-storage/async-storage');
       const settings = await AsyncStorage.default.getItem('tts_settings');
-      
+
       if (settings) {
         const parsed = JSON.parse(settings);
         this.ttsProvider = parsed.provider || 'cartesia';
@@ -133,7 +133,7 @@ class TTSService {
       console.warn('⚠️ [TTS] Failed to load settings:', error);
     }
   }
-  
+
   /**
    * Save settings to AsyncStorage
    */
@@ -167,23 +167,23 @@ class TTSService {
       console.log(`🔇 [TTS] Muted - skipping speech: "${text.substring(0, 30)}..."`);
       return true; // Возвращаем true чтобы не ломать логику
     }
-    
+
     try {
       console.log(`🎙️ [TTS] Speaking: "${text.substring(0, 50)}..."`);
-      
+
       const audioFile = await this.fetchAudioFile(text, options);
-      
+
       if (!audioFile) {
         console.error("❌ [TTS] Failed to fetch audio");
         return false;
       }
-      
+
       if (options?.autoPlay !== false) {
         return await this.playAudioFile(audioFile, options?.speed);
       }
-      
+
       return true;
-      
+
     } catch (error) {
       console.error("❌ [TTS] Speak error:", error);
       return false;
@@ -236,12 +236,12 @@ class TTSService {
         console.error('❌ [TTS] OpenAI API key not configured');
         return null;
       }
-      
+
       console.log(`🎙️ [TTS] OpenAI TTS request...`);
       console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
       console.log(`🎙️ [TTS] Voice: ${this.openaiVoice}`);
       console.log(`🎙️ [TTS] Speed: ${options?.speed || 1.0}x`);
-      
+
       // OpenAI API request
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
@@ -257,31 +257,31 @@ class TTSService {
           response_format: 'mp3',
         }),
       });
-      
+
       console.log(`📥 [TTS] OpenAI Response status: ${response.status}`);
-      
+
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`❌ [TTS] OpenAI API Error:`, errorText);
         return null;
       }
-      
+
       // Получить аудио данные
       const arrayBuffer = await response.arrayBuffer();
       console.log(`✅ [TTS] OpenAI Audio received: ${arrayBuffer.byteLength} bytes`);
-      
+
       // Сохранить в файл
       const filename = `openai_speech_${Date.now()}.mp3`;
       const filepath = `${FileSystem.cacheDirectory}${filename}`;
-      
+
       const base64Audio = this.arrayBufferToBase64(arrayBuffer);
       await FileSystem.writeAsStringAsync(filepath, base64Audio, {
         encoding: 'base64',
       });
-      
+
       console.log(`💾 [TTS] OpenAI Audio saved: ${filepath}`);
       return filepath;
-      
+
     } catch (error) {
       console.error('❌ [TTS] OpenAI TTS error:', error);
       return null;
@@ -306,17 +306,17 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Starting Cartesia REST API call...`);
       console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
-      
+
       // ⚠️ TEMPORARY HARDCODE - FOR TESTING ONLY
       const API_KEY = "sk_car_v24CHZgbZT7RRQC1mmsZbi";  // ← Your real key from dashboard
       const VOICE_ID = "e07c00bc-4134-4eae-9ea4-1a55fb45746b";
-      
+
       console.log("⚠️⚠️⚠️ [TTS] Using HARDCODED key (TEST MODE)");
-      
+
       console.log(`🔑 [TTS] Key loaded: ${API_KEY.substring(0, 25)}...`);
       console.log(`🎭 [TTS] Emotion: ${options?.emotion || 'neutral'}`);
       console.log(`⚡ [TTS] Speed: ${options?.speed || 1.0}x`);
-      
+
       // Build request with emotion controls
       const requestBody: any = {
         model_id: "sonic-3",
@@ -340,14 +340,14 @@ class TTSService {
           emotion: emotionLevel
         };
       }
-      
+
       console.log(`📤 [TTS] Request:`, JSON.stringify(requestBody, null, 2));
-      
+
       // Helper function for fetch with timeout
       const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number = 15000) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-        
+
         try {
           const response = await fetch(url, {
             ...options,
@@ -362,11 +362,11 @@ class TTSService {
           throw error;
         }
       };
-      
+
       // Make request with timeout and timing
       const fetchStartTime = Date.now();
       console.log(`📤 [TTS] Starting TTS request to Cartesia API...`);
-      
+
       const response = await fetchWithTimeout("https://api.cartesia.ai/tts/bytes", {
         method: "POST",
         headers: {
@@ -376,44 +376,44 @@ class TTSService {
         },
         body: JSON.stringify(requestBody)
       }, 15000); // 15 seconds timeout
-      
+
       const fetchTime = Date.now() - fetchStartTime;
       console.log(`📥 [TTS] Fetch completed in ${fetchTime}ms`);
       console.log(`📥 [TTS] Response status: ${response.status}`);
-      
+
       // Check response
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`❌ [TTS] API Error (${response.status}):`, errorText);
         console.error(`❌ [TTS] Check API key, request format, and network connectivity`);
-        
+
         return null;
       }
-      
+
       // Get audio data with timing
       console.log(`✅ [TTS] Response OK, reading audio...`);
       const arrayBufferStartTime = Date.now();
       const arrayBuffer = await response.arrayBuffer();
       const arrayBufferTime = Date.now() - arrayBufferStartTime;
       console.log(`✅ [TTS] Audio received: ${arrayBuffer.byteLength} bytes (ArrayBuffer read in ${arrayBufferTime}ms)`);
-      
+
       // Save to file
       const filename = `speech_${Date.now()}.mp3`;
       const filepath = `${FileSystem.cacheDirectory}${filename}`;
-      
+
       const base64Audio = this.arrayBufferToBase64(arrayBuffer);
-      
+
       const saveStartTime = Date.now();
       await FileSystem.writeAsStringAsync(filepath, base64Audio, {
         encoding: 'base64'
       });
       const saveTime = Date.now() - saveStartTime;
-      
+
       console.log(`💾 [TTS] Saved to: ${filepath} (File write in ${saveTime}ms)`);
       console.log(`⏱️ [TTS] BREAKDOWN: Fetch=${fetchTime}ms, ArrayBuffer=${arrayBufferTime}ms, Save=${saveTime}ms, Total=${fetchTime + arrayBufferTime + saveTime}ms`);
-      
+
       return filepath;
-      
+
     } catch (error) {
       console.error("❌ [TTS] Fatal error:", error);
       if (error instanceof Error) {
@@ -432,29 +432,29 @@ class TTSService {
       const playbackRate = speed || 1.0;
       console.log(`🔊 [TTS] Playing: ${filepath}`);
       console.log(`🔊 [TTS] Playing at rate: ${playbackRate}`);
-      
+
       const { sound } = await Audio.Sound.createAsync(
         { uri: filepath },
-        { 
-          shouldPlay: true, 
+        {
+          shouldPlay: true,
           volume: 1.0,
           rate: playbackRate,
           pitchCorrectionQuality: Audio.PitchCorrectionQuality.High
         }
       );
-      
+
       this.soundObjects.push(sound);
       this.isPlaying = true;
-      
+
       sound.setOnPlaybackStatusUpdate((status) => {
         if (status.isLoaded && status.didJustFinish) {
           console.log("✅ [TTS] Playback finished");
           this.isPlaying = false;
         }
       });
-      
+
       return true;
-      
+
     } catch (error) {
       console.error("❌ [TTS] Playback error:", error);
       this.isPlaying = false;
@@ -479,7 +479,7 @@ class TTSService {
    */
   async stop(): Promise<void> {
     console.log("⏹️ [TTS] Stopping all audio...");
-    
+
     for (const sound of this.soundObjects) {
       try {
         await sound.stopAsync();
@@ -488,10 +488,10 @@ class TTSService {
         console.error("❌ [TTS] Stop error:", error);
       }
     }
-    
+
     this.soundObjects = [];
     this.isPlaying = false;
-    
+
     console.log("✅ [TTS] All audio stopped");
   }
 
@@ -512,34 +512,34 @@ class TTSService {
       console.log(`🔇 [TTS] Muted - skipping prepare: "${text.substring(0, 30)}..."`);
       return null;
     }
-    
+
     try {
       console.log(`🎙️ [TTS] Preparing audio: "${text.substring(0, 50)}..."`);
-      
+
       const audioFile = await this.fetchAudioFile(text, options);
-      
+
       if (!audioFile) {
         console.error("❌ [TTS] Failed to fetch audio");
         return null;
       }
-      
+
       console.log(`🔊 [TTS] Loading audio from: ${audioFile}`);
-      
+
       const { sound } = await Audio.Sound.createAsync(
         { uri: audioFile },
-        { 
-          shouldPlay: false, 
+        {
+          shouldPlay: false,
           volume: 1.0,
           rate: options?.speed || 1.0,
           pitchCorrectionQuality: Audio.PitchCorrectionQuality.High
         }
       );
-      
+
       this.soundObjects.push(sound);
-      
+
       console.log("✅ [TTS] Audio prepared successfully");
       return sound;
-      
+
     } catch (error) {
       console.error("❌ [TTS] prepareAudio error:", error);
       return null;

@@ -630,7 +630,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             console.log("↩️ User asked to GO BACK to PREVIOUS question.");
             newPatience = 110;
             transitionMode = 'STAY';  // ← КРИТИЧНО: НЕ ПЕРЕХОДИМ ВПЕРЁД!
-            
+
             // ВАЛИДАЦИЯ: Можно ли вернуться назад?
             if (currentTopicIndex > 0) {
               effectiveTopicIndex = currentTopicIndex - 1;  // ← Идём на один вопрос назад
@@ -847,8 +847,34 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           }
 
           // CHECK FOR END OF INTERVIEW
+          // ============================================
+          // DIAGNOSTIC LOGGING FOR VICTORIA "THANK YOU" BUG
+          // ============================================
+          console.log('═══════════════════════════════════════');
+          console.log('🎤 [INTERVIEW STATE] Checking if interview should finish');
+          console.log('─────────────────────────────────────────');
+          console.log('📊 Topic Progress:');
+          console.log(`   Current Index: ${currentTopicIndex}`);
+          console.log(`   Next Index: ${nextIndex}`);
+          console.log(`   Total Topics: ${plan?.queue.length || 0}`);
+          console.log(`   Is Last Topic: ${currentTopicIndex === (plan?.queue.length || 0) - 1}`);
+          console.log('─────────────────────────────────────────');
+          console.log('🎯 Current Topic:', plan?.queue[currentTopicIndex]?.topic || 'N/A');
+          console.log('⏭️  Next Topic:', plan?.queue[nextIndex]?.topic || 'NONE (would finish)');
+          console.log('─────────────────────────────────────────');
+          console.log('🔀 Transition Mode:', transitionMode);
+          console.log('   STAY = ask follow-up question');
+          console.log('   NEXT_PASS/NEXT_FAIL = move to next topic');
+          console.log('   FINISH_INTERVIEW = end interview');
+          console.log('─────────────────────────────────────────');
+          console.log('⚠️  FINISH_INTERVIEW should ONLY trigger when:');
+          console.log(`   nextIndex (${nextIndex}) >= total topics (${plan?.queue.length || 0})`);
+          console.log(`   Result: ${nextIndex >= (plan?.queue.length || 0)}`);
+          console.log('═══════════════════════════════════════');
+
           if (plan && nextIndex >= plan.queue.length) {
             console.log("🏁 End of Interview Detected.");
+            console.log(`✅ [FINISH] nextIndex (${nextIndex}) >= queue length (${plan.queue.length})`);
             transitionMode = 'FINISH_INTERVIEW';
             shouldFinishInterview = true;
           } else {
@@ -1004,11 +1030,11 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       setIsFinished(false);
       setFinalReport(null);
       historyBuffer.current = [];
-      
+
       // ============================================
       // PDF RESUME SUPPORT LOGIC
       // ============================================
-      
+
       // Обработка ResumeData (PDF) или string (legacy)
       if (typeof resume === 'string') {
         // Legacy: строка с текстом резюме
@@ -1090,7 +1116,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
     console.log(`   Total messages: ${historyBuffer.current.length}`);
     console.log(`   Assistant messages: ${historyBuffer.current.filter(m => m.role === 'assistant').length}`);
     console.log(`   User messages: ${historyBuffer.current.filter(m => m.role === 'user').length}`);
-    
+
     if (historyBuffer.current.length > 0) {
       console.log(`   First message:`, historyBuffer.current[0]);
       console.log(`   Last message:`, historyBuffer.current[historyBuffer.current.length - 1]);
@@ -1114,15 +1140,15 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
         if (agentRef.current) {
           console.log("🤖 [FORCE_FINISH] Calling evaluateBatch()...");
           const results = await agentRef.current.evaluateBatch(historyBuffer.current);
-          
+
           console.log(`✅ [FORCE_FINISH] evaluateBatch() returned ${results.length} results`);
-          
+
           if (results.length > 0) {
             console.log("📝 [FORCE_FINISH] First result:", results[0]);
           } else {
             console.warn("⚠️ [FORCE_FINISH] evaluateBatch() returned empty array!");
           }
-          
+
           // ===== FALLBACK: Если результатов нет, используем mock данные =====
           if (results.length === 0) {
             console.warn("⚠️ [FORCE_FINISH] evaluateBatch() returned empty, using fallback");
@@ -1132,7 +1158,7 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
           } else {
             partialQuestions.push(...results);
           }
-          
+
           console.log(`✅ [FORCE_FINISH] Evaluated ${partialQuestions.length} topics`);
         } else {
           console.warn("⚠️ [FORCE_FINISH] Agent not initialized, using fallback");

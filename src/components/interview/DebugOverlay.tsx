@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Modal, TouchableWithoutFeedback } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
 import { VibeConfig, EvaluationMetrics, TTSProvider, OpenAIVoice } from '../../types';
@@ -129,277 +129,293 @@ export const DebugOverlay: React.FC<DebugOverlayProps> = ({
     };
 
     return (
-        <View style={styles.debugOverlay}>
-            <ScrollView showsVerticalScrollIndicator={false}>
-                <View style={styles.debugHeader}>
-                    <Text style={styles.debugTitle}>🛠️ DEBUG</Text>
-                    <TouchableOpacity onPress={onClose}>
-                        <Ionicons name="close-circle" size={24} color="#FF3B30" />
-                    </TouchableOpacity>
-                </View>
-
-                {/* NEW: Live Metrics Section */}
-                <View style={styles.liveMetricsSection}>
-                    <Text style={styles.sectionTitle}>📊 LIVE METRICS</Text>
-
-                    {/* Current Topic */}
-                    <View style={styles.topicCard}>
-                        <Text style={styles.topicNumber}>Topic #{currentTopicIndex}</Text>
-                        <Text style={styles.topicName} numberOfLines={2}>{currentTopic}</Text>
-                    </View>
-
-                    {/* Progress Bars */}
-                    <View style={styles.progressSection}>
-                        <View style={styles.progressItem}>
-                            <View style={styles.progressLabelRow}>
-                                <Text style={styles.progressLabel}>SUCCESS</Text>
-                                <Text style={[styles.progressValue, { color: getSuccessColor(topicSuccess) }]}>
-                                    {Math.round(topicSuccess)}%
-                                </Text>
-                            </View>
-                            <View style={styles.progressTrack}>
-                                <View style={[
-                                    styles.progressBar,
-                                    { width: `${topicSuccess}%`, backgroundColor: getSuccessColor(topicSuccess) }
-                                ]} />
-                            </View>
-                        </View>
-
-                        <View style={styles.progressItem}>
-                            <View style={styles.progressLabelRow}>
-                                <Text style={styles.progressLabel}>PATIENCE</Text>
-                                <Text style={[styles.progressValue, { color: topicPatience >= 70 ? '#EF4444' : '#F59E0B' }]}>
-                                    {Math.round(topicPatience)}%
-                                </Text>
-                            </View>
-                            <View style={styles.progressTrack}>
-                                <View style={[
-                                    styles.progressBar,
-                                    {
-                                        width: `${topicPatience}%`,
-                                        backgroundColor: topicPatience >= 70 ? '#EF4444' : '#F59E0B'
-                                    }
-                                ]} />
-                            </View>
-                        </View>
-                    </View>
-
-                    {/* Metrics Grid */}
-                    {metrics && (
-                        <View style={styles.metricsGrid}>
-                            <View style={styles.metricCard}>
-                                <Text style={styles.metricLabel}>Accuracy</Text>
-                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.accuracy) }]}>
-                                    {metrics.accuracy}
-                                </Text>
-                            </View>
-                            <View style={styles.metricCard}>
-                                <Text style={styles.metricLabel}>Depth</Text>
-                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.depth) }]}>
-                                    {metrics.depth}
-                                </Text>
-                            </View>
-                            <View style={styles.metricCard}>
-                                <Text style={styles.metricLabel}>Structure</Text>
-                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.structure) }]}>
-                                    {metrics.structure}
-                                </Text>
-                            </View>
-                            <View style={[styles.metricCard, styles.overallCard]}>
-                                <Text style={styles.metricLabel}>Overall</Text>
-                                <Text style={[styles.metricValueLarge, { color: getScoreColor(Number(calculateOverall())) }]}>
-                                    {calculateOverall()}
-                                </Text>
-                            </View>
-                        </View>
-                    )}
-                </View>
-
-                {/* NEW: Current Vibe Display */}
-                {currentVibe && (
-                    <View style={styles.vibeSection}>
-                        <Text style={styles.vibeSectionTitle}>🎭 Current Vibe</Text>
-                        <View style={styles.vibeCard}>
-                            <View style={styles.vibeHeader}>
-                                <Text style={styles.vibeLabel}>{currentVibe.label}</Text>
-                                <Text style={styles.vibeEmotion}>{currentVibe.cartesiaEmotion}</Text>
-                            </View>
-                            <Text style={styles.vibeDescription}>{currentVibe.description}</Text>
-                            <View style={styles.vibeStats}>
-                                <View style={styles.vibeStatItem}>
-                                    <Text style={styles.vibeStatLabel}>Speed:</Text>
-                                    <Text style={styles.vibeStatValue}>{currentVibe.speed.toFixed(2)}x</Text>
+        <Modal
+            visible={visible}
+            transparent={true}
+            animationType="slide"
+            onRequestClose={onClose}
+        >
+            {/* OUTER LAYER - Click to close */}
+            <TouchableWithoutFeedback onPress={onClose}>
+                <View style={styles.modalBackground}>
+                    {/* INNER LAYER - Click does NOT close */}
+                    <TouchableWithoutFeedback onPress={() => { }}>
+                        <View style={styles.debugOverlay}>
+                            <ScrollView showsVerticalScrollIndicator={false}>
+                                <View style={styles.debugHeader}>
+                                    <Text style={styles.debugTitle}>🛠️ DEBUG</Text>
+                                    <TouchableOpacity onPress={onClose}>
+                                        <Ionicons name="close-circle" size={24} color="#FF3B30" />
+                                    </TouchableOpacity>
                                 </View>
-                                {currentVibe.emotionLevel && currentVibe.emotionLevel.length > 0 && (
-                                    <View style={styles.vibeStatItem}>
-                                        <Text style={styles.vibeStatLabel}>Emotions:</Text>
-                                        <Text style={styles.vibeStatValue} numberOfLines={1}>
-                                            {currentVibe.emotionLevel.join(', ')}
-                                        </Text>
+
+                                {/* NEW: Live Metrics Section */}
+                                <View style={styles.liveMetricsSection}>
+                                    <Text style={styles.sectionTitle}>📊 LIVE METRICS</Text>
+
+                                    {/* Current Topic */}
+                                    <View style={styles.topicCard}>
+                                        <Text style={styles.topicNumber}>Topic #{currentTopicIndex}</Text>
+                                        <Text style={styles.topicName} numberOfLines={2}>{currentTopic}</Text>
+                                    </View>
+
+                                    {/* Progress Bars */}
+                                    <View style={styles.progressSection}>
+                                        <View style={styles.progressItem}>
+                                            <View style={styles.progressLabelRow}>
+                                                <Text style={styles.progressLabel}>SUCCESS</Text>
+                                                <Text style={[styles.progressValue, { color: getSuccessColor(topicSuccess) }]}>
+                                                    {Math.round(topicSuccess)}%
+                                                </Text>
+                                            </View>
+                                            <View style={styles.progressTrack}>
+                                                <View style={[
+                                                    styles.progressBar,
+                                                    { width: `${topicSuccess}%`, backgroundColor: getSuccessColor(topicSuccess) }
+                                                ]} />
+                                            </View>
+                                        </View>
+
+                                        <View style={styles.progressItem}>
+                                            <View style={styles.progressLabelRow}>
+                                                <Text style={styles.progressLabel}>PATIENCE</Text>
+                                                <Text style={[styles.progressValue, { color: topicPatience >= 70 ? '#EF4444' : '#F59E0B' }]}>
+                                                    {Math.round(topicPatience)}%
+                                                </Text>
+                                            </View>
+                                            <View style={styles.progressTrack}>
+                                                <View style={[
+                                                    styles.progressBar,
+                                                    {
+                                                        width: `${topicPatience}%`,
+                                                        backgroundColor: topicPatience >= 70 ? '#EF4444' : '#F59E0B'
+                                                    }
+                                                ]} />
+                                            </View>
+                                        </View>
+                                    </View>
+
+                                    {/* Metrics Grid */}
+                                    {metrics && (
+                                        <View style={styles.metricsGrid}>
+                                            <View style={styles.metricCard}>
+                                                <Text style={styles.metricLabel}>Accuracy</Text>
+                                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.accuracy) }]}>
+                                                    {metrics.accuracy}
+                                                </Text>
+                                            </View>
+                                            <View style={styles.metricCard}>
+                                                <Text style={styles.metricLabel}>Depth</Text>
+                                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.depth) }]}>
+                                                    {metrics.depth}
+                                                </Text>
+                                            </View>
+                                            <View style={styles.metricCard}>
+                                                <Text style={styles.metricLabel}>Structure</Text>
+                                                <Text style={[styles.metricValue, { color: getScoreColor(metrics.structure) }]}>
+                                                    {metrics.structure}
+                                                </Text>
+                                            </View>
+                                            <View style={[styles.metricCard, styles.overallCard]}>
+                                                <Text style={styles.metricLabel}>Overall</Text>
+                                                <Text style={[styles.metricValueLarge, { color: getScoreColor(Number(calculateOverall())) }]}>
+                                                    {calculateOverall()}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    )}
+                                </View>
+
+                                {/* NEW: Current Vibe Display */}
+                                {currentVibe && (
+                                    <View style={styles.vibeSection}>
+                                        <Text style={styles.vibeSectionTitle}>🎭 Current Vibe</Text>
+                                        <View style={styles.vibeCard}>
+                                            <View style={styles.vibeHeader}>
+                                                <Text style={styles.vibeLabel}>{currentVibe.label}</Text>
+                                                <Text style={styles.vibeEmotion}>{currentVibe.cartesiaEmotion}</Text>
+                                            </View>
+                                            <Text style={styles.vibeDescription}>{currentVibe.description}</Text>
+                                            <View style={styles.vibeStats}>
+                                                <View style={styles.vibeStatItem}>
+                                                    <Text style={styles.vibeStatLabel}>Speed:</Text>
+                                                    <Text style={styles.vibeStatValue}>{currentVibe.speed.toFixed(2)}x</Text>
+                                                </View>
+                                                {currentVibe.emotionLevel && currentVibe.emotionLevel.length > 0 && (
+                                                    <View style={styles.vibeStatItem}>
+                                                        <Text style={styles.vibeStatLabel}>Emotions:</Text>
+                                                        <Text style={styles.vibeStatValue} numberOfLines={1}>
+                                                            {currentVibe.emotionLevel.join(', ')}
+                                                        </Text>
+                                                    </View>
+                                                )}
+                                            </View>
+                                        </View>
                                     </View>
                                 )}
-                            </View>
+
+                                {!currentVibe && (
+                                    <View style={styles.vibeSection}>
+                                        <Text style={styles.vibeNoData}>No vibe data yet (answer a question first)</Text>
+                                    </View>
+                                )}
+
+                                {/* NEW: TTS Provider Info */}
+                                {ttsProvider && (
+                                    <View style={styles.ttsInfoSection}>
+                                        <Text style={styles.sectionTitle}>🎙️ TTS Provider</Text>
+                                        <View style={styles.ttsInfoCard}>
+                                            <Text style={[
+                                                styles.ttsProviderLabel,
+                                                ttsProvider === 'cartesia' ? styles.cartesiaLabel : styles.openaiLabel
+                                            ]}>
+                                                {ttsProvider.toUpperCase()}
+                                            </Text>
+                                            {ttsProvider === 'openai' && (
+                                                <Text style={styles.ttsVoiceLabel}>
+                                                    Voice: {openaiVoice}
+                                                </Text>
+                                            )}
+                                            {ttsProvider === 'cartesia' && (
+                                                <Text style={styles.ttsVoiceLabel}>
+                                                    Voice: Victoria
+                                                </Text>
+                                            )}
+                                        </View>
+                                    </View>
+                                )}
+
+                                {/* NEW: Engagement Slider */}
+                                <View style={styles.debugSection}>
+                                    <Text style={styles.debugLabel}>⭐ Engagement: {engagement.toFixed(0)}%</Text>
+                                    <Slider
+                                        style={{ width: '100%', height: 40 }}
+                                        minimumValue={0}
+                                        maximumValue={100}
+                                        step={5}
+                                        value={engagement}
+                                        onValueChange={setEngagement}
+                                        minimumTrackTintColor="#30D158"
+                                        maximumTrackTintColor="#3A3A3C"
+                                        thumbTintColor="#30D158"
+                                    />
+                                    <View style={styles.engagementMarkers}>
+                                        <Text style={styles.engagementMarker}>Disengaged</Text>
+                                        <Text style={styles.engagementMarker}>Neutral</Text>
+                                        <Text style={styles.engagementMarker}>Highly Engaged</Text>
+                                    </View>
+                                </View>
+
+                                {/* Anger Level Control */}
+                                <View style={styles.debugSection}>
+                                    <Text style={styles.debugLabel}>🔥 Anger: {anger.toFixed(0)}%</Text>
+                                    <Slider
+                                        style={{ width: '100%', height: 30 }}
+                                        minimumValue={0}
+                                        maximumValue={100}
+                                        step={5}
+                                        value={anger}
+                                        onValueChange={setAnger}
+                                        minimumTrackTintColor="#FF3B30"
+                                        thumbTintColor="#FF3B30"
+                                    />
+                                </View>
+
+                                {/* Quality Level Selection */}
+                                <View style={styles.debugSection}>
+                                    <Text style={styles.debugLabel}>Quality Level:</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
+                                        {qualityLevels.map(level => (
+                                            <TouchableOpacity
+                                                key={level.value}
+                                                style={[
+                                                    styles.debugChip,
+                                                    debugValue === level.value && {
+                                                        backgroundColor: level.color,
+                                                        borderColor: level.color
+                                                    }
+                                                ]}
+                                                onPress={() => setDebugValue(level.value)}
+                                            >
+                                                <Text style={[
+                                                    styles.debugChipText,
+                                                    debugValue === level.value && styles.debugChipTextActive
+                                                ]}>
+                                                    {level.label}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+                                </View>
+
+                                {/* Special Actions Selection */}
+                                <View style={styles.debugSection}>
+                                    <Text style={styles.debugLabel}>Special Actions:</Text>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
+                                        {specialActions.map(action => (
+                                            <TouchableOpacity
+                                                key={action.value}
+                                                style={[
+                                                    styles.debugChip,
+                                                    debugValue === action.value && {
+                                                        backgroundColor: action.color,
+                                                        borderColor: action.color
+                                                    }
+                                                ]}
+                                                onPress={() => setDebugValue(action.value)}
+                                            >
+                                                <Text style={[
+                                                    styles.debugChipText,
+                                                    debugValue === action.value && styles.debugChipTextActive
+                                                ]}>
+                                                    {action.label}
+                                                </Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+                                </View>
+
+                                {/* Simulate Row */}
+                                <View style={styles.debugRow}>
+                                    <TouchableOpacity style={styles.debugButton} onPress={onSimulate} disabled={isSimulating}>
+                                        <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]}
+                                        onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
+                                    >
+                                        <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                {/* Force Finish Button */}
+                                <TouchableOpacity
+                                    style={[styles.debugButton, { backgroundColor: '#FF3B30', marginTop: 15, marginRight: 0 }]}
+                                    onPress={onForceFinish}
+                                >
+                                    <Text style={styles.debugButtonText}>🛑 FORCE FINISH</Text>
+                                </TouchableOpacity>
+                            </ScrollView>
                         </View>
-                    </View>
-                )}
-
-                {!currentVibe && (
-                    <View style={styles.vibeSection}>
-                        <Text style={styles.vibeNoData}>No vibe data yet (answer a question first)</Text>
-                    </View>
-                )}
-
-                {/* NEW: TTS Provider Info */}
-                {ttsProvider && (
-                    <View style={styles.ttsInfoSection}>
-                        <Text style={styles.sectionTitle}>🎙️ TTS Provider</Text>
-                        <View style={styles.ttsInfoCard}>
-                            <Text style={[
-                                styles.ttsProviderLabel,
-                                ttsProvider === 'cartesia' ? styles.cartesiaLabel : styles.openaiLabel
-                            ]}>
-                                {ttsProvider.toUpperCase()}
-                            </Text>
-                            {ttsProvider === 'openai' && (
-                                <Text style={styles.ttsVoiceLabel}>
-                                    Voice: {openaiVoice}
-                                </Text>
-                            )}
-                            {ttsProvider === 'cartesia' && (
-                                <Text style={styles.ttsVoiceLabel}>
-                                    Voice: Victoria
-                                </Text>
-                            )}
-                        </View>
-                    </View>
-                )}
-
-                {/* NEW: Engagement Slider */}
-                <View style={styles.debugSection}>
-                    <Text style={styles.debugLabel}>⭐ Engagement: {engagement.toFixed(0)}%</Text>
-                    <Slider
-                        style={{ width: '100%', height: 40 }}
-                        minimumValue={0}
-                        maximumValue={100}
-                        step={5}
-                        value={engagement}
-                        onValueChange={setEngagement}
-                        minimumTrackTintColor="#30D158"
-                        maximumTrackTintColor="#3A3A3C"
-                        thumbTintColor="#30D158"
-                    />
-                    <View style={styles.engagementMarkers}>
-                        <Text style={styles.engagementMarker}>Disengaged</Text>
-                        <Text style={styles.engagementMarker}>Neutral</Text>
-                        <Text style={styles.engagementMarker}>Highly Engaged</Text>
-                    </View>
+                    </TouchableWithoutFeedback>
                 </View>
-
-                {/* Anger Level Control */}
-                <View style={styles.debugSection}>
-                    <Text style={styles.debugLabel}>🔥 Anger: {anger.toFixed(0)}%</Text>
-                    <Slider
-                        style={{ width: '100%', height: 30 }}
-                        minimumValue={0}
-                        maximumValue={100}
-                        step={5}
-                        value={anger}
-                        onValueChange={setAnger}
-                        minimumTrackTintColor="#FF3B30"
-                        thumbTintColor="#FF3B30"
-                    />
-                </View>
-
-                {/* Quality Level Selection */}
-                <View style={styles.debugSection}>
-                    <Text style={styles.debugLabel}>Quality Level:</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
-                        {qualityLevels.map(level => (
-                            <TouchableOpacity
-                                key={level.value}
-                                style={[
-                                    styles.debugChip,
-                                    debugValue === level.value && {
-                                        backgroundColor: level.color,
-                                        borderColor: level.color
-                                    }
-                                ]}
-                                onPress={() => setDebugValue(level.value)}
-                            >
-                                <Text style={[
-                                    styles.debugChipText,
-                                    debugValue === level.value && styles.debugChipTextActive
-                                ]}>
-                                    {level.label}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
-                    </ScrollView>
-                </View>
-
-                {/* Special Actions Selection */}
-                <View style={styles.debugSection}>
-                    <Text style={styles.debugLabel}>Special Actions:</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.debugScroll}>
-                        {specialActions.map(action => (
-                            <TouchableOpacity
-                                key={action.value}
-                                style={[
-                                    styles.debugChip,
-                                    debugValue === action.value && {
-                                        backgroundColor: action.color,
-                                        borderColor: action.color
-                                    }
-                                ]}
-                                onPress={() => setDebugValue(action.value)}
-                            >
-                                <Text style={[
-                                    styles.debugChipText,
-                                    debugValue === action.value && styles.debugChipTextActive
-                                ]}>
-                                    {action.label}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
-                    </ScrollView>
-                </View>
-
-                {/* Simulate Row */}
-                <View style={styles.debugRow}>
-                    <TouchableOpacity style={styles.debugButton} onPress={onSimulate} disabled={isSimulating}>
-                        <Text style={styles.debugButtonText}>{isSimulating ? "⏳..." : "⚡ SIMULATE"}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.debugToggle, isDebugTtsMuted && styles.debugToggleActive]}
-                        onPress={() => setIsDebugTtsMuted(!isDebugTtsMuted)}
-                    >
-                        <Text style={styles.debugToggleText}>{isDebugTtsMuted ? "🔇" : "🔊"}</Text>
-                    </TouchableOpacity>
-                </View>
-
-                {/* Force Finish Button */}
-                <TouchableOpacity
-                    style={[styles.debugButton, { backgroundColor: '#FF3B30', marginTop: 15, marginRight: 0 }]}
-                    onPress={onForceFinish}
-                >
-                    <Text style={styles.debugButtonText}>🛑 FORCE FINISH</Text>
-                </TouchableOpacity>
-            </ScrollView>
-        </View>
+            </TouchableWithoutFeedback>
+        </Modal>
     );
 };
 
 const styles = StyleSheet.create({
+    modalBackground: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'flex-end',
+    },
     debugOverlay: {
-        position: 'absolute',
-        bottom: 0,
-        left: 0,
-        right: 0,
         backgroundColor: '#1C1C1E',
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
         padding: 20,
-        zIndex: 9999,
+        maxHeight: '80%',
         shadowColor: '#000',
         shadowOffset: { width: 0, height: -5 },
         shadowOpacity: 0.3,

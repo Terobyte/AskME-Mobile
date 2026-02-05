@@ -337,11 +337,14 @@ class TTSService {
       console.log(`🎙️ [TTS] Starting Cartesia REST API call...`);
       console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
 
-      // ⚠️ TEMPORARY HARDCODE - FOR TESTING ONLY
-      const API_KEY = "sk_car_NjCyzRzKJsrbPjpGGxT6nj";  // ← Your real key from dashboard
-      const VOICE_ID = "e07c00bc-4134-4eae-9ea4-1a55fb45746b";
+      // Load API key from environment variables
+      const API_KEY = process.env.EXPO_PUBLIC_CARTESIA_API_KEY;
+      const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
 
-      console.log("⚠️⚠️⚠️ [TTS] Using HARDCODED key (TEST MODE)");
+      if (!API_KEY) {
+        console.error("❌ [TTS] EXPO_PUBLIC_CARTESIA_API_KEY not configured in .env");
+        return null;
+      }
 
       console.log(`🔑 [TTS] Key loaded: ${API_KEY.substring(0, 25)}...`);
       console.log(`🎭 [TTS] Emotion: ${options?.emotion || 'neutral'}`);

@@ -42,6 +42,7 @@ function VoiceInterviewScreen() {
     const [showDebug, setShowDebug] = useState(false);
     const [showDetailedResults, setShowDetailedResults] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
+    const [logoTapCount, setLogoTapCount] = useState(0);
 
     // Settings State
     const [resumeText, setResumeText] = useState(MOCK_RESUME);
@@ -203,11 +204,25 @@ function VoiceInterviewScreen() {
         }
     }, [showSettings]);
 
-    // PHASE 1.2: Simple handler for opening debug overlay
+    // Triple-tap handler for logo to open debug overlay
     const handleLogoPress = () => {
-        console.log('📱 [Logo] Pressed - Opening debug overlay');
-        setShowDebug(true);  // Only opens, doesn't toggle!
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        console.log(`📱 [Logo] Press ${logoTapCount + 1}/3`);
+
+        const newCount = logoTapCount + 1;
+        setLogoTapCount(newCount);
+
+        // Check for triple tap
+        if (newCount >= 3) {
+            console.log('📱 [Logo] Triple tap detected - Opening debug');
+            setShowDebug(true);
+            setLogoTapCount(0);
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        } else {
+            // Auto-reset after 2 seconds
+            setTimeout(() => {
+                setLogoTapCount(0);
+            }, 2000);
+        }
     };
 
     // Handle TTS provider change

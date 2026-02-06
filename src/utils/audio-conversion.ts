@@ -249,6 +249,8 @@ export interface ZeroCrossingResult {
     endTrim: number;
     foundStart: boolean;
     foundEnd: boolean;
+    success: boolean;       // NEW: Did we find a proper zero-crossing?
+    usedFallback: boolean;  // NEW: Did we use min-amplitude fallback?
 }
 
 /**
@@ -352,7 +354,9 @@ export function alignPCMToZeroCrossing(
             startTrim: 0,
             endTrim: 0,
             foundStart: false,
-            foundEnd: false
+            foundEnd: false,
+            success: false,
+            usedFallback: false
         };
     }
 
@@ -364,7 +368,9 @@ export function alignPCMToZeroCrossing(
             startTrim: 0,
             endTrim: 0,
             foundStart: false,
-            foundEnd: false
+            foundEnd: false,
+            success: false,
+            usedFallback: false
         };
     }
 
@@ -376,7 +382,9 @@ export function alignPCMToZeroCrossing(
             startTrim: 0,
             endTrim: 0,
             foundStart: false,
-            foundEnd: false
+            foundEnd: false,
+            success: false,
+            usedFallback: false
         };
     }
 
@@ -439,7 +447,9 @@ export function alignPCMToZeroCrossing(
             startTrim: 0,
             endTrim: 0,
             foundStart: false,
-            foundEnd: false
+            foundEnd: false,
+            success: false,
+            usedFallback: false
         };
     }
 
@@ -447,15 +457,25 @@ export function alignPCMToZeroCrossing(
 
     const startIcon = foundStart ? '✅' : '⚠️';
     const endIcon = foundEnd ? '✅' : '⚠️';
+    const success = foundStart && foundEnd;
+    const usedFallback = !success;
+
     console.log(`🎚️ [ZeroCrossing] ${startIcon} Start: ${startTrim} samples, ${endIcon} End: ${endTrim} samples`);
     console.log(`🎚️ [ZeroCrossing] Trimmed: ${((startTrim + endTrim) / sampleRate * 1000).toFixed(1)}ms total`);
+
+    // NEW: Log if fallback was used
+    if (usedFallback) {
+        console.warn(`⚠️ [ZeroCrossing] Fallback used - no proper zero-crossing found (trim: ${((startTrim + endTrim) / pcmData.length * 100).toFixed(1)}%)`);
+    }
 
     return {
         alignedData,
         startTrim,
         endTrim,
         foundStart,
-        foundEnd
+        foundEnd,
+        success,
+        usedFallback
     };
 }
 

@@ -30,6 +30,8 @@ export class SentenceDetector {
         const boundaries: SentenceBoundary[] = [];
         let sentenceStart = fromIndex;
 
+        console.log(`🔍 [SentenceDetector] Looking for sentences from index ${fromIndex}, total words: ${timestamps.length}`);
+
         for (let i = fromIndex; i < timestamps.length; i++) {
             const word = timestamps[i].word;
             const lastChar = word[word.length - 1];
@@ -44,8 +46,17 @@ export class SentenceDetector {
                     sentence: sentence
                 });
 
+                console.log(`✅ [SentenceDetector] Found sentence ending with "${word}" at index ${i}: "${sentence.substring(0, 50)}..."`);
+
                 sentenceStart = i + 1;
             }
+        }
+
+        console.log(`📊 [SentenceDetector] Found ${boundaries.length} sentence boundaries`);
+
+        if (boundaries.length === 0 && timestamps.length > fromIndex) {
+            const previewWords = timestamps.slice(fromIndex, Math.min(fromIndex + 10, timestamps.length)).map(w => w.word).join(' ');
+            console.warn(`⚠️ [SentenceDetector] No sentence boundaries found! Words preview: "${previewWords}..."`);
         }
 
         return boundaries;

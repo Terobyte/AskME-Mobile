@@ -48,6 +48,7 @@ import { STREAMING_CONFIG } from '../config/streaming-config';
 import { SentenceChunker } from '../utils/sentence-chunker';
 import { SentenceDetector } from '../utils/sentence-detector';  // PHASE 3: Sentence detection
 import { cartesiaStreamingService } from './cartesia-streaming-service';
+import { ArtifactTracker, TransitionMetrics } from '../utils/artifact-tracker';  // DEBUG: Artifact tracking
 
 /**
  * Audio Queue for gapless playback
@@ -87,6 +88,11 @@ class AudioQueue {
     private lastChunkFinishTime: number = 0;
     private lastChunkStartTime: number = 0;
     private chunkTransitionCount: number = 0;
+
+    // DEBUG: Artifact tracking
+    private artifactTracker = new ArtifactTracker();
+    private lastCrossfadeScheduledTime: number = 0;
+    private currentCrossfadeDuration: number = 0;
 
     /**
      * Enqueue a sound file (preload it)
@@ -279,6 +285,21 @@ class AudioQueue {
                                 console.warn(`⚠️ [iOS] ABNORMAL GAP DETECTED: ${timeSinceLastTransition}ms`);
                                 console.warn(`   This may indicate iOS audio buffer underrun!`);
                             }
+
+                            // DEBUG: Record in artifact tracker
+                            const actualGap = finishTime - this.lastTransitionTime;
+                            console.log(`⏱️ [GapDetect] Chunk ${this.chunkTransitionCount} gap: ${actualGap}ms`);
+
+                            this.artifactTracker.record({
+                                fromChunk: this.chunkTransitionCount - 1,
+                                toChunk: this.chunkTransitionCount,
+                                gapMs: actualGap,
+                                hasCrossfade: crossFadeCompleted,
+                                crossfadeDurationMs: this.currentCrossfadeDuration,
+                                hasSentenceBoundary: !!this.queue[this.currentIndex - 1]?.sentenceChunk,
+                                zeroCrossingSuccess: true, // Will be updated from audio-conversion
+                                setTimeoutDrift: 0 // Will be tracked in crossfade
+                            });
                         }
                     }
 
@@ -451,7 +472,20 @@ class AudioQueue {
                         if (triggerTime > 0 && !isAtomicSwitch) {
                             console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms (duration: ${crossfadeDuration}ms)`);
 
+                            // DEBUG: Track scheduled time for drift detection
+                            this.lastCrossfadeScheduledTime = Date.now() + triggerTime;
+                            this.currentCrossfadeDuration = crossfadeDuration;
+
                             crossFadeTimeout = setTimeout(async () => {
+                                // DEBUG: Track setTimeout drift
+                                const actualTime = Date.now();
+                                const drift = actualTime - this.lastCrossfadeScheduledTime;
+
+                                console.log(`🎯 [Crossfade] Fired at ${actualTime}, scheduled for ${this.lastCrossfadeScheduledTime}, drift: ${drift}ms`);
+                                if (Math.abs(drift) > 10) {
+                                    console.warn(`⚠️ [Crossfade] Large setTimeout drift: ${drift}ms`);
+                                }
+
                                 // FIX: Check if already transitioning via didJustFinish
                                 if (this._isTransitioning) {
                                     console.log('⏭️ [AudioQueue] File already finished, skipping crossfade');
@@ -598,6 +632,11 @@ class AudioQueue {
             this.completionResolve();
         }
 
+        // DEBUG: Reset artifact tracker
+        this.artifactTracker.reset();
+        this.lastCrossfadeScheduledTime = 0;
+        this.currentCrossfadeDuration = 0;
+
         console.log('✅ [AudioQueue] Stopped and cleaned');
     }
 
@@ -613,6 +652,20 @@ class AudioQueue {
      */
     get length(): number {
         return this.queue.length;
+    }
+
+    /**
+     * DEBUG: Get artifact tracking report
+     */
+    getArtifactReport(): string {
+        return this.artifactTracker.getReport();
+    }
+
+    /**
+     * DEBUG: Reset artifact tracker
+     */
+    resetArtifactTracker(): void {
+        this.artifactTracker.reset();
     }
 }
 
@@ -1115,6 +1168,9 @@ class ChunkedStreamingPlayer {
 
             this.state = 'completed';
             console.log('✅ [Chunked Player] Playback completed (gapless!)');
+
+            // DEBUG: Log artifact report
+            console.log(this.audioQueue.getArtifactReport());
 
             // PHASE 5: Enhanced statistics logging
             console.log('📊 [Player] Playback Statistics:');

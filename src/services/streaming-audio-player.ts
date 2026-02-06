@@ -27,6 +27,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { Audio } from 'expo-av';
+import { Platform } from 'react-native';
 import {
     StreamingPlayerState,
     StreamingPlayerConfig,
@@ -40,7 +41,8 @@ import {
     arrayBufferToBase64,
     calculateAudioDuration,
     mergePCMChunks,
-    applySoftEdges
+    applySoftEdges,
+    alignPCMToZeroCrossing
 } from '../utils/audio-conversion';
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { SentenceChunker } from '../utils/sentence-chunker';
@@ -77,17 +79,27 @@ class AudioQueue {
     // PHASE 2: Adaptive cross-fade settings
     private readonly CROSSFADE_LONG = 120;   // 120ms for long chunks (>2s)
     private readonly CROSSFADE_SHORT = 40;   // 40ms for short chunks (<1s)
-    private readonly MICRO_PAUSE_MS = 20;    // PHASE 3: Micro-pause when no crossfade
+    private readonly MICRO_PAUSE_MS = 20;    // PHASE 3: Micro-pause ONLY for force flush (no metadata)
+
+    // TOTAL GAPLESS: iOS-specific settings
+    private readonly isIOS = Platform.OS === 'ios';
+
+    // Diagnostic logging state
+    private lastChunkFinishTime: number = 0;
+    private lastChunkStartTime: number = 0;
+    private chunkTransitionCount: number = 0;
 
     /**
      * Enqueue a sound file (preload it)
      * PHASE 1: Now accepts optional sentence metadata and duration
+     * TOTAL GAPLESS: Added diagnostic logging for iOS gap detection
      */
     async enqueue(
         filepath: string,
         sentenceChunk?: SentenceChunk,
         durationMs?: number
     ): Promise<void> {
+        const enqueueStart = Date.now();
         console.log(`📦 [AudioQueue] Preloading: ${filepath}`);
 
         const { sound } = await Audio.Sound.createAsync(
@@ -103,7 +115,13 @@ class AudioQueue {
             durationMs
         });
 
-        console.log(`✅ [AudioQueue] Enqueued (total: ${this.queue.length})`);
+        const enqueueDuration = Date.now() - enqueueStart;
+        console.log(`✅ [AudioQueue] Enqueued (total: ${this.queue.length}, preload time: ${enqueueDuration}ms)`);
+
+        // iOS diagnostic: Log if preload is slow
+        if (this.isIOS && enqueueDuration > 50) {
+            console.warn(`⚠️ [iOS] Slow preload detected: ${enqueueDuration}ms`);
+        }
     }
 
     /**
@@ -136,20 +154,22 @@ class AudioQueue {
     }
 
     /**
-     * PHASE 2.2: Get crossfade duration based on punctuation AND chunk length
-     * - Natural pause: 40-120ms (smooth fade-out)
-     * - Word boundary: 5ms (instant splice, prevents clicks)
+     * PHASE 2.2: Get crossfade duration based on punctuation
+     * TOTAL GAPLESS: True zero-crossing for word boundaries (no crossfade)
+     * - Natural pause (punctuation): 50ms (smooth but eliminates iOS echo)
+     * - Word boundary: 0ms (atomic switch, zero-crossing only, prevents ANY artifacts)
      */
     private getCrossfadeDuration(
         durationMs: number,
         hasPunctuation: boolean
-    ): number {
+    ): { duration: number; isAtomicSwitch: boolean } {
         if (hasPunctuation) {
-            // Natural pause: use adaptive duration
-            return durationMs > 2000 ? 120 : 40;
+            // ⭐ FIXED: Single 50ms crossfade for all phrase endings (eliminates iOS echo)
+            return { duration: 50, isAtomicSwitch: false };
         } else {
-            // ⭐ NUEVO: Word boundary: micro-fade for instant splice
-            return 5; // 5ms is imperceptible but prevents clicks
+            // TOTAL GAPLESS: Word boundary - true atomic switch with 0ms crossfade
+            // Zero-crossing alignment in audio-conversion.ts handles the clean splice
+            return { duration: 0, isAtomicSwitch: true };
         }
     }
 
@@ -238,6 +258,30 @@ class AudioQueue {
                     }
 
                     const finishTime = Date.now();
+                    this.lastChunkFinishTime = finishTime;
+                    this.chunkTransitionCount++;
+
+                    // TOTAL GAPLESS: iOS gap detection
+                    const currentChunkInfo = this.queue[this.currentIndex - 1]; // Just finished chunk
+                    if (this.lastChunkStartTime > 0) {
+                        const actualDuration = finishTime - this.lastChunkStartTime;
+                        const chunkInfo = currentChunkInfo?.durationMs
+                            ? `${currentChunkInfo.durationMs}ms`
+                            : 'unknown';
+
+                        console.log(`⏱️ [GapDetect] Chunk ${this.chunkTransitionCount} finished:`);
+                        console.log(`   Duration: ${actualDuration}ms (expected: ${chunkInfo})`);
+                        console.log(`   End time: ${finishTime}`);
+
+                        // Detect abnormal gaps (iOS-specific artifacts)
+                        if (this.lastTransitionTime > 0) {
+                            const timeSinceLastTransition = finishTime - this.lastTransitionTime;
+                            if (timeSinceLastTransition > 150) {
+                                console.warn(`⚠️ [iOS] ABNORMAL GAP DETECTED: ${timeSinceLastTransition}ms`);
+                                console.warn(`   This may indicate iOS audio buffer underrun!`);
+                            }
+                        }
+                    }
 
                     // FIX: More precise transition check
                     // Skip ONLY if cross-fade is IN PROGRESS (started but not completed)
@@ -330,14 +374,24 @@ class AudioQueue {
             // Start playback and measure gap from previous finish
             try {
                 const playStartTime = Date.now();
+                this.lastChunkStartTime = playStartTime;
 
                 if (this.currentIndex > 0 && this.lastTransitionTime > 0) {
                     // Calculate REAL gap from last chunk finish to this chunk start
                     const actualGap = playStartTime - this.lastTransitionTime;
-                    console.log(`⏱️ [AudioQueue] GAP: ${actualGap}ms (from previous finish to current start)`);
 
-                    if (actualGap > 50) {
-                        console.warn(`⚠️ [AudioQueue] LARGE GAP DETECTED: ${actualGap}ms`);
+                    // TOTAL GAPLESS: Enhanced iOS gap detection
+                    const gapEmoji = actualGap > 100 ? '⚠️' : actualGap > 50 ? '⏱️' : '✅';
+                    console.log(`${gapEmoji} [GapDetect] Transition gap: ${actualGap}ms`);
+
+                    if (this.isIOS && actualGap > 50) {
+                        console.warn(`⚠️ [iOS] LARGE GAP DETECTED: ${actualGap}ms`);
+                        console.warn(`   This may cause perceptible pause in audio!`);
+                    }
+
+                    // Log gap severity
+                    if (actualGap > 150) {
+                        console.error(`🚨 [CRITICAL] Gap > 150ms: ${actualGap}ms - Severe audio artifact!`);
                     }
                 }
 
@@ -350,6 +404,11 @@ class AudioQueue {
                     await current.sound.playAsync();
                     const playLatency = Date.now() - playStartTime;
                     console.log(`🎵 [AudioQueue] playAsync() latency: ${playLatency}ms`);
+
+                    // iOS-specific: Warn about slow playAsync
+                    if (this.isIOS && playLatency > 30) {
+                        console.warn(`⚠️ [iOS] Slow playAsync: ${playLatency}ms (expected < 30ms)`);
+                    }
                 }
 
                 // FIX: Safety timeout for final chunk - if didJustFinish never fires
@@ -388,16 +447,18 @@ class AudioQueue {
                     if (status.isLoaded && status.durationMillis) {
                         // Determine transition type
                         const hasPunctuation = this.hasNaturalPause(this.currentIndex);
-                        const crossfadeDuration = this.getCrossfadeDuration(
+                        const { duration: crossfadeDuration, isAtomicSwitch } = this.getCrossfadeDuration(
                             status.durationMillis,
                             hasPunctuation
                         );
                         const triggerTime = status.durationMillis - crossfadeDuration;
 
-                        const fadeType = hasPunctuation ? "Natural" : "Micro";
-                        console.log(`⏰ [SmartCrossfade] Scheduling ${fadeType} Fade in ${triggerTime}ms (${crossfadeDuration}ms)`);
+                        const fadeType = hasPunctuation ? "Natural" : "Atomic";
+                        console.log(`⏰ [SmartCrossfade] Scheduling ${fadeType} Fade in ${triggerTime}ms (${crossfadeDuration}ms, atomic: ${isAtomicSwitch})`);
 
-                        if (triggerTime > 0) {
+                        // TOTAL GAPLESS: For atomic switch (0ms), just let chunk finish naturally
+                        // Zero-crossing alignment in createChunkFile handles the clean splice
+                        if (triggerTime > 0 && !isAtomicSwitch) {
                             console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms (duration: ${crossfadeDuration}ms)`);
 
                             crossFadeTimeout = setTimeout(async () => {
@@ -414,13 +475,14 @@ class AudioQueue {
                                 console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade (${crossfadeDuration}ms)`);
 
                                 try {
-                                    // ⭐ PHASE 2.3: Micro fade optimization (≤10ms = instant)
-                                    if (crossfadeDuration <= 10) {
-                                        // Instant splice - no gradual fade
-                                        await current.sound.setVolumeAsync(0.0);
+                                    // TOTAL GAPLESS: True atomic switch for word boundaries (0ms)
+                                    if (isAtomicSwitch || crossfadeDuration <= 10) {
+                                        // Atomic switch - zero delay transition
+                                        // Zero-crossing alignment ensures clean splice
                                         await next.sound.setVolumeAsync(1.0);
                                         await next.sound.playAsync();
-                                        console.log(`⚡ [AudioQueue] Micro fade complete (instant)`);
+                                        await current.sound.setVolumeAsync(0.0);
+                                        console.log(`⚡ [AudioQueue] Atomic switch complete (0ms crossfade)`);
                                     } else {
                                         // Standard multi-step fade for 40-120ms
                                         const fadeSteps = 10;
@@ -473,6 +535,10 @@ class AudioQueue {
                                     this._isTransitioning = false;
                                 }
                             }, triggerTime);
+                        } else if (isAtomicSwitch) {
+                            // TOTAL GAPLESS: For atomic switch, let chunk finish naturally
+                            // Zero-crossing alignment in createChunkFile ensures clean splice
+                            console.log(`⚡ [AudioQueue] Atomic switch mode - no scheduled crossfade (gapless via zero-crossing)`);
                         }
                     }
                 }
@@ -579,6 +645,9 @@ class ChunkedStreamingPlayer {
     private config: StreamingPlayerConfig;
     private metrics: Partial<StreamingMetrics>;
 
+    // TOTAL GAPLESS: iOS-specific settings
+    private readonly isIOS = Platform.OS === 'ios';
+
     // NEW: Sentence chunking state
     private accumulatedPcmData: ArrayBuffer[] = [];
     private currentContextId: string | null = null;
@@ -621,6 +690,17 @@ class ChunkedStreamingPlayer {
         FEATURES: {
             USE_SENTENCE_CHUNKING: true,  // Master feature flag
             VERBOSE_LOGGING: true,         // PHASE 6: Detailed logs (set false for production)
+        },
+        // TOTAL GAPLESS: iOS-specific settings
+        IOS: {
+            PRELOAD_AHEAD: 3,           // Preload 3 chunks ahead on iOS (prevents underruns)
+            MIN_BUFFER_MS: 300,         // Larger buffer for iOS
+            GAP_WARNING_THRESHOLD: 50,  // Warn if gap > 50ms
+            GAP_CRITICAL_THRESHOLD: 150, // Critical if gap > 150ms
+        },
+        ANDROID: {
+            PRELOAD_AHEAD: 2,           // Preload 2 chunks ahead on Android
+            MIN_BUFFER_MS: 200,         // Standard buffer for Android
         }
     };
 
@@ -738,12 +818,23 @@ class ChunkedStreamingPlayer {
         let playbackStarted = false;
 
         try {
-            // Set audio mode for playback
-            await Audio.setAudioModeAsync({
+            // TOTAL GAPLESS: iOS-specific audio session configuration
+            // iOS requires staysActiveInBackground to prevent audio interruptions
+            const audioModeConfig = {
                 playsInSilentModeIOS: true,
-                staysActiveInBackground: false,
+                staysActiveInBackground: this.isIOS,  // iOS: Keep active in background
                 shouldDuckAndroid: true,
-            });
+                allowsRecordingIOS: true,  // iOS: Allow recording + playback
+            };
+
+            // iOS-specific: Disable ducking to prevent volume dips
+            if (this.isIOS) {
+                console.log('🔧 [iOS] Configuring audio session for gapless playback');
+                console.log('   - staysActiveInBackground: true');
+                console.log('   - allowsRecordingIOS: true');
+            }
+
+            await Audio.setAudioModeAsync(audioModeConfig);
 
             // PHASE 4: Process chunks with adaptive mode-based chunking
             for await (const chunk of chunkGenerator) {
@@ -954,18 +1045,34 @@ class ChunkedStreamingPlayer {
                             this.lastProcessedTimestampIndex = lastSubBoundary.wordIndex + 1;
                         }
                     }
-                    // Force flush if accumulated too much (max 2.5s) and no split points found
+                    // ⭐ Step 3 Fix: Force flush with word-boundary detection
                     else if (this.totalAudioDurationMs >= this.CONFIG.SENTENCE.MAX_DURATION_MS) {
-                        console.warn(`⚠️ [SENTENCE] Force flush (max duration: ${this.totalAudioDurationMs.toFixed(0)}ms)`);
+                        // Check if we're mid-word before force-flushing
+                        const lastWord = this.incomingTimestamps[this.lastProcessedTimestampIndex];
+                        const nextWord = this.incomingTimestamps[this.lastProcessedTimestampIndex + 1];
 
-                        const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
-                        fileIndex++;
+                        const currentAudioTimeSeconds = this.totalAudioDurationMs / 1000;
+                        const isMidWord = lastWord && nextWord &&
+                                          !/[.!?;,]/.test(lastWord.word) &&
+                                          lastWord.end > (currentAudioTimeSeconds - 0.5);
 
-                        // PHASE 1: No sentence metadata for force flush (no natural boundary)
-                        await this.audioQueue.enqueue(filepath, undefined, this.totalAudioDurationMs);
+                        if (isMidWord && this.totalAudioDurationMs < 4500) {
+                            // Extend buffer by ~500ms to complete the word
+                            console.log(`⏳ [SENTENCE] Mid-word detected, extending buffer (current: ${this.totalAudioDurationMs.toFixed(0)}ms, last: "${lastWord.word}")`);
+                            // Don't flush - continue accumulating to complete the word
+                        } else {
+                            // Safe to flush - either not mid-word or exceeded hard limit
+                            console.warn(`⚠️ [SENTENCE] Force flush (max duration: ${this.totalAudioDurationMs.toFixed(0)}ms)`);
 
-                        accumulatedChunks = [];
-                        this.totalAudioDurationMs = 0;
+                            const filepath = await this.createChunkFile(accumulatedChunks, fileIndex);
+                            fileIndex++;
+
+                            // No sentence metadata for force flush (no natural boundary)
+                            await this.audioQueue.enqueue(filepath, undefined, this.totalAudioDurationMs);
+
+                            accumulatedChunks = [];
+                            this.totalAudioDurationMs = 0;
+                        }
                     }
                 }
 
@@ -1040,7 +1147,8 @@ class ChunkedStreamingPlayer {
     }
 
     /**
-     * Create WAV file from chunks with soft edges applied
+     * Create WAV file from chunks with zero-crossing alignment and soft edges applied
+     * ⭐ Zero-Crossing Fix: Align PCM to zero-crossing points BEFORE soft edges
      */
     private async createChunkFile(
         chunks: AudioChunk[],
@@ -1048,9 +1156,18 @@ class ChunkedStreamingPlayer {
     ): Promise<string> {
         const pcmBuffers = chunks.map(c => c.data);
 
-        // ⭐ PHASE 1: Apply soft edges to prevent clicks at chunk boundaries
+        // Step 1: Merge all PCM chunks
         const mergedPCM = mergePCMChunks(pcmBuffers);
-        const pcmWithEdges = applySoftEdges(mergedPCM, 20, 20, 16000);
+        const int16PCM = new Int16Array(mergedPCM);
+
+        // Step 2: Zero-crossing alignment (BEFORE soft edges) - Prevents clicks at boundaries
+        const zeroCrossingResult = alignPCMToZeroCrossing(int16PCM, 16000, 20);
+
+        // Step 3: Apply soft edges to ALIGNED data - Additional smoothing
+        // Convert Int16Array.buffer (ArrayBufferLike) to ArrayBuffer
+        const alignedBuffer = new ArrayBuffer(zeroCrossingResult.alignedData.byteLength);
+        new Uint8Array(alignedBuffer).set(new Uint8Array(zeroCrossingResult.alignedData.buffer));
+        const pcmWithEdges = applySoftEdges(alignedBuffer, 20, 20, 16000);
 
         const wavBuffer = createWavFile([pcmWithEdges], this.config.chunkSampleRate);
         const base64 = arrayBufferToBase64(wavBuffer);

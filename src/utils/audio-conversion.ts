@@ -226,3 +226,59 @@ export function getWavFileInfo(wavBuffer: ArrayBuffer): {
         duration,
     };
 }
+
+/**
+ * Apply soft fade-in and fade-out to prevent clicks at chunk boundaries
+ * 
+ * This function applies linear interpolation to the beginning and end of PCM audio
+ * to create smooth transitions between chunks. This prevents audible clicks and pops
+ * that occur when audio suddenly starts or stops at full amplitude.
+ * 
+ * @param pcmBuffer - PCM audio data as ArrayBuffer (16-bit signed integer format)
+ * @param fadeInMs - Duration of fade-in in milliseconds (default: 20ms)
+ * @param fadeOutMs - Duration of fade-out in milliseconds (default: 20ms)
+ * @param sampleRate - Sample rate in Hz (default: 16000)
+ * @returns PCM buffer with soft edges applied
+ * 
+ * Example:
+ * ```typescript
+ * const rawPCM = getAudioChunks();
+ * const smoothPCM = applySoftEdges(rawPCM, 20, 20, 16000);
+ * const wavFile = createWavFile([smoothPCM], 16000);
+ * ```
+ */
+export function applySoftEdges(
+    pcmBuffer: ArrayBuffer,
+    fadeInMs: number = 20,
+    fadeOutMs: number = 20,
+    sampleRate: number = 16000
+): ArrayBuffer {
+    const int16Array = new Int16Array(pcmBuffer);
+    const samples = int16Array.length;
+
+    // Calculate sample counts for fade durations
+    const fadeInSamples = Math.floor((fadeInMs / 1000) * sampleRate);
+    const fadeOutSamples = Math.floor((fadeOutMs / 1000) * sampleRate);
+
+    // Safety: Don't fade more than half the buffer
+    const maxFadeSamples = Math.floor(samples / 2);
+    const actualFadeInSamples = Math.min(fadeInSamples, maxFadeSamples);
+    const actualFadeOutSamples = Math.min(fadeOutSamples, maxFadeSamples);
+
+    console.log(`🎚️ [SoftEdges] Applying fade-in: ${actualFadeInSamples} samples, fade-out: ${actualFadeOutSamples} samples`);
+
+    // Linear fade-in: 0.0 → 1.0
+    for (let i = 0; i < actualFadeInSamples; i++) {
+        const gain = i / actualFadeInSamples; // Linear interpolation
+        int16Array[i] = Math.floor(int16Array[i] * gain);
+    }
+
+    // Linear fade-out: 1.0 → 0.0
+    const startFadeOut = samples - actualFadeOutSamples;
+    for (let i = 0; i < actualFadeOutSamples; i++) {
+        const gain = 1 - (i / actualFadeOutSamples); // Linear interpolation
+        int16Array[startFadeOut + i] = Math.floor(int16Array[startFadeOut + i] * gain);
+    }
+
+    return int16Array.buffer;
+}

@@ -39,7 +39,8 @@ import {
     createWavFile,
     arrayBufferToBase64,
     calculateAudioDuration,
-    mergePCMChunks
+    mergePCMChunks,
+    applySoftEdges
 } from '../utils/audio-conversion';
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { SentenceChunker } from '../utils/sentence-chunker';
@@ -106,22 +107,15 @@ class AudioQueue {
     }
 
     /**
-     * PHASE 1: Determine if cross-fade should be used based on natural pauses
-     * Returns true if there's punctuation at the end of current chunk (natural pause)
+     * PHASE 2.1: Check if current chunk ends with natural pause (punctuation)
+     * Returns true for sentence boundaries, false for word boundaries
      */
-    private shouldUseCrossfade(currentIndex: number): boolean {
+    private hasNaturalPause(currentIndex: number): boolean {
         const current = this.queue[currentIndex];
-        const next = this.queue[currentIndex + 1];
 
-        // No crossfade if no next chunk
-        if (!next) {
-            return false;
-        }
-
-        // FIX: If no sentence metadata (Force flush case), DON'T use crossfade
-        // We don't know where the sentence boundary is, so crossfade is unsafe
+        // Safety: No metadata → assume no pause (force flush case)
         if (!current.sentenceChunk) {
-            console.log(`⚠️ [Crossfade] No sentence metadata (Force flush?), skipping crossfade for safety`);
+            console.log('⚠️ [SmartCrossfade] No sentence metadata (force flush)');
             return false;
         }
 
@@ -133,23 +127,29 @@ class AudioQueue {
         const hasPunctuation = /[.!?,;:]$/.test(lastWord);
 
         if (hasPunctuation) {
-            console.log(`✅ [Crossfade] Natural pause detected ("${lastWord}"), using crossfade`);
-            return true;
+            console.log(`✅ [SmartCrossfade] Natural pause detected ("${lastWord}")`);
         } else {
-            console.log(`⚠️ [Crossfade] No pause detected ("${lastWord}"), skipping crossfade`);
-            return false;
+            console.log(`🔗 [SmartCrossfade] Word boundary detected ("${lastWord}")`);
         }
+
+        return hasPunctuation;
     }
 
     /**
-     * PHASE 2: Get adaptive crossfade duration based on chunk length
-     * Short chunks (<1s) get shorter crossfade to avoid cutting off words
+     * PHASE 2.2: Get crossfade duration based on punctuation AND chunk length
+     * - Natural pause: 40-120ms (smooth fade-out)
+     * - Word boundary: 5ms (instant splice, prevents clicks)
      */
-    private getCrossfadeDuration(durationMs: number): number {
-        if (durationMs > 2000) {
-            return this.CROSSFADE_LONG; // 120ms for long chunks
+    private getCrossfadeDuration(
+        durationMs: number,
+        hasPunctuation: boolean
+    ): number {
+        if (hasPunctuation) {
+            // Natural pause: use adaptive duration
+            return durationMs > 2000 ? 120 : 40;
         } else {
-            return this.CROSSFADE_SHORT; // 40ms for short chunks
+            // ⭐ NUEVO: Word boundary: micro-fade for instant splice
+            return 5; // 5ms is imperceptible but prevents clicks
         }
     }
 
@@ -382,15 +382,20 @@ class AudioQueue {
                     }
                 }
 
-                // PHASE 1-2: Conditionally schedule cross-fade based on natural pauses
-                const useCrossfade = this.shouldUseCrossfade(this.currentIndex);
-
-                if (next && useCrossfade) {
+                // PHASE 2.3: ALWAYS schedule cross-fade (different types: Natural vs Micro)
+                if (next) {
                     const status = await current.sound.getStatusAsync();
                     if (status.isLoaded && status.durationMillis) {
-                        // PHASE 2: Use adaptive crossfade duration
-                        const crossfadeDuration = this.getCrossfadeDuration(status.durationMillis);
+                        // Determine transition type
+                        const hasPunctuation = this.hasNaturalPause(this.currentIndex);
+                        const crossfadeDuration = this.getCrossfadeDuration(
+                            status.durationMillis,
+                            hasPunctuation
+                        );
                         const triggerTime = status.durationMillis - crossfadeDuration;
+
+                        const fadeType = hasPunctuation ? "Natural" : "Micro";
+                        console.log(`⏰ [SmartCrossfade] Scheduling ${fadeType} Fade in ${triggerTime}ms (${crossfadeDuration}ms)`);
 
                         if (triggerTime > 0) {
                             console.log(`⏰ [AudioQueue] Scheduling cross-fade in ${triggerTime}ms (duration: ${crossfadeDuration}ms)`);
@@ -409,31 +414,40 @@ class AudioQueue {
                                 console.log(`🔄 [AudioQueue] Starting SCHEDULED cross-fade (${crossfadeDuration}ms)`);
 
                                 try {
-                                    // Start fade-out of current + fade-in of next
-                                    const fadeSteps = 10;
-                                    const stepDuration = crossfadeDuration / fadeSteps;
+                                    // ⭐ PHASE 2.3: Micro fade optimization (≤10ms = instant)
+                                    if (crossfadeDuration <= 10) {
+                                        // Instant splice - no gradual fade
+                                        await current.sound.setVolumeAsync(0.0);
+                                        await next.sound.setVolumeAsync(1.0);
+                                        await next.sound.playAsync();
+                                        console.log(`⚡ [AudioQueue] Micro fade complete (instant)`);
+                                    } else {
+                                        // Standard multi-step fade for 40-120ms
+                                        const fadeSteps = 10;
+                                        const stepDuration = crossfadeDuration / fadeSteps;
 
-                                    // Start next chunk at volume 0
-                                    await next.sound.setVolumeAsync(0.0);
-                                    await next.sound.playAsync();
-                                    console.log(`▶️ [AudioQueue] Next chunk started at 0% volume`);
+                                        // Start next chunk at volume 0
+                                        await next.sound.setVolumeAsync(0.0);
+                                        await next.sound.playAsync();
+                                        console.log(`▶️ [AudioQueue] Next chunk started at 0% volume`);
 
-                                    // Simultaneous fade
-                                    for (let i = 1; i <= fadeSteps; i++) {
-                                        const progress = i / fadeSteps;
+                                        // Simultaneous fade
+                                        for (let i = 1; i <= fadeSteps; i++) {
+                                            const progress = i / fadeSteps;
 
-                                        // Fade current OUT, next IN
-                                        await Promise.all([
-                                            current.sound.setVolumeAsync(1.0 - progress),
-                                            next.sound.setVolumeAsync(progress)
-                                        ]);
+                                            // Fade current OUT, next IN
+                                            await Promise.all([
+                                                current.sound.setVolumeAsync(1.0 - progress),
+                                                next.sound.setVolumeAsync(progress)
+                                            ]);
 
-                                        if (i < fadeSteps) {
-                                            await new Promise(resolve => setTimeout(resolve, stepDuration));
+                                            if (i < fadeSteps) {
+                                                await new Promise(resolve => setTimeout(resolve, stepDuration));
+                                            }
                                         }
-                                    }
 
-                                    console.log(`✨ [AudioQueue] Cross-fade complete!`);
+                                        console.log(`✨ [AudioQueue] Cross-fade complete!`);
+                                    }
                                     crossFadeCompleted = true;
 
                                     // Reset transition flag
@@ -461,9 +475,6 @@ class AudioQueue {
                             }, triggerTime);
                         }
                     }
-                } else if (next && !useCrossfade) {
-                    // PHASE 3: Add micro-pause when crossfade is skipped
-                    console.log(`🚫 [AudioQueue] Crossfade skipped, will add ${this.MICRO_PAUSE_MS}ms micro-pause`);
                 }
 
             } catch (error) {
@@ -1029,14 +1040,19 @@ class ChunkedStreamingPlayer {
     }
 
     /**
-     * Create WAV file from chunks
+     * Create WAV file from chunks with soft edges applied
      */
     private async createChunkFile(
         chunks: AudioChunk[],
         index: number
     ): Promise<string> {
         const pcmBuffers = chunks.map(c => c.data);
-        const wavBuffer = createWavFile(pcmBuffers, this.config.chunkSampleRate);
+
+        // ⭐ PHASE 1: Apply soft edges to prevent clicks at chunk boundaries
+        const mergedPCM = mergePCMChunks(pcmBuffers);
+        const pcmWithEdges = applySoftEdges(mergedPCM, 20, 20, 16000);
+
+        const wavBuffer = createWavFile([pcmWithEdges], this.config.chunkSampleRate);
         const base64 = arrayBufferToBase64(wavBuffer);
 
         const filename = `stream_chunk_${Date.now()}_${index}.wav`;

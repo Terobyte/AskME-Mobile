@@ -423,7 +423,8 @@ class CartesiaStreamingService {
             voice: {
                 mode: 'id' as const,
                 id: options.voiceId,
-                ...(options.emotion && options.emotion !== 'neutral' && {
+                ...(options.emotion &&
+                (Array.isArray(options.emotion) ? options.emotion[0] : options.emotion) !== 'neutral' && {
                     __experimental_controls: {
                         emotion: options.emotion
                     }

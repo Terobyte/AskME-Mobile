@@ -94,6 +94,10 @@ class AudioQueue {
     private lastCrossfadeScheduledTime: number = 0;
     private currentCrossfadeDuration: number = 0;
 
+    // FIX: Separate variable to track when previous chunk actually finished
+    // This is different from lastTransitionTime which marks state transitions
+    private previousChunkFinishTime: number = 0;
+
     /**
      * Enqueue a sound file (preload it)
      * PHASE 1: Now accepts optional sentence metadata and duration
@@ -196,6 +200,7 @@ class AudioQueue {
         this._isPlaying = true;
         this.currentIndex = 0;
         this.lastTransitionTime = Date.now();
+        this.previousChunkFinishTime = 0; // NEW: Initialize for gap calculation
 
         // Create completion promise
         this.completionPromise = new Promise<void>((resolve) => {
@@ -266,7 +271,7 @@ class AudioQueue {
                     this.lastChunkFinishTime = finishTime;
                     this.chunkTransitionCount++;
 
-                    // TOTAL GAPLESS: iOS gap detection
+                    // TOTAL GAPLESS: iOS gap detection - FIXED: Use previousChunkFinishTime
                     const currentChunkInfo = this.queue[this.currentIndex - 1]; // Just finished chunk
                     if (this.lastChunkStartTime > 0) {
                         const actualDuration = finishTime - this.lastChunkStartTime;
@@ -278,18 +283,21 @@ class AudioQueue {
                         console.log(`   Duration: ${actualDuration}ms (expected: ${chunkInfo})`);
                         console.log(`   End time: ${finishTime}`);
 
-                        // Detect abnormal gaps (iOS-specific artifacts)
-                        if (this.lastTransitionTime > 0) {
-                            const timeSinceLastTransition = finishTime - this.lastTransitionTime;
-                            if (timeSinceLastTransition > 150) {
-                                console.warn(`⚠️ [iOS] ABNORMAL GAP DETECTED: ${timeSinceLastTransition}ms`);
+                        // FIX: Use previousChunkFinishTime for accurate gap calculation
+                        // Only record gap if we have a previous finish time (not for first chunk)
+                        if (this.previousChunkFinishTime > 0) {
+                            const actualGap = finishTime - this.previousChunkFinishTime;
+
+                            const gapEmoji = actualGap > 100 ? '⚠️' : actualGap > 50 ? '⏱️' : '✅';
+                            console.log(`${gapEmoji} [GapDetect] Chunk ${this.chunkTransitionCount} gap: ${actualGap}ms`);
+
+                            // Detect abnormal gaps (iOS-specific artifacts)
+                            if (actualGap > 150) {
+                                console.warn(`⚠️ [iOS] ABNORMAL GAP DETECTED: ${actualGap}ms`);
                                 console.warn(`   This may indicate iOS audio buffer underrun!`);
                             }
 
                             // DEBUG: Record in artifact tracker
-                            const actualGap = finishTime - this.lastTransitionTime;
-                            console.log(`⏱️ [GapDetect] Chunk ${this.chunkTransitionCount} gap: ${actualGap}ms`);
-
                             this.artifactTracker.record({
                                 fromChunk: this.chunkTransitionCount - 1,
                                 toChunk: this.chunkTransitionCount,
@@ -302,6 +310,9 @@ class AudioQueue {
                             });
                         }
                     }
+
+                    // UPDATE previousChunkFinishTime for next iteration
+                    this.previousChunkFinishTime = finishTime;
 
                     // FIX: More precise transition check
                     // Skip ONLY if cross-fade is IN PROGRESS (started but not completed)
@@ -330,8 +341,9 @@ class AudioQueue {
                     const chunkDuration = finishTime - this.lastTransitionTime;
                     console.log(`✅ [AudioQueue] Chunk ${this.currentIndex + 1} finished (duration: ${chunkDuration}ms)`);
 
-                    // UPDATE lastTransitionTime HERE (when chunk finishes)
-                    this.lastTransitionTime = finishTime;
+                    // NOTE: lastTransitionTime is NOT updated here anymore
+                    // It tracks state transitions, not chunk finishes
+                    // Use previousChunkFinishTime for gap calculations instead
 
                     // Clear handler
                     current.sound.setOnPlaybackStatusUpdate(null);
@@ -387,9 +399,10 @@ class AudioQueue {
                 const playStartTime = Date.now();
                 this.lastChunkStartTime = playStartTime;
 
-                if (this.currentIndex > 0 && this.lastTransitionTime > 0) {
-                    // Calculate REAL gap from last chunk finish to this chunk start
-                    const actualGap = playStartTime - this.lastTransitionTime;
+                // FIX: Use previousChunkFinishTime for accurate gap calculation
+                if (this.currentIndex > 0 && this.previousChunkFinishTime > 0) {
+                    // Calculate gap from previous chunk finish to this chunk start
+                    const actualGap = playStartTime - this.previousChunkFinishTime;
 
                     // TOTAL GAPLESS: Enhanced iOS gap detection
                     const gapEmoji = actualGap > 100 ? '⚠️' : actualGap > 50 ? '⏱️' : '✅';
@@ -549,6 +562,9 @@ class AudioQueue {
                                     // Move to next
                                     this.currentIndex++;
                                     this.lastTransitionTime = Date.now();
+                                    // FIX: Update previousChunkFinishTime to when cross-fade completed
+                                    // (this is when the previous chunk effectively finished for gap calculation)
+                                    this.previousChunkFinishTime = this.lastTransitionTime;
 
                                     // Clear promise and call playCurrent
                                     this.playCurrentPromise = null;
@@ -632,10 +648,11 @@ class AudioQueue {
             this.completionResolve();
         }
 
-        // DEBUG: Reset artifact tracker
+        // DEBUG: Reset artifact tracker and diagnostic state
         this.artifactTracker.reset();
         this.lastCrossfadeScheduledTime = 0;
         this.currentCrossfadeDuration = 0;
+        this.previousChunkFinishTime = 0; // FIX: Reset on stop
 
         console.log('✅ [AudioQueue] Stopped and cleaned');
     }

@@ -79,7 +79,6 @@ class AudioQueue {
     // PHASE 2: Adaptive cross-fade settings
     private readonly CROSSFADE_LONG = 120;   // 120ms for long chunks (>2s)
     private readonly CROSSFADE_SHORT = 40;   // 40ms for short chunks (<1s)
-    private readonly MICRO_PAUSE_MS = 20;    // PHASE 3: Micro-pause ONLY for force flush (no metadata)
 
     // TOTAL GAPLESS: iOS-specific settings
     private readonly isIOS = Platform.OS === 'ios';
@@ -343,21 +342,12 @@ class AudioQueue {
                         }
                     }
 
-                    // PHASE 3: Add micro-pause ONLY for force-flush (no metadata)
-                    // ⭐ FIX: Don't add pause for mid-word transitions (causes artifacts!)
+                    // PHASE 3: Gapless transition - NO artificial pauses
+                    // Modern iOS audio handles gapless transitions without needing micro-pauses
                     const usedCrossfade = crossFadeCompleted || crossFadeStarted;
-                    const currentChunk = this.queue[this.currentIndex - 1]; // Just finished chunk
 
                     if (!usedCrossfade && next) {
-                        // Check if this is a force-flush (no sentence metadata)
-                        if (!currentChunk?.sentenceChunk) {
-                            // Force flush case - add micro-pause for safety
-                            console.log(`⏸️ [AudioQueue] Adding ${this.MICRO_PAUSE_MS}ms micro-pause (force flush)`);
-                            await new Promise(resolve => setTimeout(resolve, this.MICRO_PAUSE_MS));
-                        } else {
-                            // Word boundary without punctuation - GAPLESS transition
-                            console.log(`🔗 [AudioQueue] Gapless transition (no punctuation, no pause)`);
-                        }
+                        console.log(`🔗 [AudioQueue] Gapless transition`);
                     }
 
                     // Reset transition flag before continuing

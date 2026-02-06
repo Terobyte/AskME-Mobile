@@ -34,8 +34,17 @@ const VICTORIA_AVATAR_URL = 'https://i.pravatar.cc/150?img=47';
 
 import { gestureHandlerRootHOC } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
+import type { StackNavigationProp } from '@react-navigation/stack';
+import type { RouteProp } from '@react-navigation/native';
 
-function VoiceInterviewScreen() {
+type RootStackParamList = {
+  Interview: undefined;
+  TestAudioStream: undefined;
+};
+
+type NavigationProp = StackNavigationProp<RootStackParamList, 'Interview'>;
+
+function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
     const [status, setStatus] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
     const [showSettings, setShowSettings] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -500,6 +509,14 @@ function VoiceInterviewScreen() {
 
                     {/* Button group */}
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        {/* Test Audio Page button (DEV) */}
+                        <TouchableOpacity
+                            onPress={() => navigation.navigate('TestAudioStream')}
+                            style={styles.iconButton}
+                        >
+                            <Ionicons name="musical-notes-outline" size={24} color="#333" />
+                        </TouchableOpacity>
+
                         {/* History button */}
                         <TouchableOpacity
                             onPress={() => setShowHistory(true)}

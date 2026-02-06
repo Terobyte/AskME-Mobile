@@ -14,23 +14,51 @@
 
 ## 🔍 Phase 1: Research & Architecture Setup
 
-### Промт 1.1: Анализ react-native-audio-api
+### ✅ Промт 1.1: Анализ react-native-audio-api (COMPLETED)
 
-Мне нужно понять возможности react-native-audio-api для streaming audio.
+**Найденные факты:**
 
-**Проанализируй:**
-1. Есть ли поддержка AudioWorklet или аналог?
-2. Как работает `createBufferSource()` - можем ли добавлять чанки динамически?
-3. Какой sample rate поддерживается? Нужен ли resampler?
-4. Есть ли встроенный GainNode для crossfade?
-5. Как работает scheduling (start/stop)?
+| Вопрос | Ответ | Влияние на архитектуру |
+|--------|-------|------------------------|
+| AudioWorklet | ❌ Не доступен (в roadmap) | Используем multi-buffer scheduling |
+| createBufferSource динамический | ❌ Фиксированный буфер | Создаём множество AudioBufferSourceNode |
+| Sample Rate 16kHz | ❌ Нужен resampling | Реземплинг к 44.1/48kHz или AudioContext({sampleRate}) |
+| GainNode | ✅ Доступен | Используем для crossfade |
+| Scheduling | ✅ Sub-millisecond precision | Low-latency достижим |
 
-**Основываясь на документации, предложи:**
-- Архитектуру для streaming PCM16 chunks
-- Fallback стратегию если нет AudioWorklet
-- Оптимальный подход для low-latency playback
+**Архитектурные решения:**
 
-Дай код примеры базовых операций.
+1. **Multi-Buffer Scheduling** - вместо одного большого буфера создаём множество маленьких AudioBufferSourceNode и планируем их последовательно
+
+2. **Resampling** - 16kHz → device rate (или используем `AudioContext({ sampleRate: 16000 })` если поддерживается)
+
+3. **Pre-buffer Strategy**:
+   - Накапливаем 100-200ms перед стартом
+   - Планируем воспроизведение на 500ms вперёд
+
+4. **Crossfade через GainNode**:
+   ```typescript
+   gainNode.gain.linearRampToValueAtTime(0, currentTime + crossfadeDuration);
+   ```
+
+**Пример базовых операций:**
+```typescript
+// Создание контекста
+const audioContext = new AudioContext({ sampleRate: 16000 });
+
+// Создание буфера из PCM16
+const buffer = audioContext.createBuffer(1, pcmData.length, 16000);
+const channelData = buffer.getChannelData(0);
+for (let i = 0; i < pcmData.length; i++) {
+  channelData[i] = pcmData[i] / 32768; // Int16 → Float32
+}
+
+// Создание источника
+const source = audioContext.createBufferSource();
+source.buffer = buffer;
+source.connect(audioContext.destination);
+source.start(audioContext.currentTime);
+```
 
 ---
 

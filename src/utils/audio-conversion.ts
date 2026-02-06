@@ -1,9 +1,11 @@
 /**
  * Audio Conversion Utilities for Streaming TTS
- * 
+ *
  * Handles PCM ↔ WAV conversion, base64 encoding, and audio data manipulation.
  * Based on PoC implementations with production-ready error handling.
  */
+
+import { DEBUG_CONFIG, debugLog, debugWarn } from '../config/debug-config';
 
 /**
  * Convert base64 string to ArrayBuffer
@@ -362,7 +364,7 @@ export function alignPCMToZeroCrossing(
 
     // Edge case: Buffer too small
     if (pcmData.length < MIN_BUFFER_SIZE) {
-        console.log(`⏭️ [ZeroCrossing] Buffer too small (${pcmData.length} < ${MIN_BUFFER_SIZE}), skipping`);
+        debugLog('AUDIO_CONVERSION', `⏭️ [ZeroCrossing] Buffer too small (${pcmData.length} < ${MIN_BUFFER_SIZE}), skipping`);
         return {
             alignedData: pcmData,
             startTrim: 0,
@@ -376,7 +378,7 @@ export function alignPCMToZeroCrossing(
 
     // Check if buffer is silent
     if (isSilentBuffer(pcmData)) {
-        console.log(`🔇 [ZeroCrossing] Buffer is silent, skipping alignment`);
+        debugLog('AUDIO_CONVERSION', `🔇 [ZeroCrossing] Buffer is silent, skipping alignment`);
         return {
             alignedData: pcmData,
             startTrim: 0,
@@ -391,8 +393,8 @@ export function alignPCMToZeroCrossing(
     const searchWindowSamples = Math.floor((searchWindowMs / 1000) * sampleRate);
     const maxTrimSamples = Math.floor(pcmData.length * MAX_TRIM_PERCENT);
 
-    console.log(`🎚️ [ZeroCrossing] Processing ${pcmData.length} samples (${(pcmData.length / sampleRate * 1000).toFixed(0)}ms)`);
-    console.log(`🎚️ [ZeroCrossing] Search window: ${searchWindowSamples} samples (${searchWindowMs}ms)`);
+    debugLog('AUDIO_CONVERSION', `🎚️ [ZeroCrossing] Processing ${pcmData.length} samples (${(pcmData.length / sampleRate * 1000).toFixed(0)}ms)`);
+    debugLog('AUDIO_CONVERSION', `🎚️ [ZeroCrossing] Search window: ${searchWindowSamples} samples (${searchWindowMs}ms)`);
 
     // Find start zero-crossing
     let startTrim = 0;
@@ -411,7 +413,7 @@ export function alignPCMToZeroCrossing(
     if (!foundStart && searchWindowSamples > 0) {
         const searchEnd = Math.min(searchWindowSamples, maxTrimSamples);
         startTrim = findMinAmplitudeIndex(pcmData, 0, searchEnd);
-        console.log(`⚠️ [ZeroCrossing] No start zero-crossing, using min amplitude at ${startTrim}`);
+        debugLog('AUDIO_CONVERSION', `⚠️ [ZeroCrossing] No start zero-crossing, using min amplitude at ${startTrim}`);
     }
 
     // Find end zero-crossing
@@ -434,14 +436,14 @@ export function alignPCMToZeroCrossing(
     if (!foundEnd && searchWindowSamples > 0) {
         const searchStart = Math.max(pcmData.length - searchWindowSamples, startTrim + 1);
         endTrim = pcmData.length - findMinAmplitudeIndex(pcmData, searchStart, pcmData.length);
-        console.log(`⚠️ [ZeroCrossing] No end zero-crossing, using min amplitude`);
+        debugLog('AUDIO_CONVERSION', `⚠️ [ZeroCrossing] No end zero-crossing, using min amplitude`);
     }
 
     // Calculate aligned buffer
     const alignedLength = pcmData.length - startTrim - endTrim;
 
     if (alignedLength <= MIN_BUFFER_SIZE) {
-        console.log(`⚠️ [ZeroCrossing] Trim would make buffer too small, skipping alignment`);
+        debugLog('AUDIO_CONVERSION', `⚠️ [ZeroCrossing] Trim would make buffer too small, skipping alignment`);
         return {
             alignedData: pcmData,
             startTrim: 0,
@@ -460,12 +462,12 @@ export function alignPCMToZeroCrossing(
     const success = foundStart && foundEnd;
     const usedFallback = !success;
 
-    console.log(`🎚️ [ZeroCrossing] ${startIcon} Start: ${startTrim} samples, ${endIcon} End: ${endTrim} samples`);
-    console.log(`🎚️ [ZeroCrossing] Trimmed: ${((startTrim + endTrim) / sampleRate * 1000).toFixed(1)}ms total`);
+    debugLog('AUDIO_CONVERSION', `🎚️ [ZeroCrossing] ${startIcon} Start: ${startTrim} samples, ${endIcon} End: ${endTrim} samples`);
+    debugLog('AUDIO_CONVERSION', `🎚️ [ZeroCrossing] Trimmed: ${((startTrim + endTrim) / sampleRate * 1000).toFixed(1)}ms total`);
 
     // NEW: Log if fallback was used
     if (usedFallback) {
-        console.warn(`⚠️ [ZeroCrossing] Fallback used - no proper zero-crossing found (trim: ${((startTrim + endTrim) / pcmData.length * 100).toFixed(1)}%)`);
+        debugWarn(`⚠️ [ZeroCrossing] Fallback used - no proper zero-crossing found (trim: ${((startTrim + endTrim) / pcmData.length * 100).toFixed(1)}%)`);
     }
 
     return {
@@ -519,7 +521,7 @@ export function applySoftEdges(
     const actualFadeInSamples = Math.min(fadeInSamples, maxFadeSamples);
     const actualFadeOutSamples = Math.min(fadeOutSamples, maxFadeSamples);
 
-    console.log(`🎚️ [SoftEdges] Applying fade-in: ${actualFadeInSamples} samples, fade-out: ${actualFadeOutSamples} samples`);
+    debugLog('AUDIO_CONVERSION', `🎚️ [SoftEdges] Applying fade-in: ${actualFadeInSamples} samples, fade-out: ${actualFadeOutSamples} samples`);
 
     // Linear fade-in: 0.0 → 1.0
     for (let i = 0; i < actualFadeInSamples; i++) {

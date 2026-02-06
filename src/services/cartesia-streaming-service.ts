@@ -23,6 +23,7 @@ import {
     CartesiaErrorMessage
 } from '../types';
 import { base64ToArrayBuffer } from '../utils/audio-conversion';
+import { DEBUG_CONFIG, debugLog, debugError, debugWarn } from '../config/debug-config';
 
 /**
  * WebSocket connection state
@@ -68,7 +69,7 @@ class CartesiaStreamingService {
         this.pingIntervalMs = STREAMING_CONFIG.pingIntervalMs;
 
         if (!this.apiKey) {
-            console.error('❌ [Cartesia WS] API key not configured');
+            debugError('❌ [Cartesia WS] API key not configured');
         }
     }
 
@@ -81,18 +82,18 @@ class CartesiaStreamingService {
      */
     async connect(): Promise<void> {
         if (this.connectionState === 'connected') {
-            console.log('ℹ️ [Cartesia WS] Already connected');
+            debugLog('CARTESIA', 'ℹ️ [Cartesia WS] Already connected');
             return;
         }
 
         if (this.connectionState === 'connecting') {
-            console.log('ℹ️ [Cartesia WS] Connection already in progress');
+            debugLog('CARTESIA', 'ℹ️ [Cartesia WS] Connection already in progress');
             return;
         }
 
         return new Promise((resolve, reject) => {
             try {
-                console.log('🔌 [Cartesia WS] Connecting...');
+                debugLog('CARTESIA', '🔌 [Cartesia WS] Connecting...');
                 this.connectionState = 'connecting';
 
                 const url = `${this.wsUrl}?api_key=${this.apiKey}&cartesia_version=2024-06-10`;
@@ -100,7 +101,7 @@ class CartesiaStreamingService {
 
                 // Connection opened
                 this.ws.onopen = () => {
-                    console.log('✅ [Cartesia WS] Connected');
+                    debugLog('CARTESIA', '✅ [Cartesia WS] Connected');
                     this.connectionState = 'connected';
                     this.reconnectAttempts = 0;
                     this.startPingInterval();
@@ -109,7 +110,7 @@ class CartesiaStreamingService {
 
                 // Error occurred
                 this.ws.onerror = (error: any) => {
-                    console.error('❌ [Cartesia WS] Error:', error);
+                    debugError('❌ [Cartesia WS] Error:', error);
                     this.connectionState = 'error';
 
                     if (this.ws?.readyState !== WebSocket.OPEN) {
@@ -119,7 +120,7 @@ class CartesiaStreamingService {
 
                 // Connection closed
                 this.ws.onclose = (event: any) => {
-                    console.log(`🔌 [Cartesia WS] Closed: ${event.code} ${event.reason || ''}`);
+                    debugLog('CARTESIA', `🔌 [Cartesia WS] Closed: ${event.code} ${event.reason || ''}`);
                     this.connectionState = 'disconnected';
                     this.stopPingInterval();
 
@@ -137,7 +138,7 @@ class CartesiaStreamingService {
                 // Connection timeout (10 seconds)
                 setTimeout(() => {
                     if (this.connectionState !== 'connected') {
-                        console.error('❌ [Cartesia WS] Connection timeout');
+                        debugError('❌ [Cartesia WS] Connection timeout');
                         this.ws?.close();
                         this.connectionState = 'error';
                         reject(new Error('Connection timeout'));
@@ -145,7 +146,7 @@ class CartesiaStreamingService {
                 }, 10000);
 
             } catch (error) {
-                console.error('❌ [Cartesia WS] Connect error:', error);
+                debugError('❌ [Cartesia WS] Connect error:', error);
                 this.connectionState = 'error';
                 reject(error);
             }
@@ -156,7 +157,7 @@ class CartesiaStreamingService {
      * Disconnect from WebSocket
      */
     disconnect(): void {
-        console.log('🔌 [Cartesia WS] Disconnecting...');
+        debugLog('CARTESIA', '🔌 [Cartesia WS] Disconnecting...');
 
         // Clear reconnection timer
         if (this.reconnectTimer) {
@@ -186,7 +187,7 @@ class CartesiaStreamingService {
      */
     private handleReconnect(): void {
         if (this.reconnectAttempts >= this.maxRetries) {
-            console.error('❌ [Cartesia WS] Max reconnection attempts reached');
+            debugError('❌ [Cartesia WS] Max reconnection attempts reached');
             this.connectionState = 'error';
 
             // Notify all active handlers about error
@@ -205,11 +206,11 @@ class CartesiaStreamingService {
         this.reconnectAttempts++;
         const backoff = this.reconnectBackoffMs * Math.pow(2, this.reconnectAttempts - 1);
 
-        console.log(`🔄 [Cartesia WS] Reconnecting in ${backoff}ms (attempt ${this.reconnectAttempts}/${this.maxRetries})`);
+        debugLog('CARTESIA', `🔄 [Cartesia WS] Reconnecting in ${backoff}ms (attempt ${this.reconnectAttempts}/${this.maxRetries})`);
 
         this.reconnectTimer = setTimeout(() => {
             this.connect().catch(error => {
-                console.error('❌ [Cartesia WS] Reconnection failed:', error);
+                debugError('❌ [Cartesia WS] Reconnection failed:', error);
                 this.handleReconnect(); // Try again
             });
         }, backoff);
@@ -245,7 +246,7 @@ class CartesiaStreamingService {
                 try {
                     this.ws?.send(JSON.stringify({ type: 'ping' }));
                 } catch (error) {
-                    console.error('❌ [Cartesia WS] Ping failed:', error);
+                    debugError('❌ [Cartesia WS] Ping failed:', error);
                 }
             }
         }, this.pingIntervalMs);
@@ -283,11 +284,11 @@ class CartesiaStreamingService {
             if (handler) {
                 handler(message);
             } else {
-                console.warn(`⚠️ [Cartesia WS] No handler for context: ${message.context_id}`);
+                debugWarn(`⚠️ [Cartesia WS] No handler for context: ${message.context_id}`);
             }
 
         } catch (error) {
-            console.error('❌ [Cartesia WS] Message parse error:', error);
+            debugError('❌ [Cartesia WS] Message parse error:', error);
         }
     }
 
@@ -311,7 +312,7 @@ class CartesiaStreamingService {
     ): AsyncGenerator<AudioChunk, void, unknown> {
         // Ensure connected
         if (!this.isConnected()) {
-            console.log('🔌 [Cartesia WS] Not connected, connecting...');
+            debugLog('CARTESIA', '🔌 [Cartesia WS] Not connected, connecting...');
             await this.connect();
         }
 
@@ -319,9 +320,9 @@ class CartesiaStreamingService {
         const contextId = `stream-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         this.activeContextIds.add(contextId);
 
-        console.log(`🎙️ [Cartesia WS] Starting generation`);
-        console.log(`🆔 [Cartesia WS] Context: ${contextId}`);
-        console.log(`📝 [Cartesia WS] Text: "${options.text.substring(0, 50)}${options.text.length > 50 ? '...' : ''}"`);
+        debugLog('CARTESIA', `🎙️ [Cartesia WS] Starting generation`);
+        debugLog('CARTESIA', `🆔 [Cartesia WS] Context: ${contextId}`);
+        debugLog('CARTESIA', `📝 [Cartesia WS] Text: "${options.text.substring(0, 50)}${options.text.length > 50 ? '...' : ''}"`);
 
         // Chunk queue
         const chunkQueue: AudioChunk[] = [];
@@ -357,17 +358,17 @@ class CartesiaStreamingService {
                     if (chunk.sequence === 0 && options.onFirstChunk) {
                         const latency = Date.now() - generationStart;
                         options.onFirstChunk(latency);
-                        console.log(`🎯 [Cartesia WS] First chunk in ${latency}ms`);
+                        debugLog('CARTESIA', `🎯 [Cartesia WS] First chunk in ${latency}ms`);
                     }
                 } catch (error) {
-                    console.error('❌ [Cartesia WS] Chunk decode error:', error);
+                    debugError('❌ [Cartesia WS] Chunk decode error:', error);
                 }
             }
 
             // NEW: Handle timestamps
             if (message.type === 'timestamps') {
                 const timestampsMsg = message as CartesiaTimestampsMessage;
-                console.log(`🕐 [Cartesia WS] Received timestamps for ${timestampsMsg.word_timestamps.words.length} words`);
+                debugLog('CARTESIA', `🕐 [Cartesia WS] Received timestamps for ${timestampsMsg.word_timestamps.words.length} words`);
 
                 // Convert to WordTimestamp[]
                 const wordTimestamps: WordTimestamp[] = timestampsMsg.word_timestamps.words.map((word, i) => ({
@@ -379,19 +380,19 @@ class CartesiaStreamingService {
                 // Store timestamps
                 this.timestampsStorage.set(contextId, wordTimestamps);
 
-                console.log(`📝 [Cartesia WS] Sample timestamps:`, wordTimestamps.slice(0, 3));
-                console.log(`📝 [Cartesia WS] Total duration: ${wordTimestamps[wordTimestamps.length - 1]?.end}s`);
+                debugLog('CARTESIA', `📝 [Cartesia WS] Sample timestamps:`, wordTimestamps.slice(0, 3));
+                debugLog('CARTESIA', `📝 [Cartesia WS] Total duration: ${wordTimestamps[wordTimestamps.length - 1]?.end}s`);
 
                 // PHASE 2: Call real-time callback immediately
                 if (options.onTimestampsReceived) {
                     options.onTimestampsReceived(wordTimestamps);
-                    console.log(`✅ [Cartesia WS] Timestamps delivered to player`);
+                    debugLog('CARTESIA', `✅ [Cartesia WS] Timestamps delivered to player`);
                 }
             }
 
             // Handle completion
             if (message.type === 'done') {
-                console.log(`✅ [Cartesia WS] Generation complete (${chunkSequence} chunks)`);
+                debugLog('CARTESIA', `✅ [Cartesia WS] Generation complete (${chunkSequence} chunks)`);
                 isGenerating = false;
 
                 if (options.onComplete) {
@@ -402,7 +403,7 @@ class CartesiaStreamingService {
             // Handle error
             if (message.type === 'error') {
                 const errorMsg = message as CartesiaErrorMessage;
-                console.error('❌ [Cartesia WS] Generation error:', errorMsg.error);
+                debugError('❌ [Cartesia WS] Generation error:', errorMsg.error);
                 generationError = new Error(errorMsg.error || 'Unknown generation error');
                 isGenerating = false;
 
@@ -441,9 +442,9 @@ class CartesiaStreamingService {
 
         try {
             this.ws?.send(JSON.stringify(request));
-            console.log('📤 [Cartesia WS] Request sent');
+            debugLog('CARTESIA', '📤 [Cartesia WS] Request sent');
         } catch (error) {
-            console.error('❌ [Cartesia WS] Send error:', error);
+            debugError('❌ [Cartesia WS] Send error:', error);
             throw new Error('Failed to send generation request');
         }
 
@@ -467,7 +468,7 @@ class CartesiaStreamingService {
             this.messageHandlers.delete(contextId);
             this.activeContextIds.delete(contextId);
 
-            console.log(`🧹 [Cartesia WS] Cleanup complete for ${contextId}`);
+            debugLog('CARTESIA', `🧹 [Cartesia WS] Cleanup complete for ${contextId}`);
         }
     }
 
@@ -476,11 +477,11 @@ class CartesiaStreamingService {
      */
     cancelGeneration(contextId: string): void {
         if (!this.activeContextIds.has(contextId)) {
-            console.log(`ℹ️ [Cartesia WS] No active generation for ${contextId}`);
+            debugLog('CARTESIA', `ℹ️ [Cartesia WS] No active generation for ${contextId}`);
             return;
         }
 
-        console.log(`🛑 [Cartesia WS] Canceling generation: ${contextId}`);
+        debugLog('CARTESIA', `🛑 [Cartesia WS] Canceling generation: ${contextId}`);
 
         // Send cancel message (if Cartesia supports it)
         try {
@@ -489,7 +490,7 @@ class CartesiaStreamingService {
                 type: 'cancel'
             }));
         } catch (error) {
-            console.error('❌ [Cartesia WS] Cancel send error:', error);
+            debugError('❌ [Cartesia WS] Cancel send error:', error);
         }
 
         // Remove handlers
@@ -501,7 +502,7 @@ class CartesiaStreamingService {
      * Cancel all ongoing generations
      */
     cancelAll(): void {
-        console.log(`🛑 [Cartesia WS] Canceling all generations (${this.activeContextIds.size})`);
+        debugLog('CARTESIA', `🛑 [Cartesia WS] Canceling all generations (${this.activeContextIds.size})`);
 
         const contextIds = Array.from(this.activeContextIds);
         contextIds.forEach(id => this.cancelGeneration(id));
@@ -530,7 +531,7 @@ class CartesiaStreamingService {
      */
     clearTimestamps(contextId: string): void {
         this.timestampsStorage.delete(contextId);
-        console.log(`🧹 [Cartesia WS] Cleared timestamps for ${contextId}`);
+        debugLog('CARTESIA', `🧹 [Cartesia WS] Cleared timestamps for ${contextId}`);
     }
 }
 

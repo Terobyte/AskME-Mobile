@@ -17,6 +17,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+// Import Cartesia Audio Adapter
+import { cartesiaAudioAdapter, AdapterState, AdapterMetrics } from '../services/audio/CartesiaAudioAdapter';
+
 // Types (will be replaced with actual imports)
 interface PlayerMetrics {
   state: string;
@@ -72,6 +75,16 @@ export const TestAudioStreamPage: React.FC = () => {
 
   // Volume
   const [volume, setVolume] = useState(100);
+
+  // Victoria Adapter State
+  const [victoriaState, setVictoriaState] = useState<AdapterState>('IDLE');
+  const [victoriaMetrics, setVictoriaMetrics] = useState<AdapterMetrics>({
+    state: 'IDLE',
+    chunksReceived: 0,
+    chunksPlayed: 0,
+    totalDurationMs: 0,
+    latencyMs: 0,
+  });
 
   // Logs
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -219,6 +232,44 @@ export const TestAudioStreamPage: React.FC = () => {
   }, [logs]);
 
   /**
+   * Victoria Adapter subscriptions
+   */
+  useEffect(() => {
+    const unsubState = cartesiaAudioAdapter.onStateChange(setVictoriaState);
+    const unsubMetrics = cartesiaAudioAdapter.onMetrics(setVictoriaMetrics);
+    return () => {
+      unsubState();
+      unsubMetrics();
+    };
+  }, []);
+
+  /**
+   * Victoria Hello World test handler
+   */
+  const handleVictoriaHello = useCallback(async () => {
+    addLog('Victoria', 'Starting "Hello World" test...');
+
+    try {
+      // Longer text to check for audio artifacts between chunks
+      const testText = `Hello world, it is me Victoria - I am here, and you can speak with me, isn't it magic? ` +
+        `I'm your AI interviewer, ready to help you practice and improve your skills. ` +
+        `We'll go through various technical questions, and I'll provide feedback on your answers. ` +
+        `Don't worry about making mistakes - this is a safe space to learn and grow. ` +
+        `Take your time, think through your responses, and remember that practice makes perfect. ` +
+        `Are you ready to begin our interview session? Let's dive in and explore your knowledge together!`;
+
+      await cartesiaAudioAdapter.speak(testText, {
+        emotion: ['positivity:high'],
+        speed: 'normal'
+      });
+      addLog('Victoria', '✅ Playback complete');
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      addLog('Error', `❌ ${errorMsg}`);
+    }
+  }, [addLog]);
+
+  /**
    * Cleanup
    */
   useEffect(() => {
@@ -361,6 +412,28 @@ export const TestAudioStreamPage: React.FC = () => {
         </View>
       </View>
 
+      {/* Victoria Hello World Test */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Victoria Voice Test (Cartesia)</Text>
+        <TouchableOpacity
+          style={[styles.button, styles.victoriaButton]}
+          onPress={handleVictoriaHello}
+          disabled={victoriaState === 'PLAYING' || victoriaState === 'CONNECTING' || victoriaState === 'BUFFERING'}>
+          <Text style={styles.buttonText}>
+            {victoriaState === 'PLAYING' ? '🎵 Playing...' :
+             victoriaState === 'CONNECTING' ? '🔌 Connecting...' :
+             victoriaState === 'BUFFERING' ? '⏳ Buffering...' :
+             '🎙️ Test Victoria Hello'}
+          </Text>
+        </TouchableOpacity>
+        <View style={styles.metricsGrid}>
+          {renderMetricCard('Victoria State', victoriaState)}
+          {renderMetricCard('Chunks', victoriaMetrics.chunksPlayed)}
+          {renderMetricCard('Duration', (victoriaMetrics.totalDurationMs / 1000).toFixed(2), 's')}
+          {renderMetricCard('Latency', victoriaMetrics.latencyMs, 'ms')}
+        </View>
+      </View>
+
       {/* Buffer Status */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Buffer Status</Text>
@@ -483,6 +556,10 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     backgroundColor: '#6B7280',
+  },
+  victoriaButton: {
+    backgroundColor: '#EC4899', // Pink for Victoria
+    marginBottom: 12,
   },
   buttonText: {
     color: '#FFFFFF',

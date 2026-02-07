@@ -218,11 +218,19 @@ export class AudioContextManager {
   ): AudioBufferSourceNode {
     const source = this.createBufferSource(buffer);
 
-    const start = startTime ?? this.context?.currentTime ?? 0;
+    // ✅ CHANGE: Use provided startTime or calculate
+    const now = this.context?.currentTime ?? 0;
+    const start = startTime ?? now;
 
-    // DEBUG: Log scheduling
-    const latency = start - (this.context?.currentTime ?? 0);
-    console.log(`[AudioContextManager] scheduleBuffer: latency=${latency.toFixed(3)}s, offset=${offset}`);
+    // ✨ NEW: Detailed debug log for scheduling
+    const latency = start - now;
+    console.log(
+      `[AudioContextManager] scheduleBuffer: ` +
+      `now=${now.toFixed(3)}s, ` +
+      `start=${start.toFixed(3)}s, ` +
+      `latency=${latency.toFixed(3)}s, ` +
+      `offset=${offset}`
+    );
 
     source.start(start, offset);
 

@@ -188,6 +188,9 @@ export class CartesiaStreamingPlayer {
   // Playback scheduling
   private scheduledSources: Set<any> = new Set();
 
+  // ✨ NEW: Track cumulative scheduled time to prevent chunks playing simultaneously
+  private nextScheduledTime: number = 0;
+
   constructor(config?: Partial<CartesiaPlayerConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
@@ -574,6 +577,11 @@ export class CartesiaStreamingPlayer {
       console.log(`[CartesiaStreamingPlayer] ⏱️ First sound latency: ${latency}ms`);
     }
 
+    // ✨ NEW: Initialize cumulative scheduled time
+    const now = this.audioContext.getPlaybackTime();
+    this.nextScheduledTime = now + 0.05; // Start 50ms in future for buffer
+    console.log(`[CartesiaStreamingPlayer] Initial schedule time: ${this.nextScheduledTime.toFixed(3)}s`);
+
     // Update buffer state
     this.jitterBuffer.setState(BufferState.PLAYING);
 
@@ -601,10 +609,6 @@ export class CartesiaStreamingPlayer {
       return;
     }
 
-    // DEBUG: Log each chunk being played
-    const duration = (result.samplesRead / this.config.sampleRate) * 1000;
-    console.log(`[scheduleNextChunk] Playing: ${result.samplesRead} samples (${duration.toFixed(1)}ms) [chunk #${this.chunksPlayed + 1}]${result.partial ? ' (PARTIAL!)' : ''}${result.silenceInserted ? ' (SILENCE!)' : ''}`);
-
     let data = result.data;
 
     // Apply zero-crossing alignment for first chunk only
@@ -619,7 +623,20 @@ export class CartesiaStreamingPlayer {
       // CRITICAL: Pass sampleRate explicitly to ensure buffer plays at correct speed
       // Without this, AudioContext uses device sampleRate causing pitch/speed issues
       const buffer = this.audioContext.createBuffer(data, this.config.sampleRate);
-      const source = this.audioContext.scheduleBuffer(buffer);
+
+      // ✨ NEW: Schedule at cumulative time to prevent chunks playing simultaneously
+      const source = this.audioContext.scheduleBuffer(buffer, this.nextScheduledTime);
+
+      // ✨ NEW: Calculate when this chunk ends and update nextScheduledTime
+      const chunkDuration = data.length / this.config.sampleRate;
+      const previousTime = this.nextScheduledTime;
+      this.nextScheduledTime += chunkDuration;
+
+      console.log(
+        `[scheduleNextChunk] Chunk #${this.chunksPlayed + 1}: ` +
+        `${data.length} samples (${(chunkDuration * 1000).toFixed(1)}ms) ` +
+        `scheduled at ${previousTime.toFixed(3)}s → ${this.nextScheduledTime.toFixed(3)}s`
+      );
 
       // Track source
       this.scheduledSources.add(source);
@@ -737,6 +754,9 @@ export class CartesiaStreamingPlayer {
     this.isStreaming = false;
     this.audioContext.stopAll();
     this.scheduledSources.clear();
+
+    // ✨ NEW: Reset scheduled time
+    this.nextScheduledTime = 0;
 
     // Clear buffers
     this.fifoQueue.clear();

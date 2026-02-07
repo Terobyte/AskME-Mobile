@@ -6,6 +6,8 @@ import { cartesiaStreamingService } from './cartesia-streaming-service';
 import { chunkedStreamingPlayer } from './streaming-audio-player';
 import { getCartesiaStreamingPlayer } from './audio/CartesiaStreamingPlayer';
 import { getDeepgramStreamingPlayer } from './audio/DeepgramStreamingPlayer';
+import { getOpenAIStreamingPlayer } from './audio/OpenAIStreamingPlayer';
+import Constants from 'expo-constants';
 
 /**
  * Text-to-Speech Service supporting Cartesia and OpenAI APIs
@@ -183,8 +185,9 @@ class TTSService {
   /**
    * Generate speech from text using selected provider
    *
-   * NEW: Automatically uses streaming for Cartesia and Deepgram if enabled
-   * Falls back to REST API on streaming errors
+   * NEW: Always uses streaming for Cartesia, Deepgram, and OpenAI
+   * Falls back to REST API only for Cartesia/Deepgram if streaming fails
+   * OpenAI has NO REST fallback - streaming only
    */
   async speak(
     text: string,
@@ -204,14 +207,35 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Speaking: "${text.substring(0, 50)}..."`);
 
-      // NEW: Try streaming first if enabled and using Cartesia or Deepgram
+      // OpenAI: Streaming only, no fallback
+      if (this.ttsProvider === 'openai') {
+        console.log(`🌊 [TTS] OpenAI streaming only (no REST fallback)`);
+        try {
+          const success = await this.speakOpenAIStreaming(text, options);
+          if (success) {
+            console.log('✅ [TTS] OpenAI streaming successful');
+            return true;
+          }
+          console.error('❌ [TTS] OpenAI streaming failed - no fallback available');
+          return false;
+        } catch (error) {
+          console.error('❌ [TTS] OpenAI streaming error:', error);
+          return false;
+        }
+      }
+
+      // Cartesia/Deepgram: Try streaming first, fallback to REST
       if (STREAMING_CONFIG.enabled && (this.ttsProvider === 'cartesia' || this.ttsProvider === 'deepgram')) {
         console.log(`🌊 [TTS] Attempting streaming playback (${this.ttsProvider})...`);
 
         try {
-          const success = this.ttsProvider === 'cartesia'
-            ? await this.speakCartesiaStreaming(text, options)
-            : await this.speakDeepgramStreaming(text, options);
+          let success = false;
+
+          if (this.ttsProvider === 'cartesia') {
+            success = await this.speakCartesiaStreaming(text, options);
+          } else {
+            success = await this.speakDeepgramStreaming(text, options);
+          }
 
           if (success) {
             console.log('✅ [TTS] Streaming playback successful');
@@ -224,7 +248,7 @@ class TTSService {
         }
       }
 
-      // Standard (REST API) path
+      // Standard (REST API) path - only for Cartesia/Deepgram
       const audioFile = await this.fetchAudioFile(text, options);
 
       if (!audioFile) {
@@ -246,6 +270,7 @@ class TTSService {
 
   /**
    * Fetch audio file - automatically selects provider
+   * NOTE: OpenAI only uses streaming, this is REST fallback for Cartesia/Deepgram
    */
   private async fetchAudioFile(
     text: string,
@@ -256,91 +281,16 @@ class TTSService {
     }
   ): Promise<string | null> {
     try {
-      // Выбор провайдера
-      if (this.ttsProvider === 'openai') {
-        console.log(`🎙️ [TTS] Using OpenAI TTS provider`);
-        return await this.fetchOpenAIAudioFile(text, options);
-      } else if (this.ttsProvider === 'deepgram') {
-        console.log(`🎙️ [TTS] Using Deepgram TTS provider`);
+      // Выбор провайдера (OpenAI streaming only - no REST fallback)
+      if (this.ttsProvider === 'deepgram') {
+        console.log(`🎙️ [TTS] Using Deepgram TTS provider (REST fallback)`);
         return await this.fetchDeepgramAudioFile(text, options);
       } else {
-        console.log(`🎙️ [TTS] Using Cartesia TTS provider`);
+        console.log(`🎙️ [TTS] Using Cartesia TTS provider (REST fallback)`);
         return await this.fetchCartesiaAudioFile(text, options);
       }
     } catch (error) {
       console.error('❌ [TTS] fetchAudioFile error:', error);
-      return null;
-    }
-  }
-
-  // ========================
-  // OPENAI TTS METHODS
-  // ========================
-
-  /**
-   * Fetch audio file from OpenAI API
-   */
-  private async fetchOpenAIAudioFile(
-    text: string,
-    options?: {
-      emotion?: string; // Ignored in OpenAI, but kept for compatibility
-      speed?: number;
-      emotionLevel?: string[];
-    }
-  ): Promise<string | null> {
-    try {
-      if (!this.openaiApiKey) {
-        console.error('❌ [TTS] OpenAI API key not configured');
-        return null;
-      }
-
-      console.log(`🎙️ [TTS] OpenAI TTS request...`);
-      console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
-      console.log(`🎙️ [TTS] Voice: ${this.openaiVoice}`);
-      console.log(`🎙️ [TTS] Speed: ${options?.speed || 1.0}x`);
-
-      // OpenAI API request
-      const response = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.openaiApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'tts-1',  // или 'tts-1-hd' для лучшего качества
-          input: text,
-          voice: this.openaiVoice,
-          speed: options?.speed || 1.0,
-          response_format: 'mp3',
-        }),
-      });
-
-      console.log(`📥 [TTS] OpenAI Response status: ${response.status}`);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ [TTS] OpenAI API Error:`, errorText);
-        return null;
-      }
-
-      // Получить аудио данные
-      const arrayBuffer = await response.arrayBuffer();
-      console.log(`✅ [TTS] OpenAI Audio received: ${arrayBuffer.byteLength} bytes`);
-
-      // Сохранить в файл
-      const filename = `openai_speech_${Date.now()}.mp3`;
-      const filepath = `${FileSystem.cacheDirectory}${filename}`;
-
-      const base64Audio = this.arrayBufferToBase64(arrayBuffer);
-      await FileSystem.writeAsStringAsync(filepath, base64Audio, {
-        encoding: 'base64',
-      });
-
-      console.log(`💾 [TTS] OpenAI Audio saved: ${filepath}`);
-      return filepath;
-
-    } catch (error) {
-      console.error('❌ [TTS] OpenAI TTS error:', error);
       return null;
     }
   }
@@ -721,6 +671,56 @@ class TTSService {
   }
 
   /**
+   * Speak with OpenAI streaming
+   */
+  private async speakOpenAIStreaming(
+    text: string,
+    options?: {
+      emotion?: string;
+      speed?: number;
+      emotionLevel?: string[];
+      autoPlay?: boolean;
+    }
+  ): Promise<boolean> {
+    try {
+      console.log('🌊 [TTS Streaming] Starting OpenAI streaming engine (react-native-audio-api)...');
+
+      const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey as string || process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+      if (!OPENAI_API_KEY) {
+        throw new Error('EXPO_PUBLIC_OPENAI_API_KEY not configured');
+      }
+
+      // Get the OpenAI streaming player
+      const player = getOpenAIStreamingPlayer(OPENAI_API_KEY);
+
+      // Stop any previous playback
+      if (player.isCurrentlyPlaying() || player.isCurrentlyStreaming()) {
+        console.log('🛑 [TTS Streaming] Stopping previous OpenAI stream...');
+        player.stop();
+      }
+
+      console.log('🎙️ [TTS Streaming] Options:', {
+        voiceId: this.openaiVoice,
+        textLength: text.length,
+        speed: options?.speed
+      });
+
+      // Use OpenAI player (fetch API with streaming response)
+      await player.speak(text, {
+        voiceId: this.openaiVoice,
+        speed: options?.speed,
+      });
+
+      console.log('✅ [TTS Streaming] OpenAI playback complete');
+      return true;
+
+    } catch (error) {
+      console.error('❌ [TTS Streaming] OpenAI streaming error:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Play audio file
    */
   private async playAudioFile(filepath: string, speed?: number): Promise<boolean> {
@@ -773,8 +773,7 @@ class TTSService {
   /**
    * Stop all audio playback (including streaming)
    *
-   * NEW: Also stops streaming playback if active (Cartesia)
-   * Note: Deepgram uses REST API, not streaming
+   * Stops all streaming players: Cartesia, Deepgram, and OpenAI
    */
   async stop(): Promise<void> {
     console.log("⏹️ [TTS] Stopping all audio...");
@@ -801,6 +800,20 @@ class TTSService {
       }
     }
 
+    // Stop OpenAI streaming player
+    const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey as string || process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+    if (OPENAI_API_KEY) {
+      const openaiPlayer = getOpenAIStreamingPlayer(OPENAI_API_KEY);
+      if (openaiPlayer.isCurrentlyPlaying() || openaiPlayer.isCurrentlyStreaming()) {
+        console.log("🛑 [TTS] Stopping OpenAI streaming player...");
+        try {
+          openaiPlayer.stop();
+        } catch (error) {
+          console.error("❌ [TTS] Error stopping OpenAI streaming:", error);
+        }
+      }
+    }
+
     // Stop legacy streaming if active (for fallback)
     if (this.isStreaming) {
       console.log("🛑 [TTS] Stopping legacy streaming playback...");
@@ -812,7 +825,7 @@ class TTSService {
       }
     }
 
-    // Stop regular playback (for OpenAI and Deepgram fallback)
+    // Stop regular playback (for Deepgram/Cartesia REST fallback)
     for (const sound of this.soundObjects) {
       try {
         await sound.stopAsync();
@@ -851,8 +864,8 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Preparing audio: "${text.substring(0, 50)}..."`);
 
-      // NEW: Try streaming if enabled for Cartesia or Deepgram
-      if (STREAMING_CONFIG.enabled && (this.ttsProvider === 'cartesia' || this.ttsProvider === 'deepgram')) {
+      // NEW: Try streaming if enabled for Cartesia, Deepgram, or OpenAI
+      if (STREAMING_CONFIG.enabled && (this.ttsProvider === 'cartesia' || this.ttsProvider === 'deepgram' || this.ttsProvider === 'openai')) {
         console.log(`🌊 [TTS] Using NEW streaming engine for prepareAudio (${this.ttsProvider})...`);
 
         try {
@@ -862,7 +875,8 @@ class TTSService {
 
           // Select appropriate player based on provider
           const isCartesia = this.ttsProvider === 'cartesia';
-          const player = isCartesia ? getCartesiaStreamingPlayer() : getDeepgramStreamingPlayer();
+          const isOpenAI = this.ttsProvider === 'openai';
+          const player = isCartesia ? getCartesiaStreamingPlayer() : isOpenAI ? getOpenAIStreamingPlayer(Constants.expoConfig?.extra?.openaiApiKey as string || process.env.EXPO_PUBLIC_OPENAI_API_KEY!) : getDeepgramStreamingPlayer();
 
           const playFunction = async () => {
             if (isCartesia) {
@@ -883,6 +897,15 @@ class TTSService {
                 voiceId: VOICE_ID,
                 emotion: emotionLevel,
                 speed: speedString,
+              });
+            } else if (isOpenAI) {
+              // OpenAI streaming
+              const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey as string || process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+              if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not configured');
+
+              await (player as any).speak(text, {
+                voiceId: this.openaiVoice,
+                speed: options?.speed,
               });
             } else {
               // Deepgram streaming

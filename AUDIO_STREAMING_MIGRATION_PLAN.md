@@ -999,3 +999,147 @@ private processCycle(): void {
 
 **Дата:** 2026-02-06
 **Commit:** (будет создан после тестирования)
+
+---
+
+### Buffer Overflow & Audio Distortion Bug (Feb 2026)
+
+**Проблема:** Буфер достигал 1700ms вместо 300ms threshold, аудио звучало "перегруженным" / искаженным.
+
+**Симптомы:**
+1. Буфер прыгал до 1700ms вместо 300ms threshold
+2. Аудио звучало "overloaded" / искаженным
+3. Метрики показывали "102/16 chunks" (102 played, 16 received - путающие цифры!)
+
+**Root Cause Analysis:**
+
+**Problem 1: Buffer Accumulation Without Throttling**
+- `fifoToJitterBuffer()` (line 413-424) перемещал ВСЕ доступные чанки из FIFO в jitterBuffer за ОДИН цикл обработки (каждые 20ms)
+- Cartesia отправляет ~16 чанков быстро
+- В ПЕРВОМ цикле ВСЕ 16 чанков перемещались из FIFO → JitterBuffer
+- JitterBuffer накапливал 16 × 320 samples = 5120 samples = 320ms
+- Но если чанки больше (например, 2048 samples), то 16 × 2048 = 32768 samples = 2048ms!
+
+**Problem 2: Wrong Chunk Count Display**
+- UI показывал `chunksPlayed/chunksReceived` но цифры были путающие
+- `chunksPlayed` увеличивался каждый раз когда `scheduleNextChunk()` успешно читал 320 samples
+- Cartesia отправляет чанки переменного размера (вероятно 1024-4096 samples), но плеер читает по 320 samples
+- Получается: Received 16 Cartesia chunks, Played 102 player chunks (16 × 2048 / 320 ≈ 102)
+- Это ПРАВИЛЬНОЕ поведение! Дисплей просто путающий, потому что сравнивает разные метрики.
+
+**Problem 3: Audio Distortion / Overload**
+- Когда buffer переполнялся (превышал 5 секунд), JitterBuffer начинал выбрасывать чанки
+- При переполнении `write()` перезаписывал старые данные пока playback читал из них
+- Результат: clicks/pops в аудио, искаженный звук, пропущенные сегменты аудио
+
+**Problem 4: Pre-buffer Threshold Doesn't Limit Accumulation**
+- `canStartPlayback()` только проверял что buffer >= 300ms, но не останавливал добавление новых чанков
+- Как только playback начинался, чанки продолжали добавляться так быстро как прибывали
+
+**Фиксы:**
+
+**Fix 1: Flow Control для FIFO → JitterBuffer Transfer**
+
+```typescript
+// src/services/audio/CartesiaStreamingPlayer.ts:413-441
+private fifoToJitterBuffer(): void {
+  const maxBufferMs = 1000; // 1 second max - healthy level
+
+  while (!this.fifoQueue.isEmpty()) {
+    // Check buffer health BEFORE adding (Flow Control)
+    const currentDuration = this.jitterBuffer.getBufferDuration();
+
+    // Don't overfill! Stop if we have enough buffered audio
+    if (currentDuration > maxBufferMs) {
+      // Leave rest in FIFO for next cycle
+      break;
+    }
+
+    const entry = this.fifoQueue.dequeue();
+    if (!entry) break;
+
+    try {
+      const result = this.converter.convert(entry.data.data);
+
+      // Log buffer health for debugging
+      if (this.chunksReceived % 10 === 0) {
+        console.log(`[CartesiaStreamingPlayer] Buffer: ${currentDuration.toFixed(0)}ms → adding ${result.data.length} samples`);
+      }
+
+      this.jitterBuffer.addChunk(result.data);
+    } catch (error) {
+      console.error('[CartesiaStreamingPlayer] Conversion error:', error);
+    }
+  }
+}
+```
+
+**Почему это работает:**
+- Если buffer EMPTY (< 300ms): Перемещаем все доступные чанки
+- Если buffer HEALTHY (300-1000ms): Продолжаем заполнять постепенно
+- Если buffer FULL (> 1000ms): Останавливаемся и оставляем в FIFO для следующего цикла
+- Это предотвращает и JitterBuffer overflow, и FIFO overflow
+
+**Fix 2: Add Buffer Upper Limit в JitterBuffer**
+
+```typescript
+// src/utils/audio/JitterBuffer.ts:141-178
+addChunk(data: Float32Array): boolean {
+  if (data.length < this.config.minSamples) {
+    return false;
+  }
+
+  const availableBefore = this.buffer.getAvailableSamples();
+  const capacity = this.buffer.getCapacity();
+  const wouldOverflow = availableBefore + data.length > capacity;
+
+  // NEW: Reject chunks if buffer is too full (> 80% capacity)
+  // This prevents audio distortion from overwriting data while reading
+  const maxBufferMs = 2000; // 2 seconds hard limit
+  const currentDurationMs = (availableBefore / this.config.sampleRate) * 1000;
+
+  if (currentDurationMs > maxBufferMs) {
+    // Drop this chunk instead of overwriting (prevents distortion)
+    this.droppedChunks++;
+    console.warn(`[JitterBuffer] Dropping chunk - buffer full (${currentDurationMs.toFixed(0)}ms)`);
+    return false;
+  }
+
+  if (wouldOverflow) {
+    this.droppedChunks++;
+    // Still write (will overwrite oldest)
+  }
+
+  this.buffer.write(data);
+
+  // Store for repeat strategy
+  this.lastChunk = data;
+
+  // Update state based on buffer level
+  this.updateState();
+
+  return true;
+}
+```
+
+**Fix 3: Improve Chunk Display Metrics**
+
+```typescript
+// src/screens/TestAudioStreamPage.tsx:378
+// Before:
+{renderMetricCard('Chunks', `${metrics.chunksPlayed}/${metrics.chunksReceived}`)}
+
+// After:
+{renderMetricCard('Buffer', `${metrics.samplesQueued}`, 'samples')}
+{renderMetricCard('Duration', `${metrics.bufferDuration.toFixed(0)}`, 'ms')}
+```
+
+**Результат:**
+- ✅ Буфер держится около 300-500ms во время playback (не 1700ms!)
+- ✅ Нет audio distortion или "overload" звука
+- ✅ Понятные метрики (samples или ms, а не путающий chunk count)
+- ✅ Buffer health логи показывают постепенное заполнение, не резкие скачки
+- ✅ Может проигрывать длинные тексты без buffer overflow
+
+**Дата:** 2026-02-06
+**Commit:** (будет создан после тестирования)

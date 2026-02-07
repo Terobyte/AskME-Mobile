@@ -375,7 +375,8 @@ export const TestAudioStreamPage: React.FC = () => {
           <View style={styles.metricsGrid}>
             {renderMetricCard('First Chunk', metrics.firstChunkLatency, 'ms')}
             {renderMetricCard('First Sound', metrics.playbackLatency, 'ms')}
-            {renderMetricCard('Chunks', `${metrics.chunksPlayed}/${metrics.chunksReceived}`)}
+            {renderMetricCard('Buffer', `${metrics.samplesQueued}`, 'samples')}
+            {renderMetricCard('Duration', `${metrics.bufferDuration.toFixed(0)}`, 'ms')}
             {renderMetricCard('Chunks/s', metrics.chunksPerSecond)}
             {renderMetricCard('Underruns', metrics.underrunCount)}
             {renderMetricCard('Dropped', metrics.droppedChunks)}

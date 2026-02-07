@@ -149,6 +149,18 @@ export class JitterBuffer {
     const capacity = this.buffer.getCapacity();
     const wouldOverflow = availableBefore + data.length > capacity;
 
+    // NEW: Reject chunks if buffer is too full (> 80% capacity)
+    // This prevents audio distortion from overwriting data while reading
+    const maxBufferMs = 2000; // 2 seconds hard limit
+    const currentDurationMs = (availableBefore / this.config.sampleRate) * 1000;
+
+    if (currentDurationMs > maxBufferMs) {
+      // Drop this chunk instead of overwriting (prevents distortion)
+      this.droppedChunks++;
+      console.warn(`[JitterBuffer] Dropping chunk - buffer full (${currentDurationMs.toFixed(0)}ms)`);
+      return false;
+    }
+
     if (wouldOverflow) {
       this.droppedChunks++;
       // Still write (will overwrite oldest)

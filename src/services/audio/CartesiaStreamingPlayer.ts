@@ -409,15 +409,37 @@ export class CartesiaStreamingPlayer {
 
   /**
    * Move chunks from FIFO queue to jitter buffer
+   *
+   * Implements flow control to prevent buffer overflow:
+   * - Transfers chunks while FIFO has data AND buffer is healthy
+   * - Stops transferring if buffer exceeds 1000ms (leaves rest in FIFO)
+   * - This prevents both JitterBuffer overflow AND FIFO overflow
    */
   private fifoToJitterBuffer(): void {
+    const maxBufferMs = 1000; // 1 second max - healthy level
+
     while (!this.fifoQueue.isEmpty()) {
+      // Check buffer health BEFORE adding (Flow Control)
+      const currentDuration = this.jitterBuffer.getBufferHealth().currentDuration;
+
+      // Don't overfill! Stop if we have enough buffered audio
+      if (currentDuration > maxBufferMs) {
+        // Leave rest in FIFO for next cycle
+        break;
+      }
+
       const entry = this.fifoQueue.dequeue();
       if (!entry) break;
 
       try {
         // Convert PCM16 -> Float32
         const result = this.converter.convert(entry.data.data);
+
+        // Log buffer health for debugging
+        if (this.chunksReceived % 10 === 0) {
+          console.log(`[CartesiaStreamingPlayer] Buffer: ${currentDuration.toFixed(0)}ms → adding ${result.data.length} samples`);
+        }
+
         this.jitterBuffer.addChunk(result.data);
       } catch (error) {
         console.error('[CartesiaStreamingPlayer] Conversion error:', error);

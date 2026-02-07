@@ -381,10 +381,26 @@ export class CartesiaStreamingPlayer {
 
     // 3. Schedule audio if playing
     if (this.isPlaying && !this.isPaused) {
-      this.scheduleNextChunk();
+      const hasData = this.jitterBuffer.getBufferHealth().availableSamples > 0;
+      // Only schedule if we're still streaming OR we have data in buffers
+      if (this.isStreaming || hasData) {
+        this.scheduleNextChunk();
+      } else {
+        // No more data and stream ended - stop playback and timers
+        this.isPlaying = false;
+        if (this.processingTimer) {
+          clearInterval(this.processingTimer);
+          this.processingTimer = null;
+        }
+        if (this.metricsTimer) {
+          clearInterval(this.metricsTimer);
+          this.metricsTimer = null;
+        }
+        console.log('[CartesiaStreamingPlayer] Playback complete, timers stopped');
+      }
     }
 
-    // 4. Check for underrun
+    // 4. Check for underrun (only during active streaming)
     if (this.isPlaying && this.jitterBuffer.getState() === BufferState.UNDERRUN) {
       this.emit('underrun', this.getMetrics());
       console.warn('[CartesiaStreamingPlayer] Buffer underrun!');
@@ -491,7 +507,19 @@ export class CartesiaStreamingPlayer {
 
         if (fifoEmpty && jitterEmpty) {
           clearInterval(drainInterval);
-          console.log('[CartesiaStreamingPlayer] Buffers drained');
+
+          // Stop timers to prevent underrun spam
+          if (this.processingTimer) {
+            clearInterval(this.processingTimer);
+            this.processingTimer = null;
+          }
+          if (this.metricsTimer) {
+            clearInterval(this.metricsTimer);
+            this.metricsTimer = null;
+          }
+
+          this.isPlaying = false;
+          console.log('[CartesiaStreamingPlayer] Buffers drained, timers stopped');
           resolve();
         }
 
@@ -504,6 +532,19 @@ export class CartesiaStreamingPlayer {
       // Timeout after 5 seconds
       setTimeout(() => {
         clearInterval(drainInterval);
+
+        // Also stop timers on timeout
+        if (this.processingTimer) {
+          clearInterval(this.processingTimer);
+          this.processingTimer = null;
+        }
+        if (this.metricsTimer) {
+          clearInterval(this.metricsTimer);
+          this.metricsTimer = null;
+        }
+
+        this.isPlaying = false;
+        console.log('[CartesiaStreamingPlayer] Drain timeout, timers stopped');
         resolve();
       }, 5000);
     });

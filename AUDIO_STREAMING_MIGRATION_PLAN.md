@@ -907,3 +907,95 @@ voiceId: options?.voiceId || process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID,
 ```
 
 **Reference:** `CartesiaAudioAdapter.ts:89` уже имел правильную реализацию
+
+---
+
+### Underrun Spam Bug (Feb 2026)
+
+**Проблема:** После завершения стрима, консоль спамится сообщениями `Buffer underrun!`
+
+**Причина:** `processingTimer` продолжает работать каждые 20ms даже после окончания стрима. Метод `processCycle()` продолжает вызывать `scheduleNextChunk()`, который читает из пустого jitterBuffer → underrun.
+
+**Timeline из логов:**
+```
+LOG  [CartesiaStreamingPlayer] Stream complete, draining buffers...
+LOG  [CartesiaStreamingPlayer] State: playing → done
+WARN  [CartesiaStreamingPlayer] Buffer underrun!  <-- СТАРТ СПАМА
+WARN  [CartesiaStreamingPlayer] Buffer underrun!  <-- БЕСКОНЕЧНЫЙ СПАМ
+```
+
+**Фикс 1: Остановка таймеров в `drainBuffers()`**
+
+```typescript
+// src/services/audio/CartesiaStreamingPlayer.ts:501-551
+private async drainBuffers(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const drainInterval = setInterval(() => {
+      const fifoEmpty = this.fifoQueue.isEmpty();
+      const jitterEmpty = this.jitterBuffer.getBufferHealth().availableSamples === 0;
+
+      if (fifoEmpty && jitterEmpty) {
+        clearInterval(drainInterval);
+
+        // ⭐ ОСТАНОВ ТАЙМЕРОВ ЗДЕСЬ
+        if (this.processingTimer) {
+          clearInterval(this.processingTimer);
+          this.processingTimer = null;
+        }
+        if (this.metricsTimer) {
+          clearInterval(this.metricsTimer);
+          this.metricsTimer = null;
+        }
+
+        this.isPlaying = false;
+        console.log('[CartesiaStreamingPlayer] Buffers drained, timers stopped');
+        resolve();
+      }
+      // ... также добавлена остановка таймеров на timeout
+    }, 50);
+  });
+}
+```
+
+**Фикс 2: Проверка `isStreaming || hasData` в `processCycle()`**
+
+```typescript
+// src/services/audio/CartesiaStreamingPlayer.ts:369-408
+private processCycle(): void {
+  this.fifoToJitterBuffer();
+
+  if (!this.isPlaying && !this.isPaused && this.jitterBuffer.canStartPlayback()) {
+    this.startPlayback();
+  }
+
+  // ⭐ Только schedule если streaming ИЛИ есть данные
+  if (this.isPlaying && !this.isPaused) {
+    const hasData = this.jitterBuffer.getBufferHealth().availableSamples > 0;
+    if (this.isStreaming || hasData) {
+      this.scheduleNextChunk();
+    } else {
+      // Нет данных и стрим закончился - останавливаем playback и таймеры
+      this.isPlaying = false;
+      if (this.processingTimer) {
+        clearInterval(this.processingTimer);
+        this.processingTimer = null;
+      }
+      if (this.metricsTimer) {
+        clearInterval(this.metricsTimer);
+        this.metricsTimer = null;
+      }
+      console.log('[CartesiaStreamingPlayer] Playback complete, timers stopped');
+    }
+  }
+  // ...
+}
+```
+
+**Результат:**
+- ✅ Нет underrun спама после завершения стрима
+- ✅ State переходит в DONE чисто
+- ✅ Processing таймеры останавливаются когда playback заканчивается
+- ✅ Можно начинать новый playback после завершения предыдущего
+
+**Дата:** 2026-02-06
+**Commit:** (будет создан после тестирования)

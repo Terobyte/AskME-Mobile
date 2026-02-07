@@ -350,6 +350,47 @@ export class CartesiaStreamingPlayer {
       this.processCycle();
     }, this.config.processingInterval);
 
+    // ✨ NEW: Add buffering timeout protection (3 seconds)
+    const bufferingTimeout = setTimeout(() => {
+      if (this.state === PlayerState.BUFFERING) {
+        console.error('[CartesiaStreamingPlayer] ⚠️ BUFFERING TIMEOUT (3s)!');
+
+        const health = this.jitterBuffer.getBufferHealth();
+        console.error('[CartesiaStreamingPlayer] Debug info:', {
+          fifoSize: this.fifoQueue.size(),
+          bufferDuration: health.currentDuration,
+          threshold: this.config.preBufferThreshold,
+          samplesAvailable: health.availableSamples,
+          chunksReceived: this.chunksReceived,
+          isStreaming: this.isStreaming,
+        });
+
+        // Try to force start if we have ANY data
+        if (health.availableSamples > 0) {
+          console.warn('[CartesiaStreamingPlayer] 🚨 Force starting with partial buffer');
+          this.startPlayback();
+        } else {
+          // No data at all - something is wrong
+          this.setState(PlayerState.ERROR);
+          this.emit('error', {
+            error: 'Buffering timeout - no data received',
+            debug: {
+              fifoSize: this.fifoQueue.size(),
+              chunksReceived: this.chunksReceived,
+              isStreaming: this.isStreaming,
+            }
+          });
+        }
+      }
+    }, 3000); // 3 second timeout
+
+    // Clear timeout when playback starts successfully
+    const clearBufferingTimeout = () => {
+      clearTimeout(bufferingTimeout);
+      this.off('playing', clearBufferingTimeout);
+    };
+    this.on('playing', clearBufferingTimeout);
+
     // Start metrics timer (every 100ms)
     this.metricsTimer = setInterval(() => {
       this.emit('metrics', this.getMetrics());
@@ -367,26 +408,43 @@ export class CartesiaStreamingPlayer {
    * Single processing cycle - moves data through the pipeline
    */
   private processCycle(): void {
-    // 1. Move chunks from FIFO to JitterBuffer
+    // Snapshot state before processing
+    const beforeFifo = this.fifoQueue.size();
+    const beforeHealth = this.jitterBuffer.getBufferHealth();
+
+    // Phase 1: Move chunks from FIFO to JitterBuffer
     this.fifoToJitterBuffer();
 
-    // 2. Check if we can start playback
-    if (
-      !this.isPlaying &&
-      !this.isPaused &&
-      this.jitterBuffer.canStartPlayback()
-    ) {
+    // Snapshot state after processing
+    const afterFifo = this.fifoQueue.size();
+    const afterHealth = this.jitterBuffer.getBufferHealth();
+
+    // Log state changes (only during buffering for clarity)
+    if (this.state === PlayerState.BUFFERING) {
+      if (beforeFifo !== afterFifo || beforeHealth.currentDuration !== afterHealth.currentDuration) {
+        const canStart = this.jitterBuffer.canStartPlayback();
+        console.log(
+          `[ProcessCycle] FIFO: ${beforeFifo} → ${afterFifo}, ` +
+          `Buffer: ${beforeHealth.currentDuration.toFixed(0)}ms → ${afterHealth.currentDuration.toFixed(0)}ms, ` +
+          `Threshold: ${canStart ? '✅ READY' : `❌ ${afterHealth.currentDuration.toFixed(0)}/${this.config.preBufferThreshold}`}`
+        );
+      }
+    }
+
+    // Phase 2: Check if we can start playback
+    if (!this.isPlaying && !this.isPaused && this.jitterBuffer.canStartPlayback()) {
+      console.log('[ProcessCycle] ✅ Threshold reached - starting playback!');
       this.startPlayback();
     }
 
-    // 3. Schedule audio if playing
+    // Phase 3: Schedule next chunk if playing
     if (this.isPlaying && !this.isPaused) {
-      const hasData = this.jitterBuffer.getBufferHealth().availableSamples > 0;
-      // Only schedule if we're still streaming OR we have data in buffers
+      const hasData = afterHealth.availableSamples > 0;
+
       if (this.isStreaming || hasData) {
         this.scheduleNextChunk();
       } else {
-        // No more data and stream ended - stop playback and timers
+        // No more data and stream ended - stop playback
         this.isPlaying = false;
         if (this.processingTimer) {
           clearInterval(this.processingTimer);
@@ -396,14 +454,14 @@ export class CartesiaStreamingPlayer {
           clearInterval(this.metricsTimer);
           this.metricsTimer = null;
         }
-        console.log('[CartesiaStreamingPlayer] Playback complete, timers stopped');
+        console.log('[ProcessCycle] ⏹️ No more data - stopping timers');
       }
     }
 
-    // 4. Check for underrun (only during active streaming)
-    if (this.isPlaying && this.jitterBuffer.getState() === BufferState.UNDERRUN) {
+    // Phase 4: Check for underrun (only during active playback with active stream)
+    if (this.isPlaying && this.isStreaming && this.jitterBuffer.getState() === BufferState.UNDERRUN) {
       this.emit('underrun', this.getMetrics());
-      console.warn('[CartesiaStreamingPlayer] Buffer underrun!');
+      console.warn('[ProcessCycle] ⚠️ Buffer underrun!');
     }
   }
 
@@ -411,20 +469,37 @@ export class CartesiaStreamingPlayer {
    * Move chunks from FIFO queue to jitter buffer
    *
    * Implements flow control to prevent buffer overflow:
-   * - Transfers chunks while FIFO has data AND buffer is healthy
-   * - Stops transferring if buffer exceeds 1000ms (leaves rest in FIFO)
-   * - This prevents both JitterBuffer overflow AND FIFO overflow
+   * - During buffering: aggressive draining to reach threshold ASAP
+   * - During playback: conservative draining to maintain stable buffer
+   * - Stops transferring if buffer exceeds limit (leaves rest in FIFO)
    */
   private fifoToJitterBuffer(): void {
-    const maxBufferMs = 1000; // 1 second max - healthy level
+    // Adaptive flow control based on state
+    const isBuffering = !this.isPlaying && !this.isPaused;
+    const currentDuration = this.jitterBuffer.getBufferHealth().currentDuration;
+    const threshold = this.config.preBufferThreshold;
 
+    // During buffering: aggressive draining to reach threshold ASAP
+    // During playback: conservative draining to maintain stable buffer
+    let maxBufferMs: number;
+    if (isBuffering && currentDuration < threshold) {
+      // AGGRESSIVE: Fill to threshold + safety margin
+      maxBufferMs = threshold + 200; // e.g., 500ms
+      console.log(`[fifoToJitterBuffer] 🚀 AGGRESSIVE MODE - draining to ${maxBufferMs}ms`);
+    } else {
+      // CONSERVATIVE: Maintain healthy buffer during playback
+      maxBufferMs = 1000;
+    }
+
+    let drained = 0;
     while (!this.fifoQueue.isEmpty()) {
-      // Check buffer health BEFORE adding (Flow Control)
-      const currentDuration = this.jitterBuffer.getBufferHealth().currentDuration;
+      const health = this.jitterBuffer.getBufferHealth();
 
-      // Don't overfill! Stop if we have enough buffered audio
-      if (currentDuration > maxBufferMs) {
-        // Leave rest in FIFO for next cycle
+      // Stop if buffer would exceed limit
+      if (health.currentDuration > maxBufferMs) {
+        if (drained > 0) {
+          console.log(`[fifoToJitterBuffer] Buffer limit reached at ${health.currentDuration.toFixed(0)}ms`);
+        }
         break;
       }
 
@@ -432,18 +507,28 @@ export class CartesiaStreamingPlayer {
       if (!entry) break;
 
       try {
-        // Convert PCM16 -> Float32
         const result = this.converter.convert(entry.data.data);
+        const success = this.jitterBuffer.addChunk(result.data);
 
-        // Log buffer health for debugging
-        if (this.chunksReceived % 10 === 0) {
-          console.log(`[CartesiaStreamingPlayer] Buffer: ${currentDuration.toFixed(0)}ms → adding ${result.data.length} samples`);
+        if (!success) {
+          console.warn('[fifoToJitterBuffer] JitterBuffer rejected chunk (full?)');
+          break;
         }
 
-        this.jitterBuffer.addChunk(result.data);
+        drained++;
       } catch (error) {
-        console.error('[CartesiaStreamingPlayer] Conversion error:', error);
+        console.error('[fifoToJitterBuffer] Conversion error:', error);
       }
+    }
+
+    // Log progress during buffering
+    if (isBuffering && drained > 0) {
+      const health = this.jitterBuffer.getBufferHealth();
+      const progress = (health.currentDuration / threshold) * 100;
+      console.log(
+        `[fifoToJitterBuffer] Drained ${drained} chunks → ` +
+        `${health.currentDuration.toFixed(0)}ms / ${threshold}ms (${progress.toFixed(0)}%)`
+      );
     }
   }
 
@@ -451,24 +536,28 @@ export class CartesiaStreamingPlayer {
    * Start audio playback
    */
   private async startPlayback(): Promise<void> {
-    console.log('[CartesiaStreamingPlayer] Starting playback');
+    console.log('[CartesiaStreamingPlayer] 🎵 Starting playback');
 
+    // Update flags
     this.isPlaying = true;
     this.isPaused = false;
 
-    // Track first sound time
+    // Track first sound latency
     if (this.firstSoundTime === 0) {
       this.firstSoundTime = Date.now();
       const latency = this.firstSoundTime - this.startTime;
-      console.log(`[CartesiaStreamingPlayer] First sound latency: ${latency}ms`);
+      console.log(`[CartesiaStreamingPlayer] ⏱️ First sound latency: ${latency}ms`);
     }
 
+    // Update buffer state
     this.jitterBuffer.setState(BufferState.PLAYING);
+
+    // Update player state
     this.setState(PlayerState.PLAYING);
     this.emit('playing', this.getMetrics());
 
-    // Schedule first chunk immediately
-    this.scheduleNextChunk();
+    // ✅ DON'T schedule here - let processCycle() handle it in next tick
+    // This prevents double-scheduling bug
   }
 
   /**
@@ -522,7 +611,12 @@ export class CartesiaStreamingPlayer {
    */
   private async drainBuffers(): Promise<void> {
     return new Promise<void>((resolve) => {
+      let resolved = false;
+
       const drainInterval = setInterval(() => {
+        // Move remaining chunks from FIFO to JitterBuffer
+        this.fifoToJitterBuffer();
+
         // Check if buffers are empty
         const fifoEmpty = this.fifoQueue.isEmpty();
         const jitterEmpty = this.jitterBuffer.getBufferHealth().availableSamples === 0;
@@ -542,6 +636,7 @@ export class CartesiaStreamingPlayer {
 
           this.isPlaying = false;
           console.log('[CartesiaStreamingPlayer] Buffers drained, timers stopped');
+          resolved = true;
           resolve();
         }
 
@@ -551,24 +646,36 @@ export class CartesiaStreamingPlayer {
         }
       }, 50);
 
-      // Timeout after 5 seconds
-      setTimeout(() => {
-        clearInterval(drainInterval);
+      // Timeout after 5 seconds - STORE REFERENCE TO CLEAR
+      const drainTimeout = setTimeout(() => {
+        if (!resolved) {
+          clearInterval(drainInterval);
 
-        // Also stop timers on timeout
-        if (this.processingTimer) {
-          clearInterval(this.processingTimer);
-          this.processingTimer = null;
-        }
-        if (this.metricsTimer) {
-          clearInterval(this.metricsTimer);
-          this.metricsTimer = null;
-        }
+          // Also stop timers on timeout
+          if (this.processingTimer) {
+            clearInterval(this.processingTimer);
+            this.processingTimer = null;
+          }
+          if (this.metricsTimer) {
+            clearInterval(this.metricsTimer);
+            this.metricsTimer = null;
+          }
 
-        this.isPlaying = false;
-        console.log('[CartesiaStreamingPlayer] Drain timeout, timers stopped');
-        resolve();
+          this.isPlaying = false;
+          console.log('[CartesiaStreamingPlayer] Drain timeout, timers stopped');
+          resolve();
+        }
       }, 5000);
+
+      // Clear timeout when resolved successfully
+      const originalResolve = resolve;
+      resolve = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(drainTimeout);
+          originalResolve();
+        }
+      };
     });
   }
 
@@ -691,6 +798,34 @@ export class CartesiaStreamingPlayer {
    */
   getState(): PlayerState {
     return this.state;
+  }
+
+  /**
+   * Debug helper - print current player state
+   * @internal Use only for debugging
+   */
+  public debugState(): void {
+    const metrics = this.getMetrics();
+    const health = this.jitterBuffer.getBufferHealth();
+
+    console.log('╔════════════════════════════════════════╗');
+    console.log('║     CARTESIA PLAYER DEBUG STATE        ║');
+    console.log('╠════════════════════════════════════════╣');
+    console.log(`║ State:           ${this.state.padEnd(20)} ║`);
+    console.log(`║ Is Playing:      ${String(this.isPlaying).padEnd(20)} ║`);
+    console.log(`║ Is Paused:       ${String(this.isPaused).padEnd(20)} ║`);
+    console.log(`║ Is Streaming:    ${String(this.isStreaming).padEnd(20)} ║`);
+    console.log('╠════════════════════════════════════════╣');
+    console.log(`║ FIFO Queue:      ${String(this.fifoQueue.size()).padEnd(20)} ║`);
+    console.log(`║ Buffer Duration: ${health.currentDuration.toFixed(0).padEnd(20)} ms ║`);
+    console.log(`║ Threshold:       ${String(this.config.preBufferThreshold).padEnd(20)} ms ║`);
+    console.log(`║ Can Start?:      ${String(this.jitterBuffer.canStartPlayback()).padEnd(20)} ║`);
+    console.log('╠════════════════════════════════════════╣');
+    console.log(`║ Chunks Received: ${String(this.chunksReceived).padEnd(20)} ║`);
+    console.log(`║ Chunks Played:   ${String(this.chunksPlayed).padEnd(20)} ║`);
+    console.log(`║ Underruns:       ${String(health.underrunCount).padEnd(20)} ║`);
+    console.log(`║ Dropped:         ${String(health.droppedChunks).padEnd(20)} ║`);
+    console.log('╚════════════════════════════════════════╝');
   }
 
   /**

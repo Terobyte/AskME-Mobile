@@ -126,17 +126,23 @@ export type EventListener = (data: any) => void;
 
 /**
  * Default configuration
+ *
+ * HIGH-PERFORMANCE CONFIGURATION:
+ * - sampleRate: 44100 (better quality than 16kHz)
+ * - chunkSize: 4096 samples (~93ms at 44.1kHz) - reduces CPU overhead
+ * - preBufferThreshold: 500ms (balance between latency and stability)
+ * - processingInterval: 50ms (20Hz processing ticks)
  */
 const DEFAULT_CONFIG: Required<CartesiaPlayerConfig> = {
-  sampleRate: 16000,
-  preBufferThreshold: 300,
-  maxBufferSize: 5,
+  sampleRate: 44100,
+  preBufferThreshold: 500,  // 500ms pre-buffer (in milliseconds)
+  maxBufferSize: 5,         // 5 seconds max buffer
   underrunStrategy: UnderrunStrategy.SILENCE,
   initialGain: 1.0,
   useZeroCrossing: true,
-  chunkSize: 320, // ~20ms at 16kHz
-  fifoMaxSize: 100,
-  processingInterval: 20, // 50Hz
+  chunkSize: 4096,          // ~93ms at 44.1kHz (reduces CPU overhead)
+  fifoMaxSize: 500,         // Larger FIFO for stability
+  processingInterval: 50,   // 50Hz processing
 };
 
 /**
@@ -184,6 +190,17 @@ export class CartesiaStreamingPlayer {
 
   constructor(config?: Partial<CartesiaPlayerConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+
+    // DEBUG: Detailed config logging
+    console.log(`╔════════════════════════════════════════╗`);
+    console.log(`║   CartesiaStreamingPlayer Config        ║`);
+    console.log(`╠════════════════════════════════════════╣`);
+    console.log(`║ sampleRate:           ${String(this.config.sampleRate).padEnd(20)} ║`);
+    console.log(`║ chunkSize:            ${String(this.config.chunkSize).padEnd(20)} ║`);
+    console.log(`║ preBufferThreshold:   ${String(this.config.preBufferThreshold + 'ms').padEnd(20)} ║`);
+    console.log(`║ processingInterval:   ${String(this.config.processingInterval + 'ms').padEnd(20)} ║`);
+    console.log(`║ fifoMaxSize:          ${String(this.config.fifoMaxSize).padEnd(20)} ║`);
+    console.log(`╚════════════════════════════════════════╝`);
 
     // Initialize components
     this.converter = new Int16ToFloat32Converter({
@@ -510,6 +527,14 @@ export class CartesiaStreamingPlayer {
         const result = this.converter.convert(entry.data.data);
         const success = this.jitterBuffer.addChunk(result.data);
 
+        // DEBUG: Log first chunk conversion in detail
+        if (this.chunksPlayed === 0 && drained === 0) {
+          console.log(`[fifoToJitterBuffer] First chunk conversion:`);
+          console.log(`  Input: ${entry.data.data.byteLength} bytes`);
+          console.log(`  Output: ${result.data.length} samples`);
+          console.log(`  Duration: ${result.durationMs.toFixed(1)}ms @ ${this.config.sampleRate}Hz`);
+        }
+
         if (!success) {
           console.warn('[fifoToJitterBuffer] JitterBuffer rejected chunk (full?)');
           break;
@@ -576,6 +601,10 @@ export class CartesiaStreamingPlayer {
       return;
     }
 
+    // DEBUG: Log each chunk being played
+    const duration = (result.samplesRead / this.config.sampleRate) * 1000;
+    console.log(`[scheduleNextChunk] Playing: ${result.samplesRead} samples (${duration.toFixed(1)}ms) [chunk #${this.chunksPlayed + 1}]${result.partial ? ' (PARTIAL!)' : ''}${result.silenceInserted ? ' (SILENCE!)' : ''}`);
+
     let data = result.data;
 
     // Apply zero-crossing alignment for first chunk only
@@ -587,15 +616,17 @@ export class CartesiaStreamingPlayer {
 
     // Create buffer and schedule
     try {
-      const buffer = this.audioContext.createBuffer(data);
+      // CRITICAL: Pass sampleRate explicitly to ensure buffer plays at correct speed
+      // Without this, AudioContext uses device sampleRate causing pitch/speed issues
+      const buffer = this.audioContext.createBuffer(data, this.config.sampleRate);
       const source = this.audioContext.scheduleBuffer(buffer);
 
       // Track source
       this.scheduledSources.add(source);
 
-      // Auto-remove when done
-      if (source && typeof source.onended === 'function') {
-        source.onended = () => {
+      // Auto-remove when done (react-native-audio-api uses onEnded, not onended)
+      if (source && typeof (source as any).onEnded !== 'undefined') {
+        source.onEnded = () => {
           this.scheduledSources.delete(source);
         };
       }

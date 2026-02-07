@@ -98,11 +98,13 @@ export interface ChunkReadResult {
 
 /**
  * Default configuration
+ *
+ * NOTE: sampleRate: 44100 matches Cartesia API default (cartesia-streaming-service.ts:437)
  */
 const DEFAULT_CONFIG: Required<JitterBufferConfig> = {
   preBufferThreshold: 300, // 300ms
   maxBufferSize: 5,
-  sampleRate: 16000,
+  sampleRate: 44100,  // Match Cartesia API default
   underrunStrategy: UnderrunStrategy.SILENCE,
   minSamples: 100,
 };
@@ -161,6 +163,10 @@ export class JitterBuffer {
       return false;
     }
 
+    // DEBUG: Log chunk addition
+    const duration = (data.length / this.config.sampleRate) * 1000;
+    console.log(`[JitterBuffer] addChunk: ${data.length} samples (${duration.toFixed(1)}ms)`);
+
     if (wouldOverflow) {
       this.droppedChunks++;
       // Still write (will overwrite oldest)
@@ -196,6 +202,9 @@ export class JitterBuffer {
   getNextChunk(numSamples: number): ChunkReadResult {
     const result = this.buffer.read(numSamples);
     this.playbackPosition += result.samplesRead;
+
+    // DEBUG: Log chunk reading
+    console.log(`[JitterBuffer] getNextChunk: requested=${numSamples}, got=${result.samplesRead}${result.partial ? ' (PARTIAL!)' : ''}`);
 
     let silenceInserted = false;
 
@@ -404,13 +413,13 @@ export class JitterBuffer {
  *
  * @param preBufferThreshold - Pre-buffer threshold in ms (default: 300)
  * @param maxBufferSize - Max buffer size in seconds (default: 5)
- * @param sampleRate - Sample rate in Hz (default: 16000)
+ * @param sampleRate - Sample rate in Hz (default: 44100 to match Cartesia API)
  * @returns New JitterBuffer instance
  */
 export function createJitterBuffer(
   preBufferThreshold: number = 300,
   maxBufferSize: number = 5,
-  sampleRate: number = 16000
+  sampleRate: number = 44100
 ): JitterBuffer {
   return new JitterBuffer({
     preBufferThreshold,

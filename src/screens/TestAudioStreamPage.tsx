@@ -77,7 +77,7 @@ export const TestAudioStreamPage: React.FC = () => {
    */
   useEffect(() => {
     const player = getCartesiaStreamingPlayer({
-      sampleRate: 16000,
+      sampleRate: 44100,  // Match Cartesia API (cartesia-streaming-service.ts:437)
       preBufferThreshold: 300,
       maxBufferSize: 5,
       chunkSize: 320,

@@ -7,59 +7,14 @@
  * @depends react-native-audio-api
  */
 
-// Type definitions for Web Audio API (will be provided by react-native-audio-api)
-interface AudioContext {
-  readonly currentTime: number;
-  readonly sampleRate: number;
-  readonly state: 'suspended' | 'running' | 'closed';
-  createBuffer(numberOfChannels: number, length: number, sampleRate: number): AudioBuffer;
-  createBufferSource(): AudioBufferSourceNode;
-  createGain(): GainNode;
-  resume(): Promise<void>;
-  suspend(): Promise<void>;
-  close(): Promise<void>;
-}
-
-interface AudioBuffer {
-  readonly duration: number;
-  readonly length: number;
-  readonly numberOfChannels: number;
-  readonly sampleRate: number;
-  getChannelData(channel: number): Float32Array;
-  copyFromChannel(destination: Float32Array, channelNumber: number, startInChannel?: number): void;
-}
-
-interface AudioBufferSourceNode {
-  buffer: AudioBuffer | null;
-  readonly playbackState: 'unscheduled' | 'scheduled' | 'playing' | 'finished' | 'stopped';
-  loop: boolean;
-  loopStart: number;
-  loopEnd: number;
-  connect(destination: AudioNode): AudioBufferSourceNode;
-  disconnect(): void;
-  start(when?: number, offset?: number, duration?: number): void;
-  stop(when?: number): void;
-  onended: (() => void) | null;
-}
-
-interface GainNode {
-  gain: { value: number };
-  readonly gain: AudioParam;
-  connect(destination: AudioNode): GainNode;
-  disconnect(): void;
-}
-
-interface AudioParam {
-  value: number;
-  setValueAtTime(value: number, startTime: number): void;
-  linearRampToValueAtTime(value: number, endTime: number): void;
-  exponentialRampToValueAtTime(value: number, endTime: number): void;
-}
-
-interface AudioNode {
-  connect(destination: AudioNode): AudioNode;
-  disconnect(): void;
-}
+import type {
+  AudioContext,
+  AudioBuffer,
+  AudioBufferSourceNode,
+  GainNode,
+  AudioParam,
+  AudioNode,
+} from 'react-native-audio-api';
 
 /**
  * Playback metrics
@@ -91,9 +46,12 @@ export interface AudioContextConfig {
 
 /**
  * Default configuration
+ *
+ * NOTE: sampleRate defaults to null (device default) to match Cartesia API's 44100Hz.
+ * If a specific rate is needed, pass it explicitly to initialize().
  */
 const DEFAULT_CONFIG: AudioContextConfig = {
-  sampleRate: 16000,
+  sampleRate: null,  // Let AudioContext decide (usually 44100 or 48000)
   initialGain: 1.0,
   latencyHint: 'interactive',
 };
@@ -153,19 +111,26 @@ export class AudioContextManager {
 
     // Dynamically import react-native-audio-api
     try {
-      const AudioModule = await import('react-native-audio-api');
+      const { AudioContext } = await import('react-native-audio-api');
 
       // Create context
-      this.context = new AudioModule.AudioContext({
+      this.context = new AudioContext({
         sampleRate: this.config.sampleRate ?? undefined,
-      }) as unknown as AudioContext;
+      });
+
+      // DEBUG: Log what we actually got
+      console.log(`[AudioContextManager] Initialized:`);
+      console.log(`[AudioContextManager]   Requested sampleRate: ${this.config.sampleRate}`);
+      console.log(`[AudioContextManager]   Actual sampleRate: ${this.context.sampleRate}Hz`);
+      console.log(`[AudioContextManager]   State: ${this.context.state}`);
+      console.log(`[AudioContextManager]   CurrentTime: ${this.context.currentTime}s`);
 
       // Create gain node
       this.gainNode = this.context.createGain();
       this.gainNode.gain.value = this.config.initialGain;
 
       // Connect gain to destination
-      this.gainNode.connect(this.context.destination as unknown as AudioNode);
+      this.gainNode.connect(this.context.destination);
 
       // Resume if suspended
       if (this.context.state === 'suspended') {
@@ -191,9 +156,18 @@ export class AudioContextManager {
     }
 
     const sr = sampleRate ?? this.context.sampleRate;
+
+    // DEBUG: Log buffer creation
+    console.log(`[AudioContextManager] createBuffer: ${data.length} samples @ ${sr}Hz (${(data.length / sr * 1000).toFixed(1)}ms)`);
+
     const buffer = this.context.createBuffer(1, data.length, sr);
     const channelData = buffer.getChannelData(0);
     channelData.set(data);
+
+    // DEBUG: Check first samples
+    const samplesToLog = Math.min(5, data.length);
+    const firstSamples = Array.from({ length: samplesToLog }, (_, i) => channelData[i].toFixed(4)).join(', ');
+    console.log(`[AudioContextManager] First ${samplesToLog} samples: [${firstSamples}]`);
 
     return buffer;
   }
@@ -213,13 +187,16 @@ export class AudioContextManager {
     source.buffer = buffer;
 
     // Connect to gain node
-    source.connect(this.gainNode as unknown as AudioNode);
+    if (!this.gainNode) {
+      throw new Error('GainNode not initialized');
+    }
+    source.connect(this.gainNode);
 
     // Track active source
     this.activeSources.add(source);
 
     // Auto-remove from tracking when ended
-    source.onended = () => {
+    source.onEnded = () => {
       this.activeSources.delete(source);
     };
 
@@ -242,6 +219,11 @@ export class AudioContextManager {
     const source = this.createBufferSource(buffer);
 
     const start = startTime ?? this.context?.currentTime ?? 0;
+
+    // DEBUG: Log scheduling
+    const latency = start - (this.context?.currentTime ?? 0);
+    console.log(`[AudioContextManager] scheduleBuffer: latency=${latency.toFixed(3)}s, offset=${offset}`);
+
     source.start(start, offset);
 
     return source;
@@ -337,7 +319,7 @@ export class AudioContextManager {
   getMetrics(): PlaybackMetrics {
     return {
       currentTime: this.context?.currentTime ?? 0,
-      sampleRate: this.context?.sampleRate ?? 16000,
+      sampleRate: this.context?.sampleRate ?? 44100,  // Default to Cartesia API rate
       state: this.context?.state ?? 'uninitialized',
       activeSources: this.activeSources.size,
       gain: this.gainNode?.gain.value ?? 1.0,

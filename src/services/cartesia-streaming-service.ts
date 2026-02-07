@@ -434,7 +434,7 @@ class CartesiaStreamingService {
             output_format: {
                 container: 'raw' as const,
                 encoding: 'pcm_s16le' as const,
-                sample_rate: 16000
+                sample_rate: 44100  // MUST match CartesiaStreamingPlayer sampleRate
             },
             add_timestamps: true, // ⭐ ENABLE WORD TIMESTAMPS FOR SENTENCE CHUNKING
             ...(options.speed && { speed: options.speed })

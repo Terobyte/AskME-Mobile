@@ -6,7 +6,7 @@
  *
  * @format Int16 (PCM16)
  * @channels 1 (mono)
- * @sampleRate 16000 Hz (typical for TTS)
+ * @sampleRate 44100 Hz (Cartesia API default)
  */
 
 /**
@@ -49,9 +49,11 @@ export interface ConverterConfig {
 
 /**
  * Default configuration
+ *
+ * NOTE: sampleRate: 44100 matches Cartesia API default (cartesia-streaming-service.ts:437)
  */
 const DEFAULT_CONFIG: ConverterConfig = {
-  sampleRate: 16000,
+  sampleRate: 44100,  // Match Cartesia API default
   validate: true,
   clamp: true,
 };
@@ -130,6 +132,14 @@ export class Int16ToFloat32Converter {
     const int16View = new Int16Array(buffer);
     const float32View = new Float32Array(int16View.length);
 
+    // DEBUG: Log input range (first 1000 samples)
+    let minInt16 = 0, maxInt16 = 0;
+    const sampleCount = Math.min(int16View.length, 1000);
+    for (let i = 0; i < sampleCount; i++) {
+      minInt16 = Math.min(minInt16, int16View[i]);
+      maxInt16 = Math.max(maxInt16, int16View[i]);
+    }
+
     // Convert each sample
     for (let i = 0; i < int16View.length; i++) {
       const int16Value = int16View[i];
@@ -145,9 +155,21 @@ export class Int16ToFloat32Converter {
       float32View[i] = floatValue;
     }
 
+    // DEBUG: Log output range (first 1000 samples)
+    let minFloat = 0, maxFloat = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      minFloat = Math.min(minFloat, float32View[i]);
+      maxFloat = Math.max(maxFloat, float32View[i]);
+    }
+
     // Calculate metadata
     const samples = float32View.length;
     const durationMs = (samples / this.config.sampleRate) * 1000;
+
+    // DEBUG: Detailed conversion log
+    console.log(`[Int16ToFloat32Converter] Convert: ${buffer.byteLength} bytes → ${float32View.length} samples @ ${this.config.sampleRate}Hz`);
+    console.log(`[Int16ToFloat32Converter] Input range: [${minInt16}, ${maxInt16}] → Output: [${minFloat.toFixed(4)}, ${maxFloat.toFixed(4)}]`);
+    console.log(`[Int16ToFloat32Converter] Expected: Int16 [-32768, 32767] → Float32 [-1.0, 1.0]`);
 
     return {
       data: float32View,
@@ -250,12 +272,12 @@ export const int16ToFloat32Converter = new Int16ToFloat32Converter();
  * Convenience function for one-shot conversion
  *
  * @param buffer - Input Int16 buffer
- * @param sampleRate - Sample rate for duration calculation (default: 16000)
+ * @param sampleRate - Sample rate for duration calculation (default: 44100)
  * @returns Float32Array with normalized audio data
  */
 export function convertInt16ToFloat32(
   buffer: ArrayBuffer,
-  sampleRate: number = 16000
+  sampleRate: number = 44100
 ): Float32Array {
   const converter = new Int16ToFloat32Converter({ sampleRate });
   return converter.convert(buffer).data;

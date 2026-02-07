@@ -1,8 +1,8 @@
 /**
  * Test Audio Stream Page
  *
- * Test page for the new streaming audio player using react-native-audio-api.
- * Provides UI for testing WebSocket streaming, metrics visualization, and controls.
+ * Test page for the new CartesiaStreamingPlayer using react-native-audio-api.
+ * Provides UI for testing streaming audio, metrics visualization, and controls.
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -11,215 +11,135 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  TextInput,
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-// Import Cartesia Audio Adapter
-import { cartesiaAudioAdapter, AdapterState, AdapterMetrics } from '../services/audio/CartesiaAudioAdapter';
-
-// Types (will be replaced with actual imports)
-interface PlayerMetrics {
-  state: string;
-  bufferDuration: number;
-  thresholdDuration: number;
-  bufferPercent: number;
-  samplesQueued: number;
-  playbackPosition: number;
-  latency: number;
-  droppedChunks: number;
-  underrunCount: number;
-  gain: number;
-}
-
-type PlayerState =
-  | 'idle'
-  | 'connecting'
-  | 'buffering'
-  | 'playing'
-  | 'paused'
-  | 'stopped'
-  | 'error';
+// Import the new Cartesia Streaming Player
+import {
+  CartesiaStreamingPlayer,
+  PlayerState,
+  PlayerMetrics,
+  getCartesiaStreamingPlayer,
+} from '../services/audio/CartesiaStreamingPlayer';
 
 // Log entry
 interface LogEntry {
   timestamp: string;
   source: string;
   message: string;
+  type: 'info' | 'success' | 'warning' | 'error';
 }
+
+// Test texts
+const TEST_TEXTS = {
+  short: "Hello world, this is a test.",
+  medium: `Hello world, it is me Victoria - I am here, and you can speak with me, isn't it magic? I'm your AI interviewer, ready to help you practice.`,
+  long: `Hello world, it is me Victoria - I am here, and you can speak with me, isn't it magic? ` +
+    `I'm your AI interviewer, ready to help you practice and improve your skills. ` +
+    `We'll go through various technical questions, and I'll provide feedback on your answers. ` +
+    `Don't worry about making mistakes - this is a safe space to learn and grow. ` +
+    `Take your time, think through your responses, and remember that practice makes perfect. ` +
+    `Are you ready to begin our interview session? Let's dive in and explore your knowledge together!`,
+};
 
 /**
  * Test Audio Stream Page Component
  */
 export const TestAudioStreamPage: React.FC = () => {
-  // Connection state
-  const [wsUrl, setWsUrl] = useState('ws://localhost:8080/audio');
-  const [playerState, setPlayerState] = useState<PlayerState>('idle');
-  const [error, setError] = useState<string | null>(null);
+  // Player instance
+  const playerRef = useRef<CartesiaStreamingPlayer | null>(null);
 
-  // Metrics
-  const [metrics, setMetrics] = useState<PlayerMetrics>({
-    state: 'idle',
-    bufferDuration: 0,
-    thresholdDuration: 300,
-    bufferPercent: 0,
-    samplesQueued: 0,
-    playbackPosition: 0,
-    latency: 0,
-    droppedChunks: 0,
-    underrunCount: 0,
-    gain: 1.0,
-  });
+  // State
+  const [playerState, setPlayerState] = useState<PlayerState>(PlayerState.IDLE);
+  const [metrics, setMetrics] = useState<PlayerMetrics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState<keyof typeof TEST_TEXTS>('medium');
 
   // Volume
   const [volume, setVolume] = useState(100);
-
-  // Victoria Adapter State
-  const [victoriaState, setVictoriaState] = useState<AdapterState>('IDLE');
-  const [victoriaMetrics, setVictoriaMetrics] = useState<AdapterMetrics>({
-    state: 'IDLE',
-    chunksReceived: 0,
-    chunksPlayed: 0,
-    totalDurationMs: 0,
-    latencyMs: 0,
-  });
 
   // Logs
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const scrollViewRef = useRef<ScrollView>(null);
 
-  // Player reference (would be actual player instance)
-  const playerRef = useRef<any>(null);
-  const metricsIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
   /**
    * Add log entry
    */
-  const addLog = useCallback((source: string, message: string) => {
+  const addLog = useCallback((source: string, message: string, type: LogEntry['type'] = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
-    setLogs((prev) => [...prev, { timestamp, source, message }]);
+    setLogs((prev) => [...prev.slice(-99), { timestamp, source, message, type }]);
   }, []);
 
   /**
-   * Connect to WebSocket
+   * Initialize player
    */
-  const handleConnect = useCallback(async () => {
-    addLog('UI', `Connecting to ${wsUrl}...`);
-    setPlayerState('connecting');
-    setError(null);
-
-    try {
-      // TODO: Initialize actual player
-      // await player.connect(wsUrl);
-
-      // Simulate connection for UI testing
-      setTimeout(() => {
-        setPlayerState('buffering');
-        addLog('Player', 'Connected and buffering...');
-      }, 500);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Connection failed';
-      setError(errorMsg);
-      setPlayerState('error');
-      addLog('Error', errorMsg);
-    }
-  }, [wsUrl, addLog]);
-
-  /**
-   * Start streaming
-   */
-  const handleStart = useCallback(() => {
-    addLog('UI', 'Starting playback...');
-    // TODO: player.start();
-    setPlayerState('playing');
-    addLog('Player', 'Playback started');
-
-    // Simulate metrics updates
-    if (!metricsIntervalRef.current) {
-      metricsIntervalRef.current = setInterval(() => {
-        setMetrics((prev) => ({
-          ...prev,
-          bufferDuration: Math.min(prev.bufferDuration + 20, prev.thresholdDuration),
-          bufferPercent: Math.min((prev.bufferDuration / prev.thresholdDuration) * 100, 100),
-          samplesQueued: prev.samplesQueued + 320,
-          latency: Date.now() - (Date.now() - 5000),
-        }));
-      }, 100);
-    }
-  }, [addLog]);
-
-  /**
-   * Stop streaming
-   */
-  const handleStop = useCallback(() => {
-    addLog('UI', 'Stopping playback...');
-    // TODO: player.stop();
-    setPlayerState('stopped');
-    addLog('Player', 'Stopped');
-
-    if (metricsIntervalRef.current) {
-      clearInterval(metricsIntervalRef.current);
-      metricsIntervalRef.current = null;
-    }
-
-    setMetrics({
-      state: 'stopped',
-      bufferDuration: 0,
-      thresholdDuration: 300,
-      bufferPercent: 0,
-      samplesQueued: 0,
-      playbackPosition: 0,
-      latency: 0,
-      droppedChunks: 0,
-      underrunCount: 0,
-      gain: volume / 100,
+  useEffect(() => {
+    const player = getCartesiaStreamingPlayer({
+      sampleRate: 16000,
+      preBufferThreshold: 300,
+      maxBufferSize: 5,
+      chunkSize: 320,
     });
-  }, [addLog, volume]);
 
-  /**
-   * Pause/Resume
-   */
-  const handlePauseResume = useCallback(() => {
-    if (playerState === 'playing') {
-      addLog('UI', 'Pausing...');
-      // TODO: player.pause();
-      setPlayerState('paused');
-      addLog('Player', 'Paused');
-    } else if (playerState === 'paused') {
-      addLog('UI', 'Resuming...');
-      // TODO: player.resume();
-      setPlayerState('playing');
-      addLog('Player', 'Resumed');
-    }
-  }, [playerState, addLog]);
+    playerRef.current = player;
 
-  /**
-   * Clear buffer
-   */
-  const handleClearBuffer = useCallback(() => {
-    addLog('UI', 'Clearing buffer...');
-    // TODO: player.clearBuffer();
-    setMetrics((prev) => ({
-      ...prev,
-      bufferDuration: 0,
-      bufferPercent: 0,
-      samplesQueued: 0,
-    }));
-    addLog('Player', 'Buffer cleared');
-  }, [addLog]);
+    // Subscribe to events
+    const unsubscribeEvents: Array<() => void> = [];
 
-  /**
-   * Volume change
-   */
-  const handleVolumeChange = useCallback((delta: number) => {
-    setVolume((prev) => {
-      const newVolume = Math.max(0, Math.min(100, prev + delta));
-      // TODO: player.setVolume(newVolume / 100);
-      addLog('UI', `Volume: ${newVolume}%`);
-      return newVolume;
+    const setupListener = (event: any, callback: (data: any) => void) => {
+      player.on(event, callback);
+      unsubscribeEvents.push(() => player.off(event, callback));
+    };
+
+    setupListener('connecting', (data) => {
+      setPlayerState(PlayerState.CONNECTING);
+      addLog('Player', `Connecting to Cartesia...`, 'info');
     });
+
+    setupListener('connected', (data) => {
+      setPlayerState(PlayerState.BUFFERING);
+      addLog('Player', `Connected - buffering...`, 'success');
+    });
+
+    setupListener('playing', (data) => {
+      setPlayerState(PlayerState.PLAYING);
+      addLog('Player', `Playback started!`, 'success');
+    });
+
+    setupListener('paused', (data) => {
+      setPlayerState(PlayerState.PAUSED);
+      addLog('Player', `Paused`, 'info');
+    });
+
+    setupListener('stopped', (data) => {
+      setPlayerState(PlayerState.STOPPED);
+      addLog('Player', `Stopped`, 'warning');
+    });
+
+    setupListener('done', (data) => {
+      setPlayerState(PlayerState.DONE);
+      addLog('Player', `Playback complete!`, 'success');
+    });
+
+    setupListener('underrun', (data) => {
+      addLog('Player', `Buffer underrun detected!`, 'warning');
+    });
+
+    setupListener('error', (data) => {
+      setPlayerState(PlayerState.ERROR);
+      setError(data.error);
+      addLog('Player', `Error: ${data.error}`, 'error');
+    });
+
+    setupListener('metrics', (data) => {
+      setMetrics(data);
+    });
+
+    return () => {
+      unsubscribeEvents.forEach(fn => fn());
+    };
   }, [addLog]);
 
   /**
@@ -232,70 +152,94 @@ export const TestAudioStreamPage: React.FC = () => {
   }, [logs]);
 
   /**
-   * Victoria Adapter subscriptions
+   * Start playback
    */
-  useEffect(() => {
-    const unsubState = cartesiaAudioAdapter.onStateChange(setVictoriaState);
-    const unsubMetrics = cartesiaAudioAdapter.onMetrics(setVictoriaMetrics);
-    return () => {
-      unsubState();
-      unsubMetrics();
-    };
-  }, []);
+  const handleStart = useCallback(async () => {
+    if (!playerRef.current) return;
 
-  /**
-   * Victoria Hello World test handler
-   */
-  const handleVictoriaHello = useCallback(async () => {
-    addLog('Victoria', 'Starting "Hello World" test...');
+    setError(null);
+    addLog('UI', `Starting playback (${selectedText} text)...`, 'info');
 
     try {
-      // Longer text to check for audio artifacts between chunks
-      const testText = `Hello world, it is me Victoria - I am here, and you can speak with me, isn't it magic? ` +
-        `I'm your AI interviewer, ready to help you practice and improve your skills. ` +
-        `We'll go through various technical questions, and I'll provide feedback on your answers. ` +
-        `Don't worry about making mistakes - this is a safe space to learn and grow. ` +
-        `Take your time, think through your responses, and remember that practice makes perfect. ` +
-        `Are you ready to begin our interview session? Let's dive in and explore your knowledge together!`;
-
-      await cartesiaAudioAdapter.speak(testText, {
+      await playerRef.current.speak(TEST_TEXTS[selectedText], {
         emotion: ['positivity:high'],
-        speed: 'normal'
+        speed: 'normal',
       });
-      addLog('Victoria', '✅ Playback complete');
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      addLog('Error', `❌ ${errorMsg}`);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Playback failed';
+      setError(errorMsg);
+      addLog('Error', errorMsg, 'error');
     }
+  }, [selectedText, addLog]);
+
+  /**
+   * Stop playback
+   */
+  const handleStop = useCallback(() => {
+    if (!playerRef.current) return;
+
+    addLog('UI', 'Stopping playback...', 'info');
+    playerRef.current.stop();
   }, [addLog]);
 
   /**
-   * Cleanup
+   * Pause/Resume toggle
    */
-  useEffect(() => {
-    return () => {
-      if (metricsIntervalRef.current) {
-        clearInterval(metricsIntervalRef.current);
-      }
-    };
+  const handlePauseResume = useCallback(() => {
+    if (!playerRef.current) return;
+
+    if (playerState === PlayerState.PLAYING) {
+      playerRef.current.pause();
+    } else if (playerState === PlayerState.PAUSED) {
+      playerRef.current.resume();
+    }
+  }, [playerState]);
+
+  /**
+   * Volume change
+   */
+  const handleVolumeChange = useCallback((delta: number) => {
+    setVolume((prev) => {
+      const newVolume = Math.max(0, Math.min(100, prev + delta));
+      playerRef.current?.setVolume(newVolume / 100);
+      addLog('UI', `Volume: ${newVolume}%`, 'info');
+      return newVolume;
+    });
+  }, [addLog]);
+
+  /**
+   * Clear logs
+   */
+  const handleClearLogs = useCallback(() => {
+    setLogs([]);
   }, []);
+
+  /**
+   * Select test text
+   */
+  const handleSelectText = useCallback((length: keyof typeof TEST_TEXTS) => {
+    setSelectedText(length);
+    addLog('UI', `Selected ${length} test text`, 'info');
+  }, [addLog]);
 
   /**
    * Render state badge
    */
   const renderStateBadge = () => {
     const colors: Record<PlayerState, string> = {
-      idle: '#9CA3AF',
-      connecting: '#F59E0B',
-      buffering: '#3B82F6',
-      playing: '#10B981',
-      paused: '#8B5CF6',
-      stopped: '#6B7280',
-      error: '#EF4444',
+      [PlayerState.IDLE]: '#9CA3AF',
+      [PlayerState.CONNECTING]: '#F59E0B',
+      [PlayerState.BUFFERING]: '#3B82F6',
+      [PlayerState.PLAYING]: '#10B981',
+      [PlayerState.PAUSED]: '#8B5CF6',
+      [PlayerState.STOPPED]: '#6B7280',
+      [PlayerState.DONE]: '#059669',
+      [PlayerState.ERROR]: '#EF4444',
     };
 
     return (
       <View style={[styles.stateBadge, { backgroundColor: colors[playerState] }]}>
+        {playerState === PlayerState.CONNECTING && <ActivityIndicator size="small" color="white" />}
         <Text style={styles.stateText}>{playerState.toUpperCase()}</Text>
       </View>
     );
@@ -305,8 +249,10 @@ export const TestAudioStreamPage: React.FC = () => {
    * Render buffer bar
    */
   const renderBufferBar = () => {
+    if (!metrics) return null;
+
     const percent = Math.min(metrics.bufferPercent, 100);
-    const barColor = percent >= 100 ? '#10B981' : percent >= 50 ? '#3B82F6' : '#F59E0B';
+    const barColor = percent >= 100 ? '#10B981' : percent >= 50 ? '#3B82F6' : percent >= 20 ? '#F59E0B' : '#EF4444';
 
     return (
       <View style={styles.bufferBarContainer}>
@@ -323,7 +269,7 @@ export const TestAudioStreamPage: React.FC = () => {
   /**
    * Render metric card
    */
-  const renderMetricCard = (title: string, value: string | number, unit?: string) => (
+  const renderMetricCard = (title: string, value: string | number, unit?: string, color?: string) => (
     <View style={styles.metricCard}>
       <Text style={styles.metricTitle}>{title}</Text>
       <Text style={styles.metricValue}>
@@ -336,62 +282,66 @@ export const TestAudioStreamPage: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Audio Stream Test</Text>
+        <Text style={styles.title}>Cartesia Stream Test</Text>
         {renderStateBadge()}
       </View>
 
-      {/* Connection Controls */}
+      {/* Text Selection */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Connection</Text>
-        <TextInput
-          style={styles.input}
-          value={wsUrl}
-          onChangeText={setWsUrl}
-          placeholder="WebSocket URL"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TouchableOpacity
-          style={[styles.button, styles.connectButton]}
-          onPress={handleConnect}
-          disabled={playerState === 'connecting' || playerState === 'playing'}>
-          <Text style={styles.buttonText}>
-            {playerState === 'connecting' ? 'Connecting...' : 'Connect'}
-          </Text>
-        </TouchableOpacity>
+        <Text style={styles.sectionTitle}>Test Text</Text>
+        <View style={styles.textSelector}>
+          {(['short', 'medium', 'long'] as const).map((length) => (
+            <TouchableOpacity
+              key={length}
+              style={[
+                styles.textSelectorButton,
+                selectedText === length && styles.textSelectorButtonActive,
+              ]}
+              onPress={() => handleSelectText(length)}>
+              <Text
+                style={[
+                  styles.textSelectorButtonText,
+                  selectedText === length && styles.textSelectorButtonTextActive,
+                ]}>
+                {length.charAt(0).toUpperCase() + length.slice(1)}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <Text style={styles.textPreview} numberOfLines={2}>
+          {TEST_TEXTS[selectedText]}
+        </Text>
       </View>
 
       {/* Playback Controls */}
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Playback Controls</Text>
+        <Text style={styles.sectionTitle}>Controls</Text>
         <View style={styles.controlsRow}>
           <TouchableOpacity
             style={[styles.button, styles.startButton]}
             onPress={handleStart}
-            disabled={playerState !== 'buffering' && playerState !== 'paused'}>
-            <Text style={styles.buttonText}>▶ Start</Text>
+            disabled={playerState === PlayerState.PLAYING || playerState === PlayerState.CONNECTING || playerState === PlayerState.BUFFERING}>
+            <Text style={styles.buttonText}>
+              {playerState === PlayerState.CONNECTING ? 'Connecting...' :
+               playerState === PlayerState.BUFFERING ? 'Buffering...' :
+               '▶ Play'}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.button, styles.pauseButton]}
             onPress={handlePauseResume}
-            disabled={playerState !== 'playing' && playerState !== 'paused'}>
+            disabled={playerState !== PlayerState.PLAYING && playerState !== PlayerState.PAUSED}>
             <Text style={styles.buttonText}>
-              {playerState === 'paused' ? '▶ Resume' : '⏸ Pause'}
+              {playerState === PlayerState.PAUSED ? '▶ Resume' : '⏸ Pause'}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.button, styles.stopButton]}
             onPress={handleStop}
-            disabled={playerState === 'idle' || playerState === 'stopped'}>
+            disabled={playerState === PlayerState.IDLE || playerState === PlayerState.STOPPED}>
             <Text style={styles.buttonText}>⏹ Stop</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.button, styles.clearButton]}
-            onPress={handleClearBuffer}>
-            <Text style={styles.buttonText}>Clear</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -412,28 +362,6 @@ export const TestAudioStreamPage: React.FC = () => {
         </View>
       </View>
 
-      {/* Victoria Hello World Test */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Victoria Voice Test (Cartesia)</Text>
-        <TouchableOpacity
-          style={[styles.button, styles.victoriaButton]}
-          onPress={handleVictoriaHello}
-          disabled={victoriaState === 'PLAYING' || victoriaState === 'CONNECTING' || victoriaState === 'BUFFERING'}>
-          <Text style={styles.buttonText}>
-            {victoriaState === 'PLAYING' ? '🎵 Playing...' :
-             victoriaState === 'CONNECTING' ? '🔌 Connecting...' :
-             victoriaState === 'BUFFERING' ? '⏳ Buffering...' :
-             '🎙️ Test Victoria Hello'}
-          </Text>
-        </TouchableOpacity>
-        <View style={styles.metricsGrid}>
-          {renderMetricCard('Victoria State', victoriaState)}
-          {renderMetricCard('Chunks', victoriaMetrics.chunksPlayed)}
-          {renderMetricCard('Duration', (victoriaMetrics.totalDurationMs / 1000).toFixed(2), 's')}
-          {renderMetricCard('Latency', victoriaMetrics.latencyMs, 'ms')}
-        </View>
-      </View>
-
       {/* Buffer Status */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Buffer Status</Text>
@@ -441,15 +369,21 @@ export const TestAudioStreamPage: React.FC = () => {
       </View>
 
       {/* Metrics */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Metrics</Text>
-        <View style={styles.metricsGrid}>
-          {renderMetricCard('Samples Queued', metrics.samplesQueued.toLocaleString())}
-          {renderMetricCard('Latency', metrics.latency.toFixed(0), 'ms')}
-          {renderMetricCard('Dropped Chunks', metrics.droppedChunks)}
-          {renderMetricCard('Underruns', metrics.underrunCount)}
+      {metrics && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Metrics</Text>
+          <View style={styles.metricsGrid}>
+            {renderMetricCard('First Chunk', metrics.firstChunkLatency, 'ms')}
+            {renderMetricCard('First Sound', metrics.playbackLatency, 'ms')}
+            {renderMetricCard('Chunks', `${metrics.chunksPlayed}/${metrics.chunksReceived}`)}
+            {renderMetricCard('Chunks/s', metrics.chunksPerSecond)}
+            {renderMetricCard('Underruns', metrics.underrunCount)}
+            {renderMetricCard('Dropped', metrics.droppedChunks)}
+            {renderMetricCard('FIFO Size', metrics.fifoQueueSize)}
+            {renderMetricCard('Streaming', metrics.isStreaming ? 'Yes' : 'No')}
+          </View>
         </View>
-      </View>
+      )}
 
       {/* Error Display */}
       {error && (
@@ -462,8 +396,8 @@ export const TestAudioStreamPage: React.FC = () => {
       <View style={styles.section}>
         <View style={styles.logsHeader}>
           <Text style={styles.sectionTitle}>Event Logs</Text>
-          <TouchableOpacity onPress={() => setLogs([])}>
-            <Text style={styles.clearLogsText}>Clear</Text>
+          <TouchableOpacity onPress={handleClearLogs}>
+            <Text style={styles.clearLogsText}>Clear ({logs.length})</Text>
           </TouchableOpacity>
         </View>
         <ScrollView
@@ -471,7 +405,7 @@ export const TestAudioStreamPage: React.FC = () => {
           style={styles.logsContainer}
           nestedScrollEnabled>
           {logs.map((log, index) => (
-            <Text key={index} style={styles.logEntry}>
+            <Text key={index} style={[styles.logEntry, { color: getLogColor(log.type) }]}>
               <Text style={styles.logTimestamp}>[{log.timestamp}]</Text>{' '}
               <Text style={styles.logSource}>[{log.source}]</Text>{' '}
               {log.message}
@@ -485,6 +419,18 @@ export const TestAudioStreamPage: React.FC = () => {
     </SafeAreaView>
   );
 };
+
+/**
+ * Get log color by type
+ */
+function getLogColor(type: LogEntry['type']): string {
+  switch (type) {
+    case 'success': return '#10B981';
+    case 'warning': return '#F59E0B';
+    case 'error': return '#EF4444';
+    default: return '#D1D5DB';
+  }
+}
 
 const styles = StyleSheet.create({
   container: {
@@ -505,6 +451,9 @@ const styles = StyleSheet.create({
     color: '#F9FAFB',
   },
   stateBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 12,
@@ -525,15 +474,39 @@ const styles = StyleSheet.create({
     color: '#F9FAFB',
     marginBottom: 12,
   },
-  input: {
+  textSelector: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  textSelectorButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
     backgroundColor: '#1F2937',
     borderWidth: 1,
     borderColor: '#374151',
-    borderRadius: 8,
+    alignItems: 'center',
+  },
+  textSelectorButtonActive: {
+    backgroundColor: '#3B82F6',
+    borderColor: '#3B82F6',
+  },
+  textSelectorButtonText: {
+    color: '#9CA3AF',
+    fontWeight: '500',
+  },
+  textSelectorButtonTextActive: {
+    color: '#FFFFFF',
+  },
+  textPreview: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontStyle: 'italic',
+    backgroundColor: '#1F2937',
     padding: 12,
-    color: '#F9FAFB',
-    fontSize: 14,
-    marginBottom: 12,
+    borderRadius: 8,
   },
   button: {
     paddingVertical: 12,
@@ -542,24 +515,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     minWidth: 80,
   },
-  connectButton: {
-    backgroundColor: '#3B82F6',
-  },
   startButton: {
     backgroundColor: '#10B981',
+    flex: 1,
   },
   pauseButton: {
     backgroundColor: '#8B5CF6',
+    flex: 1,
   },
   stopButton: {
     backgroundColor: '#EF4444',
-  },
-  clearButton: {
-    backgroundColor: '#6B7280',
-  },
-  victoriaButton: {
-    backgroundColor: '#EC4899', // Pink for Victoria
-    marginBottom: 12,
+    flex: 1,
   },
   buttonText: {
     color: '#FFFFFF',
@@ -568,7 +534,6 @@ const styles = StyleSheet.create({
   },
   controlsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 8,
   },
   volumeControls: {
@@ -620,28 +585,28 @@ const styles = StyleSheet.create({
   metricsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 8,
   },
   metricCard: {
     backgroundColor: '#1F2937',
     borderRadius: 8,
-    padding: 12,
-    minWidth: 100,
+    padding: 10,
+    minWidth: 80,
     flex: 1,
-    minHeight: 70,
+    minHeight: 60,
   },
   metricTitle: {
     color: '#9CA3AF',
-    fontSize: 12,
+    fontSize: 11,
     marginBottom: 4,
   },
   metricValue: {
     color: '#F9FAFB',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
   },
   metricUnit: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#6B7280',
     fontWeight: '400',
   },
@@ -675,7 +640,6 @@ const styles = StyleSheet.create({
     maxHeight: 250,
   },
   logEntry: {
-    color: '#D1D5DB',
     fontSize: 12,
     fontFamily: 'monospace',
     marginBottom: 4,
@@ -684,7 +648,7 @@ const styles = StyleSheet.create({
     color: '#6B7280',
   },
   logSource: {
-    color: '#3B82F6',
+    fontWeight: '600',
   },
   noLogs: {
     color: '#6B7280',

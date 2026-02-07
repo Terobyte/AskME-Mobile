@@ -12,7 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - React Navigation (Stack Navigator)
 - Google Gemini 2.5 Flash/Pro (interview planning, answer evaluation, voice generation)
 - Cartesia Sonic (streaming TTS with emotional voices)
-- Expo Audio (custom streaming audio player)
+- **react-native-audio-api** (NEW streaming audio engine)
+- Expo Audio (legacy streaming audio player - being phased out)
 
 ## Development Commands
 
@@ -68,11 +69,24 @@ The interview follows this sequence:
   - Primary: Cartesia streaming WebSocket with emotions
   - Fallback: OpenAI TTS (alloy, echo, onyx, nova, shimmer)
 
-- **`streaming-audio-player.ts`** - Custom audio playback engine
+- **`streaming-audio-player.ts`** - Custom audio playback engine (Expo Audio - LEGACY)
   - Handles Cartesia WebSocket streaming (PCM16 chunks)
   - Smart cross-fade: only at sentence boundaries (punctuation detection)
   - Adaptive cross-fade duration: 40ms (short files) vs 120ms (long files)
   - Micro-pause (20ms) when no cross-fade to prevent words "sticking"
+  - **NOTE**: Being replaced by react-native-audio-api engine
+
+- **`audio/CartesiaStreamingPlayer.ts`** - NEW streaming audio engine (react-native-audio-api)
+  - TRUE streaming: plays chunks as they arrive (no accumulation)
+  - Architecture: WebSocket → Int16ToFloat32Converter → FIFOQueue → JitterBuffer → ZeroCrossingAligner → AudioContextManager
+  - Pre-buffering: 300ms threshold before playback starts
+  - Comprehensive metrics: latency, underruns, buffer health, chunks/sec
+  - State machine: IDLE → CONNECTING → BUFFERING → PLAYING → DONE/ERROR
+  - Event-driven: 'connecting', 'connected', 'playing', 'done', 'underrun', 'error', 'metrics'
+
+- **`audio/CartesiaAudioAdapter.ts`** - V1 adapter (DEPRECATED - fake streaming)
+  - Accumulated all chunks before playing (not true streaming)
+  - Use `CartesiaStreamingPlayer` instead
 
 - **`cartesia-streaming-service.ts`** - WebSocket connection management
   - Real-time streaming with word timestamps
@@ -114,10 +128,62 @@ The interview follows this sequence:
 - `SentenceChunk`: PCM data for one sentence with metadata
 - `StreamingPlayerState`: Player state machine
 - `CartesiaStreamingOptions`: WebSocket generation options
+- `PlayerState`: CartesiaStreamingPlayer state (IDLE, CONNECTING, BUFFERING, PLAYING, PAUSED, STOPPED, DONE, ERROR)
+- `PlayerMetrics`: Comprehensive metrics for streaming player
+
+## Audio Architecture Migration
+
+### Current State (Phase 2.5 - Engine Assembly)
+
+The project is transitioning from Expo Audio to **react-native-audio-api** for streaming:
+
+```
+OLD: streaming-audio-player.ts (Expo Audio)
+NEW: CartesiaStreamingPlayer.ts (react-native-audio-api)
+```
+
+### Streaming Audio Engine Architecture
+
+The new engine uses a pipeline approach:
+
+```
+Cartesia WebSocket (PCM16)
+         ↓
+Int16ToFloat32Converter (PCM16 → Float32)
+         ↓
+FIFOQueue (chunk ordering)
+         ↓
+JitterBuffer (pre-buffer 300ms threshold)
+         ↓
+ZeroCrossingAligner (artifact-free boundaries)
+         ↓
+AudioContextManager (Web Audio API playout)
+```
+
+### Low-Level Audio Utilities (`src/utils/audio/`)
+
+All components are complete and ready for integration:
+
+| Component | Status | Purpose |
+|-----------|--------|---------|
+| `Int16ToFloat32Converter.ts` | ✅ COMPLETE | PCM16 → Float32 conversion |
+| `CircularBuffer.ts` | ✅ COMPLETE | O(1) ring buffer |
+| `FIFOQueue.ts` | ✅ COMPLETE | Chunk ordering for WebSocket |
+| `JitterBuffer.ts` | ✅ COMPLETE | Pre-buffering, underrun handling |
+| `ZeroCrossingAligner.ts` | ✅ COMPLETE | Click/pop prevention |
+| `AudioContextManager.ts` | ✅ COMPLETE | Web Audio API wrapper |
+
+### Testing
+
+Use **`TestAudioStreamPage.tsx`** to test the new engine:
+- Real-time metrics (Buffer %, Latency, Underruns, Chunks/sec)
+- Short/Medium/Long text tests
+- Event logs with color coding
+- Buffer health visualization
 
 ## Important Implementation Details
 
-### Audio Cross-Fade System
+### Audio Cross-Fade System (Expo Audio - Legacy)
 
 The app uses intelligent cross-fade to eliminate audio artifacts:
 - **Cross-fade only at punctuation** (., !, ?, ;, :) - prevents cutting off mid-word
@@ -210,16 +276,28 @@ Documented in markdown files in root:
 ```
 src/
 ├── screens/
-│   └── VoiceInterviewScreen.tsx    # Main interview UI (41KB)
+│   ├── VoiceInterviewScreen.tsx    # Main interview UI (41KB)
+│   └── TestAudioStreamPage.tsx     # Audio engine test page (NEW)
 ├── services/
+│   ├── audio/
+│   │   ├── CartesiaStreamingPlayer.ts  # NEW streaming engine (react-native-audio-api)
+│   │   ├── StreamingAudioPlayer.ts      # Alternative implementation
+│   │   └── CartesiaAudioAdapter.ts      # V1 adapter (DEPRECATED)
 │   ├── gemini-agent.ts              # AI interview logic (70KB)
-│   ├── streaming-audio-player.ts    # Audio playback engine (53KB)
+│   ├── streaming-audio-player.ts    # Audio playback engine (Expo Audio - LEGACY)
 │   ├── tts-service.ts               # TTS orchestration (25KB)
 │   ├── cartesia-streaming-service.ts # WebSocket client (18KB)
 │   ├── vibe-calculator.ts           # Emotion calculator (12KB)
 │   ├── interview-planner.ts         # Interview planning (12KB) [root level]
 │   └── history-storage.ts           # Interview persistence (15KB)
 ├── utils/
+│   ├── audio/                       # Low-level audio utilities (NEW)
+│   │   ├── Int16ToFloat32Converter.ts  # PCM16 → Float32
+│   │   ├── CircularBuffer.ts            # Ring buffer
+│   │   ├── FIFOQueue.ts                 # Chunk ordering
+│   │   ├── JitterBuffer.ts              # Pre-buffering
+│   │   ├── ZeroCrossingAligner.ts       # Click prevention
+│   │   └── AudioContextManager.ts       # Web Audio API wrapper
 │   ├── sentence-chunker.ts          # Sentence boundary detection
 │   ├── sentence-detector.ts         # Punctuation detection
 │   └── audio-conversion.ts          # PCM conversion utilities
@@ -264,10 +342,31 @@ Edit `tts-service.ts`:
 - Fallback TTS: OpenAI (voice selection)
 - Speed ranges: 0.5 (slow) to 1.5 (fast)
 
-### Adjusting Cross-Fade Behavior
+### Adjusting Cross-Fade Behavior (Legacy)
 
 Edit `streaming-audio-player.ts`:
 - `CROSSFADE_LONG` (default: 120ms)
 - `CROSSFADE_SHORT` (default: 40ms)
 - `MICRO_PAUSE_MS` (default: 20ms)
 - `shouldUseCrossfade()` logic for punctuation detection
+
+### Configuring the New Streaming Engine
+
+Edit `CartesiaStreamingPlayer.ts` config:
+- `preBufferThreshold`: 300ms (buffer before playback starts)
+- `chunkSize`: 320 samples (~20ms at 16kHz)
+- `maxBufferSize`: 5 seconds
+- `underrunStrategy`: 'silence' | 'pause' | 'repeat'
+
+```typescript
+const player = getCartesiaStreamingPlayer({
+  sampleRate: 16000,
+  preBufferThreshold: 300,
+  chunkSize: 320,
+});
+
+await player.speak("Hello world", {
+  emotion: ['positivity:high'],
+  speed: 'normal'
+});
+```

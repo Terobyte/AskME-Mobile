@@ -166,7 +166,7 @@ source.start(audioContext.currentTime);
 
 #### Что нужно создать:
 
-**Файл:** `src/services/audio/CartesiaStreamingPlayer.ts`
+**Файл:** `src/services/audio/CartesiaStreamingPlayer.ts` ✅ **СОЗДАН**
 
 Это **настоящий streaming engine** который:
 1. Играет чанки **по мере поступления** (real-time)
@@ -177,7 +177,7 @@ source.start(audioContext.currentTime);
 **Архитектура:**
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              CartesiaStreamingPlayer                        │
+│              CartesiaStreamingPlayer ✅                      │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  WebSocket (cartesiaStreamingService)                       │
@@ -193,6 +193,21 @@ source.start(audioContext.currentTime);
 │  AudioContextManager (playout)                               │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
+```
+
+**Реализованный API:**
+```typescript
+// ✅ DONE
+class CartesiaStreamingPlayer {
+  speak(text: string, options?: VoiceOptions): Promise<void>;
+  stop(): void;
+  pause(): void;
+  resume(): void;
+  setVolume(level: number): void;
+  getMetrics(): PlayerMetrics;
+  on(event: PlayerEvent, listener: EventListener): void;
+  off(event: PlayerEvent, listener: EventListener): void;
+}
 ```
 
 **API:**
@@ -759,13 +774,14 @@ async speak(text: string) {
 - [x] ZeroCrossingAligner
 - [x] AudioContextManager
 
-### ⭐ Phase 2.5: Engine Assembly (CURRENT)
-- [ ] Создать CartesiaStreamingPlayer (настоящий streaming!)
-- [ ] Интегрировать все компоненты вместе
-- [ ] Добавить метрики (buffer health, latency, underruns)
-- [ ] Update TestAudioStreamPage.tsx с новым UI
-- [ ] Тестирование short/long text
-- [ ] Проверка нет ли clicks/gaps
+### ⭐ Phase 2.5: Engine Assembly ✅ COMPLETED
+- [x] Создать CartesiaStreamingPlayer (настоящий streaming!)
+- [x] Интегрировать все компоненты вместе
+- [x] Добавить метрики (buffer health, latency, underruns)
+- [x] Update TestAudioStreamPage.tsx с новым UI
+- [x] **Fix: voiceId fallback bug** (добавлен fallback на EXPO_PUBLIC_CARTESIA_VOICE_ID)
+- [ ] Тестирование short/long text (НАДО ТЕСТИРОВАТЬ!)
+- [ ] Проверка нет ли clicks/gaps (НАДО ПРОВЕРИТЬ!)
 
 ### Phase 3: Integration Testing
 - [ ] Unit tests (80%+ coverage)
@@ -806,10 +822,14 @@ async speak(text: string) {
 | Zero-Crossing | ✅ Ready | `ZeroCrossingAligner.ts` |
 | Audio Context | ✅ Ready | `AudioContextManager.ts` |
 | WebSocket | ✅ Ready | `cartesia-streaming-service.ts` |
-| **Streaming Player** | ❌ TODO | `CartesiaStreamingPlayer.ts` |
-| Test UI | ⚠️ Partial | `TestAudioStreamPage.tsx` |
+| **Streaming Player** | ✅ DONE | `CartesiaStreamingPlayer.ts` |
+| Test UI | ✅ DONE | `TestAudioStreamPage.tsx` |
 
-**Следующий шаг:** Создать `CartesiaStreamingPlayer.ts` который соединяет все компоненты в работающий streaming engine.
+**Следующий шаг:** **ТЕСТИРОВАНИЕ** - запустить TestAudioStreamPage и проверить:
+1. First sound latency < 500ms
+2. Нет clicks/pops между чанками
+3. Нет gaps при медленном соединении
+4. Buffer stays 20-80% full during playback
 
 ---
 
@@ -865,3 +885,25 @@ docs/
 
 *Создано: 2025*
 *Версия: 1.0*
+
+---
+
+## 🐛 Bug Fixes
+
+### voiceId Fallback Bug (Feb 2026)
+
+**Проблема:** `CartesiaStreamingPlayer` выбрасывал ошибку `"voice ID must not be empty"`
+
+**Причина:** В методе `speak()` не было fallback на `process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID`
+
+**Фикс:**
+```typescript
+// src/services/audio/CartesiaStreamingPlayer.ts:259
+// Before:
+voiceId: options?.voiceId,
+
+// After:
+voiceId: options?.voiceId || process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID,
+```
+
+**Reference:** `CartesiaAudioAdapter.ts:89` уже имел правильную реализацию

@@ -191,6 +191,9 @@ export class CartesiaStreamingPlayer {
   // ✨ NEW: Track cumulative scheduled time to prevent chunks playing simultaneously
   private nextScheduledTime: number = 0;
 
+  // Track if 'done' event was already emitted to prevent duplicates
+  private doneEmitted: boolean = false;
+
   constructor(config?: Partial<CartesiaPlayerConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
@@ -244,6 +247,9 @@ export class CartesiaStreamingPlayer {
   async speak(text: string, options?: Partial<CartesiaStreamingOptions>): Promise<void> {
     // Cleanup previous
     this.stop();
+
+    // Reset done flag for new playback
+    this.doneEmitted = false;
 
     // Setup abort
     this.abortController = new AbortController();
@@ -338,11 +344,16 @@ export class CartesiaStreamingPlayer {
         console.log('[CartesiaStreamingPlayer] Stream complete, draining buffers...');
         this.isStreaming = false;
 
-        // Wait for buffers to drain
+        // Wait for buffers to drain (may have already completed via processCycle)
         await this.drainBuffers();
 
-        this.setState(PlayerState.DONE);
-        this.emit('done', this.getMetrics());
+        // Only emit 'done' if processCycle hasn't already done so
+        if (!this.doneEmitted) {
+          this.doneEmitted = true;
+          this.setState(PlayerState.DONE);
+          this.emit('done', this.getMetrics());
+          console.log('[CartesiaStreamingPlayer] ✅ Stream complete - emitted done event');
+        }
       }
 
     } catch (error) {
@@ -464,7 +475,7 @@ export class CartesiaStreamingPlayer {
       if (this.isStreaming || hasData) {
         this.scheduleNextChunk();
       } else {
-        // No more data and stream ended - stop playback
+        // No more data and stream ended - emit done event
         this.isPlaying = false;
         if (this.processingTimer) {
           clearInterval(this.processingTimer);
@@ -474,7 +485,14 @@ export class CartesiaStreamingPlayer {
           clearInterval(this.metricsTimer);
           this.metricsTimer = null;
         }
-        console.log('[ProcessCycle] ⏹️ No more data - stopping timers');
+
+        // Emit 'done' event to signal playback completion
+        if (!this.doneEmitted) {
+          this.doneEmitted = true;
+          this.setState(PlayerState.DONE);
+          this.emit('done', this.getMetrics());
+          console.log('[ProcessCycle] ✅ Playback complete - emitted done event');
+        }
       }
     }
 

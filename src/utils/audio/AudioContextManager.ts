@@ -47,11 +47,11 @@ export interface AudioContextConfig {
 /**
  * Default configuration
  *
- * NOTE: sampleRate defaults to null (device default) to match Cartesia API's 44100Hz.
- * If a specific rate is needed, pass it explicitly to initialize().
+ * NOTE: sampleRate is forced to 16000Hz to match Cartesia API request.
+ * This prevents sample rate mismatch that causes "monster voice" distortion.
  */
 const DEFAULT_CONFIG: AudioContextConfig = {
-  sampleRate: null,  // Let AudioContext decide (usually 44100 or 48000)
+  sampleRate: 16000,  // Force 16kHz to match Cartesia API
   initialGain: 1.0,
   latencyHint: 'interactive',
 };
@@ -113,9 +113,9 @@ export class AudioContextManager {
     try {
       const { AudioContext } = await import('react-native-audio-api');
 
-      // Create context
+      // Create context - explicitly pass sampleRate to override device default
       this.context = new AudioContext({
-        sampleRate: this.config.sampleRate ?? undefined,
+        sampleRate: this.config.sampleRate ?? 16000,
       });
 
       // DEBUG: Log what we actually got
@@ -327,7 +327,7 @@ export class AudioContextManager {
   getMetrics(): PlaybackMetrics {
     return {
       currentTime: this.context?.currentTime ?? 0,
-      sampleRate: this.context?.sampleRate ?? 44100,  // Default to Cartesia API rate
+      sampleRate: this.context?.sampleRate ?? 16000,  // Default to Cartesia API rate
       state: this.context?.state ?? 'uninitialized',
       activeSources: this.activeSources.size,
       gain: this.gainNode?.gain.value ?? 1.0,

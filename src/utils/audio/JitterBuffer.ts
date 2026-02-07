@@ -99,12 +99,12 @@ export interface ChunkReadResult {
 /**
  * Default configuration
  *
- * NOTE: sampleRate: 44100 matches Cartesia API default (cartesia-streaming-service.ts:437)
+ * NOTE: sampleRate: 16000 matches Cartesia API request (cartesia-streaming-service.ts:437)
  */
 const DEFAULT_CONFIG: Required<JitterBufferConfig> = {
   preBufferThreshold: 300, // 300ms
   maxBufferSize: 5,
-  sampleRate: 44100,  // Match Cartesia API default
+  sampleRate: 16000,  // Match Cartesia API request
   underrunStrategy: UnderrunStrategy.SILENCE,
   minSamples: 100,
 };
@@ -413,13 +413,13 @@ export class JitterBuffer {
  *
  * @param preBufferThreshold - Pre-buffer threshold in ms (default: 300)
  * @param maxBufferSize - Max buffer size in seconds (default: 5)
- * @param sampleRate - Sample rate in Hz (default: 44100 to match Cartesia API)
+ * @param sampleRate - Sample rate in Hz (default: 16000 to match Cartesia API)
  * @returns New JitterBuffer instance
  */
 export function createJitterBuffer(
   preBufferThreshold: number = 300,
   maxBufferSize: number = 5,
-  sampleRate: number = 44100
+  sampleRate: number = 16000
 ): JitterBuffer {
   return new JitterBuffer({
     preBufferThreshold,

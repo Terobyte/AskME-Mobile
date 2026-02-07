@@ -62,7 +62,7 @@ export interface ReadResult {
  */
 const DEFAULT_CONFIG: Required<CircularBufferConfig> = {
   bufferSizeSeconds: 5,
-  sampleRate: 16000,
+  sampleRate: 44100,
   channels: 1,
 };
 

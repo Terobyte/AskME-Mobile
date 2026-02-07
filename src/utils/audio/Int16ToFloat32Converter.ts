@@ -50,10 +50,10 @@ export interface ConverterConfig {
 /**
  * Default configuration
  *
- * NOTE: sampleRate: 44100 matches Cartesia API default (cartesia-streaming-service.ts:437)
+ * NOTE: sampleRate: 16000 matches Cartesia API request (cartesia-streaming-service.ts:437)
  */
 const DEFAULT_CONFIG: ConverterConfig = {
-  sampleRate: 44100,  // Match Cartesia API default
+  sampleRate: 16000,  // Match Cartesia API request
   validate: true,
   clamp: true,
 };
@@ -272,12 +272,12 @@ export const int16ToFloat32Converter = new Int16ToFloat32Converter();
  * Convenience function for one-shot conversion
  *
  * @param buffer - Input Int16 buffer
- * @param sampleRate - Sample rate for duration calculation (default: 44100)
+ * @param sampleRate - Sample rate for duration calculation (default: 16000)
  * @returns Float32Array with normalized audio data
  */
 export function convertInt16ToFloat32(
   buffer: ArrayBuffer,
-  sampleRate: number = 44100
+  sampleRate: number = 16000
 ): Float32Array {
   const converter = new Int16ToFloat32Converter({ sampleRate });
   return converter.convert(buffer).data;

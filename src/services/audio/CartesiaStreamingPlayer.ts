@@ -134,13 +134,13 @@ export type EventListener = (data: any) => void;
  * - processingInterval: 50ms (20Hz processing ticks)
  */
 const DEFAULT_CONFIG: Required<CartesiaPlayerConfig> = {
-  sampleRate: 44100,
+  sampleRate: 16000,
   preBufferThreshold: 500,  // 500ms pre-buffer (in milliseconds)
   maxBufferSize: 5,         // 5 seconds max buffer
   underrunStrategy: UnderrunStrategy.SILENCE,
   initialGain: 1.0,
   useZeroCrossing: true,
-  chunkSize: 4096,          // ~93ms at 44.1kHz (reduces CPU overhead)
+  chunkSize: 2048,          // ~128ms at 16kHz (increased for stability)
   fifoMaxSize: 500,         // Larger FIFO for stability
   processingInterval: 50,   // 50Hz processing
 };

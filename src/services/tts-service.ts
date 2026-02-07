@@ -4,6 +4,7 @@ import { TTSProvider, OpenAIVoice, WordTimestamp } from '../types';  // PHASE 2:
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { cartesiaStreamingService } from './cartesia-streaming-service';
 import { chunkedStreamingPlayer } from './streaming-audio-player';
+import { getCartesiaStreamingPlayer } from './audio/CartesiaStreamingPlayer';
 
 /**
  * Text-to-Speech Service supporting Cartesia and OpenAI APIs
@@ -463,9 +464,9 @@ class TTSService {
 
   /**
    * Speak using Cartesia WebSocket streaming
-   * 
-   * NEW: Phase 3 - Streaming implementation
-   * Uses WebSocket for real-time audio generation and chunked playback
+   *
+   * NEW: Uses react-native-audio-api CartesiaStreamingPlayer
+   * TRUE streaming - plays chunks as they arrive
    */
   private async speakCartesiaStreaming(
     text: string,
@@ -477,15 +478,20 @@ class TTSService {
     }
   ): Promise<boolean> {
     try {
-      console.log('🌊 [TTS Streaming] Starting WebSocket generation...');
+      console.log('🌊 [TTS Streaming] Starting NEW engine (react-native-audio-api)...');
 
-      const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID || "e07c00bc-4134-4eae-9ea4-1a55fb45746b";
+      const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
+      if (!VOICE_ID) {
+        throw new Error('EXPO_PUBLIC_CARTESIA_VOICE_ID not configured');
+      }
 
-      // Stop any previous streaming playback
-      if (this.isStreaming) {
+      // Get the new streaming player
+      const player = getCartesiaStreamingPlayer();
+
+      // Stop any previous playback
+      if (player.isCurrentlyPlaying() || player.isCurrentlyStreaming()) {
         console.log('🛑 [TTS Streaming] Stopping previous stream...');
-        await chunkedStreamingPlayer.stop();
-        this.isStreaming = false;
+        player.stop();
       }
 
       // Map speed number to Cartesia speed string
@@ -497,7 +503,6 @@ class TTSService {
         else if (options.speed >= 1.1) speedString = 'fast';
       }
 
-      // Map emotion to Cartesia emotion array
       const emotionLevel = options?.emotionLevel || (options?.emotion ? [options.emotion] : undefined);
 
       console.log('🎙️ [TTS Streaming] Options:', {
@@ -507,44 +512,18 @@ class TTSService {
         textLength: text.length
       });
 
-      // Create audio stream generator
-      const chunkGenerator = cartesiaStreamingService.generateAudioStream({
+      // Use new player
+      await player.speak(text, {
         voiceId: VOICE_ID,
-        text: text,
         emotion: emotionLevel,
         speed: speedString,
-        onFirstChunk: (latency) => {
-          console.log(`🎯 [TTS Streaming] First chunk in ${latency}ms`);
-        },
-        onError: (error) => {
-          console.error('❌ [TTS Streaming] Generation error:', error);
-        },
-        onComplete: () => {
-          console.log('✅ [TTS Streaming] Generation complete');
-        },
-        // PHASE 2: Forward timestamps directly to player
-        onTimestampsReceived: (timestamps) => {
-          chunkedStreamingPlayer.receiveTimestamps(timestamps);
-        }
       });
 
-      // Play the stream with sentence chunking
-      this.isStreaming = true;
-
-      if (options?.autoPlay !== false) {
-        await chunkedStreamingPlayer.playStream(chunkGenerator, {
-          originalText: text,
-          enableSentenceChunking: true
-        });
-        console.log('✅ [TTS Streaming] Playback complete');
-      }
-
-      this.isStreaming = false;
+      console.log('✅ [TTS Streaming] Playback complete');
       return true;
 
     } catch (error) {
       console.error('❌ [TTS Streaming] Error:', error);
-      this.isStreaming = false;
       throw error;
     }
   }
@@ -601,24 +580,35 @@ class TTSService {
 
   /**
    * Stop all audio playback (including streaming)
-   * 
+   *
    * NEW: Also stops streaming playback if active
    */
   async stop(): Promise<void> {
     console.log("⏹️ [TTS] Stopping all audio...");
 
-    // NEW: Stop streaming if active
+    // NEW: Stop NEW streaming player
+    const player = getCartesiaStreamingPlayer();
+    if (player.isCurrentlyPlaying() || player.isCurrentlyStreaming()) {
+      console.log("🛑 [TTS] Stopping NEW streaming player...");
+      try {
+        player.stop();
+      } catch (error) {
+        console.error("❌ [TTS] Error stopping NEW streaming:", error);
+      }
+    }
+
+    // NEW: Stop legacy streaming if active (for fallback)
     if (this.isStreaming) {
-      console.log("🛑 [TTS] Stopping streaming playback...");
+      console.log("🛑 [TTS] Stopping legacy streaming playback...");
       try {
         await chunkedStreamingPlayer.stop();
         this.isStreaming = false;
       } catch (error) {
-        console.error("❌ [TTS] Error stopping streaming:", error);
+        console.error("❌ [TTS] Error stopping legacy streaming:", error);
       }
     }
 
-    // Stop regular playback
+    // Stop regular playback (for OpenAI fallback)
     for (const sound of this.soundObjects) {
       try {
         await sound.stopAsync();
@@ -659,86 +649,128 @@ class TTSService {
 
       // NEW: Try streaming if enabled for Cartesia
       if (STREAMING_CONFIG.enabled && this.ttsProvider === 'cartesia') {
-        console.log('🌊 [TTS] Using streaming for prepareAudio...');
+        console.log('🌊 [TTS] Using NEW streaming engine for prepareAudio...');
 
         try {
-          // FIX: НЕ запускаем streaming сразу, создаем Promise для отложенного запуска
-          let streamingPromise: Promise<boolean> | null = null;
           let isPlaybackStarted = false;
+          let isPlaybackComplete = false;  // Track completion for race condition fix
           let statusCallback: ((status: any) => void) | null = null;
+          const player = getCartesiaStreamingPlayer();
+
+          // Create listener functions for cleanup
+          const doneListener = () => {
+            console.log('📢 [TTS Streaming Mock] Player done - triggering callback');
+            isPlaybackComplete = true;
+            if (statusCallback) {
+              statusCallback({
+                isLoaded: true,
+                didJustFinish: true,
+                durationMillis: 0,
+                positionMillis: 0
+              });
+            }
+          };
+
+          const errorListener = (data: any) => {
+            console.error('❌ [TTS Streaming Mock] Player error:', data);
+            isPlaybackComplete = true;
+            if (statusCallback) {
+              statusCallback({
+                isLoaded: true,
+                didJustFinish: true,  // Trigger finish even on error
+                durationMillis: 0,
+                positionMillis: 0
+              });
+            }
+          };
+
+          // Subscribe to player events
+          player.on('done', doneListener);
+          player.on('error', errorListener);
+
+          const cleanupListeners = () => {
+            player.off('done', doneListener);
+            player.off('error', errorListener);
+          };
 
           const mockSound = {
             playAsync: async () => {
-              console.log('🎵 [TTS Streaming Mock] playAsync called');
+              console.log('🎵 [TTS Streaming Mock] playAsync called (NEW engine)');
 
-              // Запускаем streaming ТОЛЬКО при первом вызове playAsync
               if (!isPlaybackStarted) {
                 isPlaybackStarted = true;
-                console.log('▶️ [TTS Streaming Mock] Starting streaming playback...');
+                console.log('▶️ [TTS Streaming Mock] Starting playback...');
 
                 try {
-                  streamingPromise = this.speakCartesiaStreaming(text, {
-                    ...options,
-                    autoPlay: true
+                  const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
+                  if (!VOICE_ID) throw new Error('VOICE_ID not configured');
+
+                  // Map speed number to Cartesia speed string
+                  let speedString: 'slowest' | 'slow' | 'normal' | 'fast' | 'fastest' = 'normal';
+                  if (options?.speed) {
+                    if (options.speed <= 0.75) speedString = 'slowest';
+                    else if (options.speed <= 0.9) speedString = 'slow';
+                    else if (options.speed >= 1.25) speedString = 'fastest';
+                    else if (options.speed >= 1.1) speedString = 'fast';
+                  }
+
+                  const emotionLevel = options?.emotionLevel || (options?.emotion ? [options.emotion] : undefined);
+
+                  await player.speak(text, {
+                    voiceId: VOICE_ID,
+                    emotion: emotionLevel,
+                    speed: speedString,
                   });
 
-                  await streamingPromise;
                   console.log('✅ [TTS Streaming Mock] Playback complete');
 
-                  // FIX: Вызываем callback СРАЗУ после завершения
-                  if (statusCallback) {
-                    console.log('📢 [TTS Streaming Mock] Triggering didJustFinish from playAsync');
-                    statusCallback({
-                      isLoaded: true,
-                      didJustFinish: true,
-                      durationMillis: 0,
-                      positionMillis: 0
-                    });
-                  }
+                  // Cleanup listeners
+                  cleanupListeners();
+
                 } catch (error) {
                   console.error('❌ [TTS Streaming Mock] Playback error:', error);
-
-                  // FIX: Вызываем callback даже при ошибке для предотвращения deadlock
+                  // Cleanup and trigger callback
+                  cleanupListeners();
                   if (statusCallback) {
-                    console.log('📢 [TTS Streaming Mock] Triggering didJustFinish (error case)');
-                    statusCallback({
-                      isLoaded: true,
-                      didJustFinish: true,
-                      durationMillis: 0,
-                      positionMillis: 0
-                    });
+                    statusCallback({ isLoaded: true, didJustFinish: true, durationMillis: 0, positionMillis: 0 });
                   }
                 }
-              } else {
-                console.warn('⚠️ [TTS Streaming Mock] playAsync called multiple times, ignoring');
               }
             },
 
             setOnPlaybackStatusUpdate: (callback: any) => {
               console.log('🔄 [TTS Streaming Mock] setOnPlaybackStatusUpdate called');
-
-              // FIX: Просто сохраняем callback, он будет вызван из playAsync
               statusCallback = callback;
+
+              // CRITICAL FIX: If playback already completed, trigger callback immediately
+              // This fixes race condition where 'done' event fires before callback is registered
+              if (isPlaybackComplete && statusCallback) {
+                console.log('📢 [TTS Streaming Mock] Already complete, triggering callback immediately');
+                statusCallback({
+                  isLoaded: true,
+                  didJustFinish: true,
+                  durationMillis: 0,
+                  positionMillis: 0
+                });
+              }
             },
 
             stopAsync: async () => {
               console.log('🛑 [TTS Streaming Mock] Stop requested');
-              await chunkedStreamingPlayer.stop();
+              player.stop();
               isPlaybackStarted = false;
-              streamingPromise = null;
-              statusCallback = null;
+              cleanupListeners();
             },
 
             unloadAsync: async () => {
               console.log('🗑️ [TTS Streaming Mock] Unload');
-              await chunkedStreamingPlayer.stop();
+              player.stop();
               isPlaybackStarted = false;
-              streamingPromise = null;
-              statusCallback = null;
+              cleanupListeners();
             }
           } as any as Audio.Sound;
 
-          console.log('✅ [TTS] Streaming mock Sound created (playback deferred)');
+          console.log('✅ [TTS] NEW Streaming mock Sound created');
           return mockSound;
 
         } catch (error) {

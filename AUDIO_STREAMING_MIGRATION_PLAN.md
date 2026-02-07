@@ -1,14 +1,24 @@
 # Audio Streaming Migration Plan
 ## react-native-audio-api + Jitter Buffer Architecture
 
+> **⚠️ STRATEGY UPDATE (Feb 2026)**
+>
+> Мы создали все "запчасти" но не собрали "двигатель". Новая стратегия:
+> 1. Собрать полноценный streaming engine **в изоляции** (на тестовой странице)
+> 2. Тщательно протестировать — убедиться что нет artifacts/gaps/clicks
+> 3. **Только потом** интегрировать в основной проект
+>
+> *"Собрать двигатель отдельно и принести его в машину только готовым"*
+
 ---
 
-## 📋 Общая стратегия
+## 📋 Общая стратегия (REVISED)
 
-- **Phase 1**: Research & Setup (тестовая страница)
-- **Phase 2**: Core Components (изолированная разработка)
-- **Phase 3**: Integration Testing (проверка качества)
-- **Phase 4**: Main Project Migration (поэтапная замена)
+- **Phase 1**: Research & Setup ✅ COMPLETED
+- **Phase 2**: Core Components ✅ COMPLETED (все запчасти готовы!)
+- **Phase 2.5**: ⭐ **Engine Assembly** (собрать streaming player) — **ТЕКУЩИЙ ЭТАП**
+- **Phase 3**: Integration Testing (проверка качества на тестовой странице)
+- **Phase 4**: Main Project Migration (замена старого движка)
 
 ---
 
@@ -126,18 +136,126 @@ source.start(audioContext.currentTime);
 - `latencyMs` - задержка от старта до первого чанка
 
 **Ограничения Version 1 (известные):**
+- ❌ **Ждёт все чанки перед воспроизведением** — НЕ настоящий streaming!
 - Нет jitter buffering - возможны gaps при медленном соединении
 - Нет zero-crossing alignment - возможны clicks между чанками
-- Простое накопление всех чанков перед воспроизведением (не streaming в реальном времени)
 
-**План для Version 2 (Production):**
-- Добавить JitterBuffer для smooth playback
-- Zero-crossing alignment для устранения clicks
-- Потоковое воспроизведение по мере поступления чанков
+**Важно:** V1 был создан чтобы просто "услышать звук". Для production нужен настоящий streaming.
 
 ---
 
-## 🧩 Phase 2: Core Components Development
+## ⭐ Phase 2.5: Engine Assembly (NEW)
+
+### Задача: Собрать полноценный Streaming Engine
+
+Все компоненты (запчасти) готовы. Нужно их собрать в работающий двигатель.
+
+#### Что уже есть (Inventory):
+
+**`src/utils/audio/` — READY:**
+- ✅ `Int16ToFloat32Converter.ts` — PCM16 → Float32
+- ✅ `CircularBuffer.ts` — Ring buffer
+- ✅ `FIFOQueue.ts` — Queue для chunks
+- ✅ `JitterBuffer.ts` — Pre-buffering (300ms threshold)
+- ✅ `ZeroCrossingAligner.ts` — Click prevention
+- ✅ `AudioContextManager.ts` — Web Audio API wrapper
+
+**`src/services/` — PARTIAL:**
+- ✅ `cartesia-streaming-service.ts` — WebSocket client
+- ⚠️ `CartesiaAudioAdapter.ts` — V1 fake (ждёт все чанки!)
+
+#### Что нужно создать:
+
+**Файл:** `src/services/audio/CartesiaStreamingPlayer.ts`
+
+Это **настоящий streaming engine** который:
+1. Играет чанки **по мере поступления** (real-time)
+2. Использует JitterBuffer для smooth playback
+3. Использует ZeroCrossingAligner для artifact-free transitions
+4. Имеет proper scheduling через AudioContextManager
+
+**Архитектура:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│              CartesiaStreamingPlayer                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  WebSocket (cartesiaStreamingService)                       │
+│       ↓                                                      │
+│  Int16ToFloat32Converter                                     │
+│       ↓                                                      │
+│  FIFOQueue (ordering)                                        │
+│       ↓                                                      │
+│  JitterBuffer (pre-buffer 300ms)                             │
+│       ↓                                                      │
+│  ZeroCrossingAligner (artifact-free)                         │
+│       ↓                                                      │
+│  AudioContextManager (playout)                               │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**API:**
+```typescript
+interface CartesiaStreamingPlayer {
+  speak(text: string, options?: VoiceOptions): Promise<void>;
+  stop(): void;
+  setVolume(level: number): void;
+  getMetrics(): PlayerMetrics;
+
+  onStateChange(callback: (state: PlayerState) => void): () => void;
+}
+
+type PlayerState = 'IDLE' | 'CONNECTING' | 'BUFFERING' | 'PLAYING' | 'UNDERRUN' | 'DONE' | 'ERROR';
+
+interface PlayerMetrics {
+  state: PlayerState;
+  bufferHealth: number; // 0-100%
+  bufferDurationMs: number;
+  latencyMs: number;
+  chunksReceived: number;
+  chunksPlayed: number;
+  underrunCount: number;
+}
+```
+
+**Ключевая логика (streaming):**
+```typescript
+async speak(text: string) {
+  const stream = cartesiaStreamingService.generateAudioStream({ text });
+  let scheduledTime = 0;
+
+  for await (const chunk of stream) {
+    // 1. Convert
+    const float32 = this.converter.convert(chunk.data);
+
+    // 2. Add to jitter buffer
+    this.jitterBuffer.addChunk(float32);
+
+    // 3. Start playback when ready
+    if (!this.isPlaying && this.jitterBuffer.canStartPlayback()) {
+      this.isPlaying = true;
+      scheduledTime = this.audioContext.getPlaybackTime() + 0.05; // 50ms ahead
+    }
+
+    // 4. Schedule chunks as they're available
+    if (this.isPlaying) {
+      const nextChunk = this.jitterBuffer.getNextChunk();
+      if (nextChunk) {
+        const aligned = this.aligner.align(nextChunk, 'start');
+        const buffer = this.audioContext.createBuffer(aligned);
+        this.audioContext.scheduleBuffer(buffer, scheduledTime);
+
+        scheduledTime += aligned.length / 16000; // Update for next chunk
+      }
+    }
+  }
+}
+```
+
+---
+
+## 🧩 Phase 2: Core Components Development (ARCHIVE)
 
 ### Промт 2.1: Int16 to Float32 Converter
 
@@ -626,37 +744,47 @@ source.start(audioContext.currentTime);
 
 ## ✅ Финальный чек-лист
 
-### Phase 1: Setup
+### Phase 1: Setup ✅ COMPLETED
 - [x] Изучена документация react-native-audio-api
 - [x] Создана тестовая страница (TestAudioStreamPage.tsx)
 - [x] Cartesia "Hello World" тест работает
-- [ ] Настроен WebSocket mock server
+- [x] Настроен react-native-audio-api
+- [x] Все audio utilities готовы
 
-### Phase 2: Components
-- [x] Int16ToFloat32Converter + tests
-- [x] CircularBuffer + tests
-- [x] FIFOQueue + tests
-- [x] JitterBuffer + tests
-- [x] ZeroCrossingAligner + tests
-- [x] AudioContextManager + tests
+### Phase 2: Components ✅ COMPLETED
+- [x] Int16ToFloat32Converter
+- [x] CircularBuffer
+- [x] FIFOQueue
+- [x] JitterBuffer
+- [x] ZeroCrossingAligner
+- [x] AudioContextManager
 
-### Phase 3: Integration
-- [x] CartesiaAudioAdapter (minimal V1)
-- [ ] StreamingAudioPlayer (full V2)
-- [ ] useStreamingAudioPlayer hook
-- [x] Интеграция с тестовой страницей
+### ⭐ Phase 2.5: Engine Assembly (CURRENT)
+- [ ] Создать CartesiaStreamingPlayer (настоящий streaming!)
+- [ ] Интегрировать все компоненты вместе
+- [ ] Добавить метрики (buffer health, latency, underruns)
+- [ ] Update TestAudioStreamPage.tsx с новым UI
+- [ ] Тестирование short/long text
+- [ ] Проверка нет ли clicks/gaps
 
-### Phase 4: Testing
+### Phase 3: Integration Testing
 - [ ] Unit tests (80%+ coverage)
 - [ ] Integration tests
 - [ ] Quality checklist выполнен
 - [ ] Performance benchmarks
+- [ ] Network throttling тесты
 
-### Phase 5: Production
-- [ ] Migration plan утвержден
-- [ ] A/B testing настроен
-- [ ] Поэтапная миграция завершена
-- [ ] Старый код удален
+### Phase 4: Testing (на тестовой странице)
+- [ ] useStreamingAudioPlayer hook (если нужен)
+- [ ] Полноценный UI на TestAudioStreamPage
+- [ ] Лги событий с timestamp
+- [ ] График buffer health
+
+### Phase 5: Production Migration
+- [ ] Анализ текущего streaming-audio-player.ts
+- [ ] Замена на новый CartesiaStreamingPlayer
+- [ ] A/B testing (старый vs новый)
+- [ ] Удаление старого кода
 - [ ] Документация обновлена
 
 ### Release
@@ -664,6 +792,24 @@ source.start(audioContext.currentTime);
 - [ ] Release notes
 - [ ] Version bump
 - [ ] Production deploy
+
+---
+
+## 🎯 Текущий статус (Feb 2026)
+
+| Компонент | Статус | Файл |
+|-----------|--------|------|
+| PCM16 Converter | ✅ Ready | `Int16ToFloat32Converter.ts` |
+| Circular Buffer | ✅ Ready | `CircularBuffer.ts` |
+| FIFO Queue | ✅ Ready | `FIFOQueue.ts` |
+| Jitter Buffer | ✅ Ready | `JitterBuffer.ts` |
+| Zero-Crossing | ✅ Ready | `ZeroCrossingAligner.ts` |
+| Audio Context | ✅ Ready | `AudioContextManager.ts` |
+| WebSocket | ✅ Ready | `cartesia-streaming-service.ts` |
+| **Streaming Player** | ❌ TODO | `CartesiaStreamingPlayer.ts` |
+| Test UI | ⚠️ Partial | `TestAudioStreamPage.tsx` |
+
+**Следующий шаг:** Создать `CartesiaStreamingPlayer.ts` который соединяет все компоненты в работающий streaming engine.
 
 ---
 

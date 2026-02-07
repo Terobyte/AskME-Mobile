@@ -13,8 +13,10 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Constants } from 'expo-constants';
 
 // Import the new Cartesia Streaming Player
 import {
@@ -32,6 +34,17 @@ import {
   getDeepgramStreamingPlayer,
 } from '../services/audio/DeepgramStreamingPlayer';
 
+// Import the new OpenAI Streaming Player
+import {
+  OpenAIStreamingPlayer,
+  PlayerState as OpenAIPlayerState,
+  PlayerMetrics as OpenAIPlayerMetrics,
+  getOpenAIStreamingPlayer,
+} from '../services/audio/OpenAIStreamingPlayer';
+
+// Import OpenAI types
+import { OpenAIVoice } from '../types';
+
 // Log entry
 interface LogEntry {
   timestamp: string;
@@ -41,7 +54,7 @@ interface LogEntry {
 }
 
 // TTS Provider type
-type TTSProvider = 'cartesia' | 'deepgram';
+type TTSProvider = 'cartesia' | 'deepgram' | 'openai';
 
 // Unified state type (both players have the same states)
 type PlayerState = 'idle' | 'connecting' | 'buffering' | 'playing' | 'paused' | 'stopped' | 'done' | 'error';
@@ -62,15 +75,30 @@ const TEST_TEXTS = {
  * Test Audio Stream Page Component
  */
 export const TestAudioStreamPage: React.FC = () => {
-  // Player instance - using union type since both players have similar interfaces
-  const playerRef = useRef<CartesiaStreamingPlayer | DeepgramStreamingPlayer | null>(null);
+  // Player instance - using union type since all players have similar interfaces
+  const playerRef = useRef<CartesiaStreamingPlayer | DeepgramStreamingPlayer | OpenAIStreamingPlayer | null>(null);
 
   // State
   const [playerState, setPlayerState] = useState<PlayerState>('idle');
-  const [metrics, setMetrics] = useState<CartesiaPlayerMetrics | DeepgramPlayerMetrics | null>(null);
+  const [metrics, setMetrics] = useState<CartesiaPlayerMetrics | DeepgramPlayerMetrics | OpenAIPlayerMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState<keyof typeof TEST_TEXTS>('medium');
   const [ttsProvider, setTtsProvider] = useState<TTSProvider>('cartesia');
+
+  // OpenAI specific state
+  const [openaiVoice, setOpenaiVoice] = useState<OpenAIVoice>('marin'); // Default = best quality
+  const [openaiInstructions, setOpenaiInstructions] = useState<string>(''); // 🆕 Voice style instructions
+
+  // 🆕 Instruction presets
+  const instructionPresets = [
+    { label: 'Default', value: '' },
+    { label: 'Cheerful', value: 'Speak in a cheerful and positive tone.' },
+    { label: 'Calm', value: 'Speak in a calm, soothing voice.' },
+    { label: 'Whisper', value: 'Whisper softly.' },
+    { label: 'Excited', value: 'Sound excited and energetic!' },
+    { label: 'Professional', value: 'Speak in a professional, business-like tone.' },
+    { label: 'Storyteller', value: 'Speak like a storyteller, with dramatic pauses.' },
+  ];
 
   // Volume
   const [volume, setVolume] = useState(100);
@@ -97,19 +125,34 @@ export const TestAudioStreamPage: React.FC = () => {
     }
 
     // Create new player based on selected provider
-    const player = ttsProvider === 'cartesia'
-      ? getCartesiaStreamingPlayer({
-          sampleRate: 16000,
-          preBufferThreshold: 500,
-          maxBufferSize: 5,
-          chunkSize: 2048,
-        })
-      : getDeepgramStreamingPlayer({
-          sampleRate: 16000,
-          preBufferThreshold: 500,
-          maxBufferSize: 5,
-          chunkSize: 2048,
-        });
+    let player: CartesiaStreamingPlayer | DeepgramStreamingPlayer | OpenAIStreamingPlayer;
+
+    if (ttsProvider === 'cartesia') {
+      player = getCartesiaStreamingPlayer({
+        sampleRate: 16000,
+        preBufferThreshold: 500,
+        maxBufferSize: 5,
+        chunkSize: 2048,
+      });
+    } else if (ttsProvider === 'deepgram') {
+      player = getDeepgramStreamingPlayer({
+        sampleRate: 16000,
+        preBufferThreshold: 500,
+        maxBufferSize: 5,
+        chunkSize: 2048,
+      });
+    } else {
+      // OpenAI
+      const openaiApiKey = (Constants?.expoConfig?.extra?.openaiApiKey as string)
+        || process.env.EXPO_PUBLIC_OPENAI_API_KEY
+        || 'your-key-here';
+      player = getOpenAIStreamingPlayer(openaiApiKey, {
+        sampleRate: 16000,
+        preBufferThreshold: 500,
+        maxBufferSize: 5,
+        chunkSize: 2048,
+      });
+    }
 
     playerRef.current = player;
 
@@ -118,7 +161,10 @@ export const TestAudioStreamPage: React.FC = () => {
     setMetrics(null);
     setError(null);
 
-    addLog('UI', `Switched to ${ttsProvider === 'cartesia' ? 'Cartesia' : 'Deepgram'} provider`, 'info');
+    const providerName = ttsProvider === 'cartesia' ? 'Cartesia'
+      : ttsProvider === 'deepgram' ? 'Deepgram'
+      : 'OpenAI';
+    addLog('UI', `Switched to ${providerName} provider`, 'info');
 
     // Subscribe to events
     const unsubscribeEvents: Array<() => void> = [];
@@ -201,9 +247,15 @@ export const TestAudioStreamPage: React.FC = () => {
           emotion: ['positivity:high'],
           speed: 'normal',
         });
-      } else {
+      } else if (ttsProvider === 'deepgram') {
         await (playerRef.current as DeepgramStreamingPlayer).speak(TEST_TEXTS[selectedText], {
           voiceId: 'aura-2-thalia-en',
+        });
+      } else {
+        // OpenAI with instructions
+        await (playerRef.current as OpenAIStreamingPlayer).speak(TEST_TEXTS[selectedText], {
+          voiceId: openaiVoice,
+          instructions: openaiInstructions || undefined,
         });
       }
     } catch (err) {
@@ -211,7 +263,7 @@ export const TestAudioStreamPage: React.FC = () => {
       setError(errorMsg);
       addLog('Error', errorMsg, 'error');
     }
-  }, [selectedText, ttsProvider, addLog]);
+  }, [selectedText, ttsProvider, openaiVoice, openaiInstructions, addLog]);
 
   /**
    * Stop playback
@@ -361,13 +413,98 @@ export const TestAudioStreamPage: React.FC = () => {
               Deepgram
             </Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.providerButton,
+              ttsProvider === 'openai' && styles.providerButtonActive,
+              ttsProvider === 'openai' && { backgroundColor: '#10B981', borderColor: '#10B981' },
+            ]}
+            onPress={() => setTtsProvider('openai')}>
+            <Text
+              style={[
+                styles.providerButtonText,
+                ttsProvider === 'openai' && styles.providerButtonTextActive,
+              ]}>
+              OpenAI
+            </Text>
+          </TouchableOpacity>
         </View>
         <Text style={styles.textPreview}>
           {ttsProvider === 'cartesia'
             ? 'Cartesia Sonic API - WebSocket streaming with emotion support'
-            : 'Deepgram Aura API - WebSocket streaming with natural voices'}
+            : ttsProvider === 'deepgram'
+            ? 'Deepgram Aura API - WebSocket streaming with natural voices'
+            : 'OpenAI gpt-4o-mini-tts - HTTP streaming with 13 voices + instructions'}
         </Text>
       </View>
+
+      {/* OpenAI Voice & Instructions Selection */}
+      {ttsProvider === 'openai' && (
+        <>
+          {/* Voice Selector */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Voice (marin/cedar = best ⭐)</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.voiceScroll}>
+              {(['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'] as const).map((voice) => (
+                <TouchableOpacity
+                  key={voice}
+                  style={[
+                    styles.voiceButton,
+                    openaiVoice === voice && styles.voiceButtonActive,
+                    (voice === 'marin' || voice === 'cedar') && styles.voiceButtonPremium,
+                  ]}
+                  onPress={() => setOpenaiVoice(voice)}>
+                  <Text
+                    style={[
+                      styles.voiceButtonText,
+                      openaiVoice === voice && styles.voiceButtonTextActive,
+                    ]}>
+                    {voice}{voice === 'marin' || voice === 'cedar' ? '⭐' : ''}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* Instructions Selector */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Voice Style</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.voiceScroll}>
+              {instructionPresets.map((preset) => (
+                <TouchableOpacity
+                  key={preset.label}
+                  style={[
+                    styles.voiceButton,
+                    openaiInstructions === preset.value && styles.voiceButtonActive,
+                  ]}
+                  onPress={() => setOpenaiInstructions(preset.value)}>
+                  <Text
+                    style={[
+                      styles.voiceButtonText,
+                      openaiInstructions === preset.value && styles.voiceButtonTextActive,
+                    ]}>
+                    {preset.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Custom instructions input */}
+            {openaiInstructions && !instructionPresets.find(p => p.value === openaiInstructions) && (
+              <View style={styles.customInstructionsContainer}>
+                <TextInput
+                  style={styles.customInstructionsInput}
+                  placeholder="Custom instructions (optional)"
+                  placeholderTextColor="#6B7280"
+                  value={openaiInstructions}
+                  onChangeText={setOpenaiInstructions}
+                  multiline
+                />
+              </View>
+            )}
+          </View>
+        </>
+      )}
 
       {/* Text Selection */}
       <View style={styles.section}>
@@ -764,6 +901,48 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 12,
     fontStyle: 'italic',
+  },
+  // OpenAI voice & instructions styles
+  voiceScroll: {
+    flexDirection: 'row',
+  },
+  voiceButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#1F2937',
+    borderWidth: 1,
+    borderColor: '#374151',
+    marginRight: 8,
+  },
+  voiceButtonActive: {
+    backgroundColor: '#10B981',
+    borderColor: '#10B981',
+  },
+  voiceButtonPremium: {
+    borderColor: '#FBBF24', // Gold border for marin/cedar
+    borderWidth: 2,
+  },
+  voiceButtonText: {
+    color: '#9CA3AF',
+    fontWeight: '500',
+    fontSize: 12,
+  },
+  voiceButtonTextActive: {
+    color: '#FFFFFF',
+  },
+  customInstructionsContainer: {
+    marginTop: 12,
+  },
+  customInstructionsInput: {
+    backgroundColor: '#1F2937',
+    borderRadius: 8,
+    padding: 12,
+    color: '#F9FAFB',
+    minHeight: 80,
+    borderWidth: 1,
+    borderColor: '#374151',
+    fontSize: 14,
   },
 });
 

@@ -6,25 +6,12 @@
  *
  * Audio format: PCM16 @ 24kHz (requires resampling to 16kHz for our pipeline)
  *
+ * Updated 2025-02: Now supports gpt-4o-mini-tts with 13 voices and instructions
+ *
  * @see https://platform.openai.com/docs/api-reference/audio/createSpeech
  */
 
-import { AudioChunk } from '../types';
-
-/**
- * OpenAI TTS configuration
- */
-export interface OpenAIStreamConfig {
-  apiKey: string;
-  model?: 'gpt-4o-audio-preview' | 'gpt-4o-mini-audio-preview';
-  voiceId: OpenAIVoice;
-  speed?: number;
-}
-
-/**
- * OpenAI TTS voice options
- */
-export type OpenAIVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
+import { AudioChunk, OpenAIVoice, OpenAITTSModel, OpenAIStreamConfig } from '../types';
 
 /**
  * Stream options with callbacks
@@ -43,6 +30,7 @@ export interface OpenAIStreamOptions extends OpenAIStreamConfig {
 export class OpenAIStreamingService {
   private abortController: AbortController | null = null;
   private isStreaming: boolean = false;
+  private pendingBytes: Uint8Array = new Uint8Array(0); // 🆕 Byte alignment
 
   /**
    * Generate audio stream from OpenAI TTS API
@@ -56,13 +44,15 @@ export class OpenAIStreamingService {
     const startTime = Date.now();
     this.abortController = new AbortController();
     this.isStreaming = true;
+    this.pendingBytes = new Uint8Array(0); // Reset
 
     const {
       apiKey,
       text,
       voiceId,
-      model = 'gpt-4o-mini-audio-preview',
+      model = 'gpt-4o-mini-tts', // ✅ Updated default
       speed = 1.0,
+      instructions, // 🆕
       onFirstChunk,
       onChunk,
     } = options;
@@ -73,24 +63,34 @@ export class OpenAIStreamingService {
     console.log(`║ Model:              ${String(model).padEnd(24)} ║`);
     console.log(`║ Voice:              ${String(voiceId).padEnd(24)} ║`);
     console.log(`║ Speed:              ${String(speed.toFixed(2)).padEnd(24)} ║`);
+    if (instructions) {
+      console.log(`║ Instructions:      ${String(instructions.substring(0, 20) + '...').padEnd(24)} ║`);
+    }
     console.log(`║ Text length:        ${String(text.length + ' chars').padEnd(24)} ║`);
     console.log(`╚════════════════════════════════════════╝`);
     console.log(`[OpenAI Streaming] Requesting stream for "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
 
     try {
+      const requestBody: Record<string, unknown> = {
+        model,
+        input: text,
+        voice: voiceId,
+        response_format: 'pcm',
+        speed,
+      };
+
+      // 🆕 Add instructions only for gpt-4o-mini-tts
+      if (instructions && model === 'gpt-4o-mini-tts') {
+        requestBody.instructions = instructions;
+      }
+
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model,
-          input: text,
-          voice: voiceId,
-          response_format: 'pcm', // RAW PCM16
-          speed,
-        }),
+        body: JSON.stringify(requestBody),
         signal: this.abortController.signal,
       });
 
@@ -116,38 +116,68 @@ export class OpenAIStreamingService {
         if (done) {
           this.isStreaming = false;
           console.log(`[OpenAI Streaming] Stream complete: ${chunkIndex} chunks, ${totalBytes} bytes total`);
+
+          // 🆕 Handle remaining bytes
+          if (this.pendingBytes.length >= 2) {
+            const remaining = Math.floor(this.pendingBytes.length / 2) * 2;
+            if (remaining > 0) {
+              const pcmData = new Int16Array(
+                this.pendingBytes.buffer,
+                this.pendingBytes.byteOffset,
+                remaining / 2
+              );
+              yield {
+                data: { data: pcmData, format: 'pcm16', sampleRate: 24000 },
+                index: chunkIndex++,
+                timestamp: Date.now(),
+              };
+            }
+          }
           break;
         }
 
         if (value) {
-          totalBytes += value.length;
-          const now = Date.now();
+          // 🆕 Byte alignment handling - combine with pending bytes
+          const combined = new Uint8Array(this.pendingBytes.length + value.length);
+          combined.set(this.pendingBytes);
+          combined.set(value, this.pendingBytes.length);
 
-          // Convert Uint8Array to Int16Array (PCM16)
-          const int16Data = new Int16Array(value.buffer, value.byteOffset, value.byteLength / 2);
+          // Only process complete PCM16 samples (2 bytes per sample)
+          const completeBytes = Math.floor(combined.length / 2) * 2;
+          this.pendingBytes = combined.slice(completeBytes);
 
-          const chunk: AudioChunk = {
-            data: {
-              data: int16Data,
-              format: 'pcm16',
-              sampleRate: 24000, // OpenAI native rate
-            },
-            index: chunkIndex++,
-            timestamp: now,
-          };
+          if (completeBytes > 0) {
+            totalBytes += completeBytes;
 
-          if (firstChunk && onFirstChunk) {
-            const latency = now - startTime;
-            onFirstChunk(latency);
-            console.log(`[OpenAI Streaming] First chunk received: ${latency}ms latency`);
-            firstChunk = false;
+            const pcmData = new Int16Array(
+              combined.buffer,
+              combined.byteOffset,
+              completeBytes / 2
+            );
+
+            const chunk: AudioChunk = {
+              data: {
+                data: pcmData,
+                format: 'pcm16',
+                sampleRate: 24000,
+              },
+              index: chunkIndex++,
+              timestamp: Date.now(),
+            };
+
+            if (firstChunk && onFirstChunk) {
+              const latency = Date.now() - startTime;
+              onFirstChunk(latency);
+              console.log(`[OpenAI Streaming] First chunk received: ${latency}ms latency`);
+              firstChunk = false;
+            }
+
+            if (onChunk) {
+              onChunk(chunk);
+            }
+
+            yield chunk;
           }
-
-          if (onChunk) {
-            onChunk(chunk);
-          }
-
-          yield chunk;
         }
       }
 
@@ -179,6 +209,7 @@ export class OpenAIStreamingService {
       this.abortController.abort();
       this.abortController = null;
       this.isStreaming = false;
+      this.pendingBytes = new Uint8Array(0); // Reset
       console.log('[OpenAI Streaming] Stopped');
     }
   }

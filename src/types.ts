@@ -289,15 +289,32 @@ export interface CartesiaTTSRequest {
 export type TTSProvider = 'cartesia' | 'openai' | 'deepgram';
 
 /**
+ * OpenAI TTS Model
+ * gpt-4o-mini-tts - newest, supports instructions, recommended
+ * tts-1 - lower latency
+ * tts-1-hd - higher quality
+ */
+export type OpenAITTSModel = 'gpt-4o-mini-tts' | 'tts-1' | 'tts-1-hd';
+
+/**
  * OpenAIVoice: Available voices for OpenAI TTS
+ * Updated 2025-02 - Now 13 voices total
+ * marin and cedar recommended for best quality
  */
 export type OpenAIVoice =
-  | 'alloy'   // Сбалансированный мужской/женский
+  | 'alloy'   // Сбалансированный
+  | 'ash'     // NEW - Soft, calm voice
+  | 'ballad'  // NEW - Expressive, musical quality
+  | 'coral'   // NEW - Cheerful, upbeat tone
   | 'echo'    // Мужской, мягкий
   | 'fable'   // Мужской, британский
-  | 'onyx'    // Мужской, глубокий
   | 'nova'    // Женский, дружелюбный
-  | 'shimmer'; // Женский, мягкий
+  | 'onyx'    // Мужской, глубокий
+  | 'sage'    // NEW - Warm, storytelling voice
+  | 'shimmer' // Женский, мягкий
+  | 'verse'   // NEW - Energetic, dynamic tone
+  | 'marin'   // NEW - ⭐ Best quality recommended
+  | 'cedar';  // NEW - ⭐ Best quality recommended
 
 /**
  * DeepgramVoice: Available Aura voices for Deepgram TTS
@@ -447,6 +464,34 @@ export interface DeepgramStreamingOptions {
   onComplete?: () => void;
   onError?: (error: Error) => void;
   onFirstChunk?: (latency: number) => void;
+}
+
+// ============================================
+// OPENAI TTS TYPES
+// ============================================
+
+/**
+ * OpenAI Streaming Options
+ */
+export interface OpenAIStreamingOptions {
+  voiceId: OpenAIVoice;
+  text: string;
+  model?: OpenAITTSModel;
+  speed?: number; // 0.25 - 4.0
+  instructions?: string; // 🆕 Voice style instructions (gpt-4o-mini-tts only)
+  onChunk?: (chunk: AudioChunk) => void;
+  onFirstChunk?: (latency: number) => void;
+}
+
+/**
+ * OpenAI Stream Config
+ */
+export interface OpenAIStreamConfig {
+  apiKey: string;
+  model?: OpenAITTSModel;
+  voiceId: OpenAIVoice;
+  speed?: number;
+  instructions?: string; // 🆕 Voice style instructions
 }
 
 /**

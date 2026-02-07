@@ -250,7 +250,11 @@ export class OpenAIStreamingPlayer {
    * @param text - Text to speak
    * @param options - OpenAI streaming options
    */
-  async speak(text: string, options?: { voiceId?: OpenAIVoice; speed?: number }): Promise<void> {
+  async speak(text: string, options?: {
+    voiceId?: OpenAIVoice;
+    speed?: number;
+    instructions?: string; // 🆕 Voice style instructions (gpt-4o-mini-tts only)
+  }): Promise<void> {
     // Debounce: prevent rapid restart issues
     const now = Date.now();
     const timeSinceLastStop = now - this.lastStopTime;
@@ -295,9 +299,10 @@ export class OpenAIStreamingPlayer {
       const stream = this.openaiService.generateAudioStream({
         apiKey: this.apiKey,
         text,
-        voiceId: options?.voiceId || 'nova',
-        model: 'gpt-4o-mini-audio-preview',
+        voiceId: options?.voiceId || 'marin', // Changed default to marin (best quality)
+        model: 'gpt-4o-mini-tts', // ✅ Updated model
         speed: options?.speed ?? 1.0,
+        instructions: options?.instructions, // 🆕
         onFirstChunk: (latency) => {
           this.firstChunkTime = Date.now();
           console.log(`[OpenAIStreamingPlayer] First chunk latency: ${latency}ms`);

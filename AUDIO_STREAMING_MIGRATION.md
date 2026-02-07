@@ -1,11 +1,13 @@
 # Audio Streaming Migration Plan
 ## react-native-audio-api + Jitter Buffer Architecture
 
-> **Status: Phase 2.5 COMPLETED - Sample Rate Fix Applied**
+> **Status: Phase 3 - TESTING SUCCESSFUL - Audio Fixed!** 🎉
 >
-> **Latest Fix (Feb 06, 2026):** Fixed `createBuffer()` call to explicitly pass sampleRate parameter.
+> **Final Fix (Feb 06, 2026):** Standardized entire pipeline on **16000Hz**.
 >
-> **Root Cause:** `AudioContextManager.createBuffer(data)` was called without sampleRate, causing Web Audio API to use device sample rate instead of 44100Hz, resulting in pitch/speed distortion ("monster sound").
+> **Root Cause:** AudioContext was using device sample rate (e.g., 48000Hz) while receiving 44100Hz/16000Hz audio, causing pitch/speed distortion ("monster sound").
+>
+> **Solution:** Force 16000Hz throughout the entire pipeline.
 
 ---
 
@@ -16,13 +18,13 @@ Phase 1: Research & Setup ✅ COMPLETED
 Phase 2: Core Components ✅ COMPLETED
 Phase 2.5: Engine Assembly ✅ COMPLETED
 Phase 2.6: Sample Rate Fix ✅ COMPLETED (Feb 06, 2026)
-Phase 3: Testing 🔄 IN PROGRESS
+Phase 3: Testing ✅ SUCCESS - AUDIO WORKS!
 Phase 4: Migration ⏳ PENDING
 ```
 
 ---
 
-## 🔴 Проблема: "Монстр звук" - ИСПРАВЛЕНО
+## 🎉 ИСПРАВЛЕНО: "Монстр звук" исправлен!
 
 ### Симптомы (до исправления):
 - **Звук звучал как "монстр"** - искажённый, медленный или быстрый
@@ -31,63 +33,104 @@ Phase 4: Migration ⏳ PENDING
 
 ### Корневая причина:
 
-**`CartesiaStreamingPlayer.ts:619`** вызывал `createBuffer()` без параметра sampleRate:
+**Несоответствие sample rate в аудио-конвейере:**
 
-```typescript
-// ❌ WRONG - Uses device sample rate, not 44100Hz
-const buffer = this.audioContext.createBuffer(data);
+1. `AudioContext` создавался с `sampleRate: null` → устройство использовало 48000Hz
+2. Cartesia отправляла аудио на 44100Hz
+3. Web Audio API проигрывал 44100Hz данные как 48000Hz
+4. Результат: аудио игралось на 48000/44100 ≈ 1.09x быстрее с повышенным тоном
 
-// ✅ CORRECT - Explicitly passes sampleRate
-const buffer = this.audioContext.createBuffer(data, this.config.sampleRate);
+### Финальное решение (Feb 06, 2026):
+
+**Стандартизировать весь пайплайн на 16000Hz** (как в старом Expo Audio):
+
 ```
-
-**Почему это вызывало проблему:**
-1. `AudioContextManager.createBuffer(data)` без sampleRate использует `this.context.sampleRate`
-2. Устройство может иметь sample rate 48000Hz, 96000Hz или другой
-3. Данные от Cartesia приходят на 44100Hz
-4. Web Audio API проигрывает 44100Hz данные как будто это 48000Hz
-5. Результат: аудио играет на 48000/44100 ≈ 1.09x быстрее с повышенным тоном ("монстр звук")
+Cartesia API: request 16000Hz ✅
+     ↓
+Int16ToFloat32Converter: 16000Hz ✅
+     ↓
+JitterBuffer: 16000Hz ✅
+     ↓
+AudioContext: force 16000Hz ✅
+     ↓
+🎧 НОРМАЛЬНЫЙ ЗВУК! ✅
+```
 
 ---
 
-## ✅ Исправление (Feb 06, 2026)
-
-### Изменённые файлы:
+## ✅ Изменённые файлы (Feb 06, 2026 - Final Fix)
 
 | Файл | Строка | Изменение |
 |------|--------|-----------|
-| `CartesiaStreamingPlayer.ts` | 619 | Добавлен параметр `this.config.sampleRate` |
-| `TestAudioStreamPage.tsx` | 80 | `sampleRate: 16000` → `44100` |
-| `AudioContextManager.ts` | 51 | `sampleRate: 16000` → `null` (device default) |
-| `AudioContextManager.ts` | 319 | Fallback `16000` → `44100` |
-| `Int16ToFloat32Converter.ts` | 54 | Default `16000` → `44100` |
-| `Int16ToFloat32Converter.ts` | 278 | Function param `16000` → `44100` |
-| `JitterBuffer.ts` | 105 | Default `16000` → `44100` |
-| `JitterBuffer.ts` | 420 | Function param `16000` → `44100` |
+| `cartesia-streaming-service.ts` | 437 | `sample_rate: 44100` → `16000` |
+| `CartesiaStreamingPlayer.ts` | 137 | `sampleRate: 44100` → `16000` |
+| `CartesiaStreamingPlayer.ts` | 143 | `chunkSize: 4096` → `2048` (~128ms @ 16kHz) |
+| `AudioContextManager.ts` | 54 | `sampleRate: null` → `16000` (FORCE) |
+| `AudioContextManager.ts` | 118 | Explicit `sampleRate: 16000` |
+| `AudioContextManager.ts` | 330 | Fallback `44100` → `16000` |
+| `Int16ToFloat32Converter.ts` | 56 | Default `44100` → `16000` |
+| `Int16ToFloat32Converter.ts` | 280 | Param default `44100` → `16000` |
+| `JitterBuffer.ts` | 107 | Default `44100` → `16000` |
+| `JitterBuffer.ts` | 422 | Param default `44100` → `16000` |
+| `TestAudioStreamPage.tsx` | 80 | `sampleRate: 44100` → `16000` |
+| `TestAudioStreamPage.tsx` | 83 | `chunkSize: 320` → `2048` |
 
-### Критическое исправление:
+### Критические изменения:
 
+**1. Cartesia API - Запрос 16000Hz:**
 ```typescript
-// src/services/audio/CartesiaStreamingPlayer.ts:619
-const buffer = this.audioContext.createBuffer(data, this.config.sampleRate);
+// src/services/cartesia-streaming-service.ts:437
+output_format: {
+  container: 'raw',
+  encoding: 'pcm_s16le',
+  sample_rate: 16000,  // Changed from 44100
+}
+```
+
+**2. AudioContext - Force 16000Hz:**
+```typescript
+// src/utils/audio/AudioContextManager.ts:54
+const DEFAULT_CONFIG: AudioContextConfig = {
+  sampleRate: 16000,  // Changed from null - FORCE 16kHz
+  initialGain: 1.0,
+  latencyHint: 'interactive',
+};
+
+// src/utils/audio/AudioContextManager.ts:118
+this.context = new AudioContext({
+  sampleRate: this.config.sampleRate ?? 16000,  // Force 16kHz
+});
+```
+
+**3. Player Config - 16000Hz + increased chunkSize:**
+```typescript
+// src/services/audio/CartesiaStreamingPlayer.ts:137
+const DEFAULT_CONFIG: Required<CartesiaPlayerConfig> = {
+  sampleRate: 16000,        // Changed from 44100
+  preBufferThreshold: 500,
+  maxBufferSize: 5,
+  chunkSize: 2048,          // ~128ms at 16kHz (increased for stability)
+  // ... rest
+};
 ```
 
 ---
 
 ## 🧩 Phase 2: Core Components
 
-### Inventory
+### Inventory (все на 16000Hz)
 
 | Компонент | Файл | Статус |
 |-----------|------|--------|
-| PCM16 Converter | `Int16ToFloat32Converter.ts` | ✅ 44100Hz default |
+| PCM16 Converter | `Int16ToFloat32Converter.ts` | ✅ 16000Hz default |
 | Circular Buffer | `CircularBuffer.ts` | ✅ |
 | FIFO Queue | `FIFOQueue.ts` | ✅ |
-| Jitter Buffer | `JitterBuffer.ts` | ✅ 44100Hz default |
+| Jitter Buffer | `JitterBuffer.ts` | ✅ 16000Hz default |
 | Zero-Crossing | `ZeroCrossingAligner.ts` | ✅ |
-| Audio Context | `AudioContextManager.ts` | ✅ Uses device default |
-| WebSocket | `cartesia-streaming-service.ts` | ✅ Requests 44100Hz |
-| **Streaming Player** | `CartesiaStreamingPlayer.ts` | ✅ FIXED |
+| Audio Context | `AudioContextManager.ts` | ✅ Force 16000Hz |
+| WebSocket | `cartesia-streaming-service.ts` | ✅ Requests 16000Hz |
+| **Streaming Player** | `CartesiaStreamingPlayer.ts` | ✅ 16000Hz |
+| **Test Page** | `TestAudioStreamPage.tsx` | ✅ 16000Hz |
 
 ---
 
@@ -98,19 +141,21 @@ const buffer = this.audioContext.createBuffer(data, this.config.sampleRate);
 │              CartesiaStreamingPlayer                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  WebSocket (Cartesia) → PCM16 chunks (44100Hz)              │
+│  WebSocket (Cartesia) → PCM16 chunks (16000Hz)               │
 │       ↓                                                      │
 │  FIFOQueue (ordering)                                        │
 │       ↓                                                      │
-│  Int16ToFloat32Converter (PCM16 → Float32 @ 44100Hz)         │
+│  Int16ToFloat32Converter (PCM16 → Float32 @ 16000Hz)         │
 │       ↓                                                      │
-│  JitterBuffer (pre-buffer 500ms @ 44100Hz)                   │
+│  JitterBuffer (pre-buffer 500ms @ 16000Hz)                   │
 │       ↓                                                      │
 │  ZeroCrossingAligner (first chunk only)                      │
 │       ↓                                                      │
-│  AudioContextManager.createBuffer(data, 44100)  ← ✅ FIXED!  │
+│  AudioContext (16000Hz FORCED)  ← ✅ FIXED!                  │
 │       ↓                                                      │
-│  🎧 Speakers (НОРМАЛЬНЫЙ ЗВУК)                              │
+│  createBuffer(data, 16000)  ← ✅ EXPLICIT SAMPLE RATE       │
+│       ↓                                                      │
+│  🎧 Speakers (НОРМАЛЬНЫЙ ЗВУК!)                             │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -122,11 +167,11 @@ const buffer = this.audioContext.createBuffer(data, this.config.sampleRate);
 ### CartesiaStreamingPlayer.ts
 ```typescript
 const DEFAULT_CONFIG: Required<CartesiaPlayerConfig> = {
-  sampleRate: 44100,        // ✅ Match Cartesia API
+  sampleRate: 16000,        // ✅ All 16kHz
   preBufferThreshold: 500,  // 500ms pre-buffer
   maxBufferSize: 5,         // 5 seconds max buffer
-  chunkSize: 4096,          // ~93ms at 44.1kHz
-  fifoMaxSize: 500,         // Larger FIFO for stability
+  chunkSize: 2048,          // ~128ms at 16kHz
+  fifoMaxSize: 500,
   processingInterval: 50,   // 20Hz processing
   // ... rest
 };
@@ -137,7 +182,7 @@ const DEFAULT_CONFIG: Required<CartesiaPlayerConfig> = {
 output_format: {
   container: "raw",
   encoding: "pcm_s16le",
-  sample_rate: 44100,  // ✅ Must match player config
+  sample_rate: 16000,  // ✅ Match player config
 }
 ```
 
@@ -151,83 +196,92 @@ output_format: {
 ╔════════════════════════════════════════╗
 ║   CartesiaStreamingPlayer Config        ║
 ╠════════════════════════════════════════╣
-║ sampleRate:           44100             ║  ← All 44100
-║ chunkSize:            4096              ║
+║ sampleRate:           16000             ║  ← All 16kHz
+║ chunkSize:            2048              ║
 ║ preBufferThreshold:   500ms             ║
 ║ processingInterval:   50ms              ║
 ║ fifoMaxSize:          500               ║
 ╚════════════════════════════════════════╝
 
 [AudioContextManager] Initialized:
-[AudioContextManager]   Requested sampleRate: null
-[AudioContextManager]   Actual sampleRate: 48000Hz  ← Device may differ
-[AudioContextManager]   State: running
+[AudioContextManager]   Requested sampleRate: 16000
+[AudioContextManager]   Actual sampleRate: 16000Hz  ← Must match!
 
-[AudioContextManager] createBuffer: 4096 samples @ 44100Hz (92.9ms)  ← Explicit 44100!
-[Int16ToFloat32Converter] Convert: ... @ 44100Hz
+[Cartesia WS] Request: sample_rate: 16000
 ```
 
-**Ключевой момент:** `createBuffer` использует 44100Hz явно, даже если device sample rate = 48000Hz.
+**Ключевой момент:** Всё на 16000Hz - AudioContext, Cartesia API, конвертер.
 
 ---
 
 ## 📝 История изменений
 
-### Feb 06, 2026 - Sample Rate Fix (УСПЕШНЫЙ)
-1. ✅ Исправлен `createBuffer()` - добавлен явный параметр sampleRate
-2. ✅ Все defaults обновлены до 44100Hz
-3. ✅ TestAudioStreamPage обновлён
+### Feb 06, 2026 - 16000Hz Standardization (УСПЕШНЫЙ!) ✅
+1. ✅ Cartesia API: `sample_rate: 16000`
+2. ✅ AudioContext: Force `sampleRate: 16000`
+3. ✅ Все defaults обновлены до 16000Hz
+4. ✅ chunkSize увеличен до 2048 для стабильности
+5. ✅ TestAudioStreamPage обновлён
+6. ✅ **ТЕСТ ПРОЙДЕН - ЗВУК НОРМАЛЬНЫЙ!**
 
-### Feb 06, 2026 - Предыдущие неудачные попытки:
+### Feb 06, 2026 - Предыдущие попытки:
 | Попытка | Изменение | Результат |
 |---------|-----------|-----------|
 | #1 | `chunkSize: 320` → `4096` | ❌ Не помогло |
 | #2 | `sampleRate: 16000` → `44100` (partial) | ❌ Не помогло |
 | #3 | `preBufferThreshold: 300` → `500` | ❌ Не помогло |
 | #4 | `processingInterval: 20` → `50` | ❌ Не помогло |
-| #5 | `fifoMaxSize: 100` → `500` | ❌ Не помогло |
+| #5 | `createBuffer(data, sampleRate)` | ❌ Не помогло |
+| **#6 FINAL** | **ALL 16000Hz** | **✅ РАБОТАЕТ!** |
 
-**Причина неудач:** Проблема была в `createBuffer()`, а не в этих параметрах.
+**Причина успеха:** 16000Hz работает лучше с react-native-audio-api, чем 44100Hz.
 
 ---
 
 ## ✅ Что работает
 
 1. **WebSocket connection** - стабильно подключается к Cartesia
-2. **Chunk receiving** - все чанки приходят корректно на 44100Hz
+2. **Chunk receiving** - все чанки приходят корректно на 16000Hz
 3. **State machine** - состояния переходят правильно
 4. **Metrics** - вся статистика собирается
 5. **Test UI** - `TestAudioStreamPage.tsx` работает
-6. **Audio playback** - ✅ Теперь должен играть на правильной скорости/тоне
+6. **Audio playback** - ✅ ЗВУК НОРМАЛЬНЫЙ!
 
 ---
 
 ## 🎯 Next Steps
 
-1. [ ] **ТЕСТ** - Запустить TestAudioStreamPage и проверить звук
-2. [ ] Если звук нормальный - интегрировать в VoiceInterviewScreen
-3. [ ] Если звук всё ещё искажён - добавить больше диагностики
+1. [x] **ТЕСТ** - Запустить TestAudioStreamPage и проверить звук ✅
+2. [ ] Интегрировать в VoiceInterviewScreen
+3. [ ] Удалить/деактивировать старый Expo Audio плеер
+4. [ ] Тестирование на реальных устройствах
 
-### Если после исправления звук всё ещё плохой:
+### Интеграция в VoiceInterviewScreen:
 
 ```typescript
-// 1. Проверить что Cartesia действительно отправляет 44100Hz
-// Добавить лог в cartesia-streaming-service.ts
+// Заменить импорт
+import { getCartesiaStreamingPlayer } from './services/audio/CartesiaStreamingPlayer';
 
-// 2. Проверить что данные не повреждаются при конвертации
-// Добавить лог до/после Int16ToFloat32Converter
+// Инициализация
+const player = getCartesiaStreamingPlayer({
+  sampleRate: 16000,
+  preBufferThreshold: 500,
+  maxBufferSize: 5,
+  chunkSize: 2048,
+});
 
-// 3. Записать сырые PCM данные в файл для анализа в Audacity
+// Использование
+await player.speak(text, { emotion, speed });
 ```
 
 ---
 
-**Status:** ✅ Sample Rate Fix Applied
-**Priority:** 🟡 TESTING - Нужно проверить что звук нормальный
+**Status:** ✅ TESTING SUCCESSFUL
+**Priority:** 🟢 READY FOR INTEGRATION
 **Last Fix:** Feb 06, 2026
-**Change:** Added explicit sampleRate parameter to createBuffer()
+**Change:** Standardized entire pipeline on 16000Hz
 
 ---
 
 *Last Updated: Feb 06, 2026*
-*Version: 4.0 (Sample Rate Fix Edition)*
+*Version: 5.0 (16000Hz Standard Edition - WORKING!)*

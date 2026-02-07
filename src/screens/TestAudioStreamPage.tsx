@@ -19,10 +19,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 // Import the new Cartesia Streaming Player
 import {
   CartesiaStreamingPlayer,
-  PlayerState,
-  PlayerMetrics,
+  PlayerState as CartesiaPlayerState,
+  PlayerMetrics as CartesiaPlayerMetrics,
   getCartesiaStreamingPlayer,
 } from '../services/audio/CartesiaStreamingPlayer';
+
+// Import the new Deepgram Streaming Player
+import {
+  DeepgramStreamingPlayer,
+  PlayerState as DeepgramPlayerState,
+  PlayerMetrics as DeepgramPlayerMetrics,
+  getDeepgramStreamingPlayer,
+} from '../services/audio/DeepgramStreamingPlayer';
 
 // Log entry
 interface LogEntry {
@@ -31,6 +39,12 @@ interface LogEntry {
   message: string;
   type: 'info' | 'success' | 'warning' | 'error';
 }
+
+// TTS Provider type
+type TTSProvider = 'cartesia' | 'deepgram';
+
+// Unified state type (both players have the same states)
+type PlayerState = 'idle' | 'connecting' | 'buffering' | 'playing' | 'paused' | 'stopped' | 'done' | 'error';
 
 // Test texts
 const TEST_TEXTS = {
@@ -48,14 +62,15 @@ const TEST_TEXTS = {
  * Test Audio Stream Page Component
  */
 export const TestAudioStreamPage: React.FC = () => {
-  // Player instance
-  const playerRef = useRef<CartesiaStreamingPlayer | null>(null);
+  // Player instance - using union type since both players have similar interfaces
+  const playerRef = useRef<CartesiaStreamingPlayer | DeepgramStreamingPlayer | null>(null);
 
   // State
-  const [playerState, setPlayerState] = useState<PlayerState>(PlayerState.IDLE);
-  const [metrics, setMetrics] = useState<PlayerMetrics | null>(null);
+  const [playerState, setPlayerState] = useState<PlayerState>('idle');
+  const [metrics, setMetrics] = useState<CartesiaPlayerMetrics | DeepgramPlayerMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState<keyof typeof TEST_TEXTS>('medium');
+  const [ttsProvider, setTtsProvider] = useState<TTSProvider>('cartesia');
 
   // Volume
   const [volume, setVolume] = useState(100);
@@ -73,17 +88,37 @@ export const TestAudioStreamPage: React.FC = () => {
   }, []);
 
   /**
-   * Initialize player
+   * Initialize player (re-create when provider changes)
    */
   useEffect(() => {
-    const player = getCartesiaStreamingPlayer({
-      sampleRate: 16000,  // Match Cartesia API (cartesia-streaming-service.ts:437)
-      preBufferThreshold: 300,
-      maxBufferSize: 5,
-      chunkSize: 2048,
-    });
+    // Stop previous player
+    if (playerRef.current) {
+      playerRef.current.stop();
+    }
+
+    // Create new player based on selected provider
+    const player = ttsProvider === 'cartesia'
+      ? getCartesiaStreamingPlayer({
+          sampleRate: 16000,
+          preBufferThreshold: 500,
+          maxBufferSize: 5,
+          chunkSize: 2048,
+        })
+      : getDeepgramStreamingPlayer({
+          sampleRate: 16000,
+          preBufferThreshold: 500,
+          maxBufferSize: 5,
+          chunkSize: 2048,
+        });
 
     playerRef.current = player;
+
+    // Reset state
+    setPlayerState('idle');
+    setMetrics(null);
+    setError(null);
+
+    addLog('UI', `Switched to ${ttsProvider === 'cartesia' ? 'Cartesia' : 'Deepgram'} provider`, 'info');
 
     // Subscribe to events
     const unsubscribeEvents: Array<() => void> = [];
@@ -94,32 +129,32 @@ export const TestAudioStreamPage: React.FC = () => {
     };
 
     setupListener('connecting', (data) => {
-      setPlayerState(PlayerState.CONNECTING);
-      addLog('Player', `Connecting to Cartesia...`, 'info');
+      setPlayerState('connecting');
+      addLog('Player', `Connecting to ${ttsProvider}...`, 'info');
     });
 
     setupListener('connected', (data) => {
-      setPlayerState(PlayerState.BUFFERING);
+      setPlayerState('buffering');
       addLog('Player', `Connected - buffering...`, 'success');
     });
 
     setupListener('playing', (data) => {
-      setPlayerState(PlayerState.PLAYING);
+      setPlayerState('playing');
       addLog('Player', `Playback started!`, 'success');
     });
 
     setupListener('paused', (data) => {
-      setPlayerState(PlayerState.PAUSED);
+      setPlayerState('paused');
       addLog('Player', `Paused`, 'info');
     });
 
     setupListener('stopped', (data) => {
-      setPlayerState(PlayerState.STOPPED);
+      setPlayerState('stopped');
       addLog('Player', `Stopped`, 'warning');
     });
 
     setupListener('done', (data) => {
-      setPlayerState(PlayerState.DONE);
+      setPlayerState('done');
       addLog('Player', `Playback complete!`, 'success');
     });
 
@@ -128,7 +163,7 @@ export const TestAudioStreamPage: React.FC = () => {
     });
 
     setupListener('error', (data) => {
-      setPlayerState(PlayerState.ERROR);
+      setPlayerState('error');
       setError(data.error);
       addLog('Player', `Error: ${data.error}`, 'error');
     });
@@ -140,7 +175,7 @@ export const TestAudioStreamPage: React.FC = () => {
     return () => {
       unsubscribeEvents.forEach(fn => fn());
     };
-  }, [addLog]);
+  }, [ttsProvider, addLog]);
 
   /**
    * Auto-scroll logs
@@ -158,19 +193,25 @@ export const TestAudioStreamPage: React.FC = () => {
     if (!playerRef.current) return;
 
     setError(null);
-    addLog('UI', `Starting playback (${selectedText} text)...`, 'info');
+    addLog('UI', `Starting playback (${selectedText} text, ${ttsProvider} provider)...`, 'info');
 
     try {
-      await playerRef.current.speak(TEST_TEXTS[selectedText], {
-        emotion: ['positivity:high'],
-        speed: 'normal',
-      });
+      if (ttsProvider === 'cartesia') {
+        await (playerRef.current as CartesiaStreamingPlayer).speak(TEST_TEXTS[selectedText], {
+          emotion: ['positivity:high'],
+          speed: 'normal',
+        });
+      } else {
+        await (playerRef.current as DeepgramStreamingPlayer).speak(TEST_TEXTS[selectedText], {
+          voiceId: 'aura-2-thalia-en',
+        });
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Playback failed';
       setError(errorMsg);
       addLog('Error', errorMsg, 'error');
     }
-  }, [selectedText, addLog]);
+  }, [selectedText, ttsProvider, addLog]);
 
   /**
    * Stop playback
@@ -188,9 +229,9 @@ export const TestAudioStreamPage: React.FC = () => {
   const handlePauseResume = useCallback(() => {
     if (!playerRef.current) return;
 
-    if (playerState === PlayerState.PLAYING) {
+    if (playerState === 'playing') {
       playerRef.current.pause();
-    } else if (playerState === PlayerState.PAUSED) {
+    } else if (playerState === 'paused') {
       playerRef.current.resume();
     }
   }, [playerState]);
@@ -227,19 +268,19 @@ export const TestAudioStreamPage: React.FC = () => {
    */
   const renderStateBadge = () => {
     const colors: Record<PlayerState, string> = {
-      [PlayerState.IDLE]: '#9CA3AF',
-      [PlayerState.CONNECTING]: '#F59E0B',
-      [PlayerState.BUFFERING]: '#3B82F6',
-      [PlayerState.PLAYING]: '#10B981',
-      [PlayerState.PAUSED]: '#8B5CF6',
-      [PlayerState.STOPPED]: '#6B7280',
-      [PlayerState.DONE]: '#059669',
-      [PlayerState.ERROR]: '#EF4444',
+      'idle': '#9CA3AF',
+      'connecting': '#F59E0B',
+      'buffering': '#3B82F6',
+      'playing': '#10B981',
+      'paused': '#8B5CF6',
+      'stopped': '#6B7280',
+      'done': '#059669',
+      'error': '#EF4444',
     };
 
     return (
       <View style={[styles.stateBadge, { backgroundColor: colors[playerState] }]}>
-        {playerState === PlayerState.CONNECTING && <ActivityIndicator size="small" color="white" />}
+        {playerState === 'connecting' && <ActivityIndicator size="small" color="white" />}
         <Text style={styles.stateText}>{playerState.toUpperCase()}</Text>
       </View>
     );
@@ -282,8 +323,50 @@ export const TestAudioStreamPage: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Cartesia Stream Test</Text>
+        <Text style={styles.title}>Audio Stream Test</Text>
         {renderStateBadge()}
+      </View>
+
+      {/* TTS Provider Selection */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>TTS Provider</Text>
+        <View style={styles.providerSelector}>
+          <TouchableOpacity
+            style={[
+              styles.providerButton,
+              ttsProvider === 'cartesia' && styles.providerButtonActive,
+              ttsProvider === 'cartesia' && { backgroundColor: '#10B981', borderColor: '#10B981' },
+            ]}
+            onPress={() => setTtsProvider('cartesia')}>
+            <Text
+              style={[
+                styles.providerButtonText,
+                ttsProvider === 'cartesia' && styles.providerButtonTextActive,
+              ]}>
+              Cartesia
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.providerButton,
+              ttsProvider === 'deepgram' && styles.providerButtonActive,
+              ttsProvider === 'deepgram' && { backgroundColor: '#3B82F6', borderColor: '#3B82F6' },
+            ]}
+            onPress={() => setTtsProvider('deepgram')}>
+            <Text
+              style={[
+                styles.providerButtonText,
+                ttsProvider === 'deepgram' && styles.providerButtonTextActive,
+              ]}>
+              Deepgram
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.textPreview}>
+          {ttsProvider === 'cartesia'
+            ? 'Cartesia Sonic API - WebSocket streaming with emotion support'
+            : 'Deepgram Aura API - WebSocket streaming with natural voices'}
+        </Text>
       </View>
 
       {/* Text Selection */}
@@ -320,10 +403,10 @@ export const TestAudioStreamPage: React.FC = () => {
           <TouchableOpacity
             style={[styles.button, styles.startButton]}
             onPress={handleStart}
-            disabled={playerState === PlayerState.PLAYING || playerState === PlayerState.CONNECTING || playerState === PlayerState.BUFFERING}>
+            disabled={playerState === 'playing' || playerState === 'connecting' || playerState === 'buffering'}>
             <Text style={styles.buttonText}>
-              {playerState === PlayerState.CONNECTING ? 'Connecting...' :
-               playerState === PlayerState.BUFFERING ? 'Buffering...' :
+              {playerState === 'connecting' ? 'Connecting...' :
+               playerState === 'buffering' ? 'Buffering...' :
                '▶ Play'}
             </Text>
           </TouchableOpacity>
@@ -331,16 +414,16 @@ export const TestAudioStreamPage: React.FC = () => {
           <TouchableOpacity
             style={[styles.button, styles.pauseButton]}
             onPress={handlePauseResume}
-            disabled={playerState !== PlayerState.PLAYING && playerState !== PlayerState.PAUSED}>
+            disabled={playerState !== 'playing' && playerState !== 'paused'}>
             <Text style={styles.buttonText}>
-              {playerState === PlayerState.PAUSED ? '▶ Resume' : '⏸ Pause'}
+              {playerState === 'paused' ? '▶ Resume' : '⏸ Pause'}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.button, styles.stopButton]}
             onPress={handleStop}
-            disabled={playerState === PlayerState.IDLE || playerState === PlayerState.STOPPED}>
+            disabled={playerState === 'idle' || playerState === 'stopped'}>
             <Text style={styles.buttonText}>⏹ Stop</Text>
           </TouchableOpacity>
         </View>
@@ -474,6 +557,32 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#F9FAFB',
     marginBottom: 12,
+  },
+  providerSelector: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  providerButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#1F2937',
+    borderWidth: 1,
+    borderColor: '#374151',
+    alignItems: 'center',
+  },
+  providerButtonActive: {
+    backgroundColor: '#3B82F6',
+    borderColor: '#3B82F6',
+  },
+  providerButtonText: {
+    color: '#9CA3AF',
+    fontWeight: '500',
+  },
+  providerButtonTextActive: {
+    color: '#FFFFFF',
   },
   textSelector: {
     flexDirection: 'row',

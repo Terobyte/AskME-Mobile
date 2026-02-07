@@ -1,6 +1,6 @@
 /**
  * Streaming TTS Configuration
- * 
+ *
  * Centralizes all environment variables and configuration for WebSocket streaming.
  * Based on PoC results and production requirements.
  */
@@ -31,6 +31,27 @@ export const STREAMING_CONFIG = {
 } as const;
 
 /**
+ * Deepgram Streaming Configuration
+ */
+export const DEEPGRAM_CONFIG = {
+    // WebSocket URL (includes encoding and sample rate)
+    wsUrl: 'wss://api.deepgram.com/v1/speak',
+    defaultModel: 'aura-2-thalia-en',
+    defaultEncoding: 'linear16' as const,
+    defaultSampleRate: 16000,
+
+    // Buffer configuration (same as Cartesia for consistency)
+    preBufferThreshold: 500,  // 500ms pre-buffer (in milliseconds)
+    maxBufferSize: 5,         // 5 seconds max buffer
+    chunkSize: 2048,          // ~128ms at 16kHz
+
+    // Connection management
+    pingIntervalMs: 30000,
+    maxRetries: 3,
+    reconnectBackoffMs: 1000,
+} as const;
+
+/**
  * Validate configuration on load
  */
 function validateConfig() {
@@ -41,7 +62,7 @@ function validateConfig() {
         return;
     }
 
-    // Check API key
+    // Check Cartesia API key
     if (!process.env.EXPO_PUBLIC_CARTESIA_API_KEY) {
         console.warn('⚠️ [Streaming Config] EXPO_PUBLIC_CARTESIA_API_KEY not set');
     }
@@ -64,11 +85,17 @@ function validateConfig() {
         console.error(`❌ [Streaming Config] Invalid strategy: ${strategy} (must be 'chunked' or 'hybrid')`);
     }
 
+    // Check Deepgram API key
+    if (!process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY) {
+        console.warn('⚠️ [Streaming Config] EXPO_PUBLIC_DEEPGRAM_API_KEY not set');
+    }
+
     console.log('✅ [Streaming Config] Configuration validated:', {
         enabled,
         strategy,
         minBufferMs,
         targetBufferMs,
+        deepgramSupported: !!process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY,
     });
 }
 

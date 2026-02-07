@@ -18,7 +18,7 @@ import { ResultsModal } from '../components/interview/ResultsModal';
 import { HistoryPanel } from '../components/history/HistoryPanel';
 import * as historyStorage from '../services/history-storage';
 import TTSService from '../services/tts-service';
-import { TTSProvider, OpenAIVoice } from '../types';
+import { TTSProvider, OpenAIVoice, DeepgramVoice } from '../types';
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android') {
@@ -69,6 +69,7 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
     // TTS Provider State
     const [ttsProvider, setTtsProviderState] = useState<TTSProvider>('cartesia');
     const [openaiVoice, setOpenaiVoice] = useState<OpenAIVoice>('nova');
+    const [deepgramVoice, setDeepgramVoice] = useState<DeepgramVoice>('aura-2-thalia-en');
 
     // Live Bubble State
     const [liveTranscript, setLiveTranscript] = useState("");
@@ -245,6 +246,13 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
     const handleOpenaiVoiceChange = async (voice: OpenAIVoice) => {
         setOpenaiVoice(voice);
         TTSService.setOpenaiVoice(voice);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    };
+
+    // Handle Deepgram voice change
+    const handleDeepgramVoiceChange = async (voice: DeepgramVoice) => {
+        setDeepgramVoice(voice);
+        TTSService.setDeepgramVoice(voice);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     };
 
@@ -557,10 +565,12 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
                                     <Slider
                                         style={{ width: '100%', height: 40 }}
                                         minimumValue={0}
-                                        maximumValue={1}
+                                        maximumValue={2}
                                         step={1}
-                                        value={ttsProvider === 'cartesia' ? 0 : 1}
-                                        onValueChange={(value) => handleTtsProviderChange(value === 0 ? 'cartesia' : 'openai')}
+                                        value={ttsProvider === 'cartesia' ? 0 : ttsProvider === 'openai' ? 1 : 2}
+                                        onValueChange={(value) => handleTtsProviderChange(
+                                            value === 0 ? 'cartesia' : value === 1 ? 'openai' : 'deepgram'
+                                        )}
                                         minimumTrackTintColor="#000"
                                         maximumTrackTintColor="#E0E0E0"
                                         thumbTintColor="#000"
@@ -568,6 +578,7 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
                                     <View style={styles.providerLabels}>
                                         <Text style={[styles.providerLabel, ttsProvider === 'cartesia' && styles.providerLabelActive]}>Cartesia</Text>
                                         <Text style={[styles.providerLabel, ttsProvider === 'openai' && styles.providerLabelActive]}>OpenAI</Text>
+                                        <Text style={[styles.providerLabel, ttsProvider === 'deepgram' && styles.providerLabelActive]}>Deepgram</Text>
                                     </View>
                                 </View>
 
@@ -597,6 +608,46 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
                                                     ]}>
                                                         {voice.label}
                                                     </Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    </View>
+                                )}
+
+                                {ttsProvider === 'deepgram' && (
+                                    <View style={styles.deepgramVoicesContainer}>
+                                        <Text style={styles.sectionSubtitle}>Deepgram Aura Voice</Text>
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                            {[
+                                                { id: 'aura-2-thalia-en' as DeepgramVoice, label: 'Thalia (F)', description: 'Energetic' },
+                                                { id: 'aura-2-athena-en' as DeepgramVoice, label: 'Athena (F)', description: 'Calm' },
+                                                { id: 'aura-2-hermes-en' as DeepgramVoice, label: 'Hermes (M)', description: 'Expressive' },
+                                                { id: 'aura-2-orion-en' as DeepgramVoice, label: 'Orion (M)', description: 'Approachable' },
+                                                { id: 'aura-2-luna-en' as DeepgramVoice, label: 'Luna (F)', description: 'Friendly' },
+                                                { id: 'aura-2-arcas-en' as DeepgramVoice, label: 'Arcas (M)', description: 'Smooth' },
+                                            ].map(voice => (
+                                                <TouchableOpacity
+                                                    key={voice.id}
+                                                    style={[
+                                                        styles.voiceChip,
+                                                        deepgramVoice === voice.id && styles.voiceChipActive
+                                                    ]}
+                                                    onPress={() => handleDeepgramVoiceChange(voice.id)}
+                                                >
+                                                    <View style={{ alignItems: 'center' }}>
+                                                        <Text style={[
+                                                            styles.voiceChipText,
+                                                            deepgramVoice === voice.id && styles.voiceChipTextActive
+                                                        ]}>
+                                                            {voice.label}
+                                                        </Text>
+                                                        <Text style={[
+                                                            styles.voiceChipDescription,
+                                                            deepgramVoice === voice.id && styles.voiceChipTextActive
+                                                        ]}>
+                                                            {voice.description}
+                                                        </Text>
+                                                    </View>
                                                 </TouchableOpacity>
                                             ))}
                                         </ScrollView>
@@ -1004,6 +1055,10 @@ const styles = StyleSheet.create({
         marginTop: 12,
         marginBottom: 20,
     },
+    deepgramVoicesContainer: {
+        marginTop: 12,
+        marginBottom: 20,
+    },
     sectionSubtitle: {
         fontSize: 13,
         fontWeight: '600',
@@ -1018,6 +1073,7 @@ const styles = StyleSheet.create({
         marginRight: 8,
         borderWidth: 1,
         borderColor: 'transparent',
+        minWidth: 70,
     },
     voiceChipActive: {
         backgroundColor: '#000',
@@ -1030,6 +1086,12 @@ const styles = StyleSheet.create({
     },
     voiceChipTextActive: {
         color: '#FFF',
+    },
+    voiceChipDescription: {
+        fontSize: 10,
+        fontWeight: '400',
+        color: '#999',
+        marginTop: 2,
     },
     // NEW: Muted banner styles
     mutedBanner: {

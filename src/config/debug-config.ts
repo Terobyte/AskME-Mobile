@@ -14,6 +14,9 @@ export const DEBUG_CONFIG = {
   /** Cartesia WebSocket connection logs */
   CARTESIA: false,
 
+  /** Deepgram WebSocket connection logs */
+  DEEPGRAM: true,
+
   /** Gap detection between chunks (CRITICAL for audio artifacts) */
   GAP_DETECT: true,
 

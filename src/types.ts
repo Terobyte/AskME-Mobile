@@ -286,7 +286,7 @@ export interface CartesiaTTSRequest {
 /**
  * TTSProvider: Text-to-Speech provider selection
  */
-export type TTSProvider = 'cartesia' | 'openai';
+export type TTSProvider = 'cartesia' | 'openai' | 'deepgram';
 
 /**
  * OpenAIVoice: Available voices for OpenAI TTS
@@ -298,6 +298,18 @@ export type OpenAIVoice =
   | 'onyx'    // Мужской, глубокий
   | 'nova'    // Женский, дружелюбный
   | 'shimmer'; // Женский, мягкий
+
+/**
+ * DeepgramVoice: Available Aura voices for Deepgram TTS
+ * Reference: https://developers.deepgram.com/docs/tts-models
+ */
+export type DeepgramVoice =
+  | 'aura-2-thalia-en'    // Energetic, Enthusiastic (F)
+  | 'aura-2-athena-en'    // Calm, Professional (F)
+  | 'aura-2-hermes-en'    // Expressive, Knowledgeable (M)
+  | 'aura-2-orion-en'     // Approachable, Calm (M)
+  | 'aura-2-luna-en'      // Friendly, Engaging (F)
+  | 'aura-2-arcas-en';    // Natural, Smooth (M)
 
 // ============================================
 // PDF RESUME SUPPORT TYPES
@@ -416,6 +428,26 @@ export type CartesiaMessage =
   | CartesiaTimestampsMessage
   | CartesiaDoneMessage
   | CartesiaErrorMessage;
+
+// ============================================
+// DEEPGRAM TTS TYPES
+// ============================================
+
+/**
+ * Deepgram streaming options
+ */
+export interface DeepgramStreamingOptions {
+  voiceId: DeepgramVoice;
+  text: string;
+  encoding?: 'linear16' | 'mulaw' | 'opus';
+  sampleRate?: number;
+
+  // Callbacks
+  onChunk?: (chunk: AudioChunk) => void;
+  onComplete?: () => void;
+  onError?: (error: Error) => void;
+  onFirstChunk?: (latency: number) => void;
+}
 
 /**
  * StreamingPlayerState: Current state of the streaming audio player

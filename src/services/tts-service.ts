@@ -1,10 +1,11 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
-import { TTSProvider, OpenAIVoice, WordTimestamp } from '../types';  // PHASE 2: Added WordTimestamp
+import { TTSProvider, OpenAIVoice, DeepgramVoice, WordTimestamp } from '../types';  // PHASE 2: Added WordTimestamp
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { cartesiaStreamingService } from './cartesia-streaming-service';
 import { chunkedStreamingPlayer } from './streaming-audio-player';
 import { getCartesiaStreamingPlayer } from './audio/CartesiaStreamingPlayer';
+import { getDeepgramStreamingPlayer } from './audio/DeepgramStreamingPlayer';
 
 /**
  * Text-to-Speech Service supporting Cartesia and OpenAI APIs
@@ -24,6 +25,7 @@ class TTSService {
   // NEW: TTS Provider selection
   private ttsProvider: TTSProvider = 'cartesia';
   private openaiVoice: OpenAIVoice = 'nova';
+  private deepgramVoice: DeepgramVoice = 'aura-2-thalia-en';
   private openaiApiKey?: string;
 
   // NEW: Streaming state
@@ -121,6 +123,22 @@ class TTSService {
     return this.openaiVoice;
   }
 
+  /**
+   * Set Deepgram voice
+   */
+  setDeepgramVoice(voice: DeepgramVoice): void {
+    console.log(`🎙️ [TTS] Deepgram voice changed: ${this.deepgramVoice} → ${voice}`);
+    this.deepgramVoice = voice;
+    this.saveSettings();
+  }
+
+  /**
+   * Get current Deepgram voice
+   */
+  getDeepgramVoice(): DeepgramVoice {
+    return this.deepgramVoice;
+  }
+
   // ========================
   // SETTINGS PERSISTENCE
   // ========================
@@ -136,8 +154,9 @@ class TTSService {
       if (settings) {
         const parsed = JSON.parse(settings);
         this.ttsProvider = parsed.provider || 'cartesia';
-        this.openaiVoice = parsed.voice || 'nova';
-        console.log(`✅ [TTS] Settings loaded: ${this.ttsProvider}/${this.openaiVoice}`);
+        this.openaiVoice = parsed.openaiVoice || 'nova';
+        this.deepgramVoice = parsed.deepgramVoice || 'aura-2-thalia-en';
+        console.log(`✅ [TTS] Settings loaded: ${this.ttsProvider}/${this.openaiVoice}/${this.deepgramVoice}`);
       }
     } catch (error) {
       console.warn('⚠️ [TTS] Failed to load settings:', error);
@@ -152,7 +171,8 @@ class TTSService {
       const AsyncStorage = await import('@react-native-async-storage/async-storage');
       await AsyncStorage.default.setItem('tts_settings', JSON.stringify({
         provider: this.ttsProvider,
-        voice: this.openaiVoice,
+        openaiVoice: this.openaiVoice,
+        deepgramVoice: this.deepgramVoice,
       }));
       console.log('✅ [TTS] Settings saved');
     } catch (error) {
@@ -162,8 +182,8 @@ class TTSService {
 
   /**
    * Generate speech from text using selected provider
-   * 
-   * NEW: Automatically uses streaming for Cartesia if enabled (STREAMING_CONFIG.enabled)
+   *
+   * NEW: Automatically uses streaming for Cartesia and Deepgram if enabled
    * Falls back to REST API on streaming errors
    */
   async speak(
@@ -184,12 +204,15 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Speaking: "${text.substring(0, 50)}..."`);
 
-      // NEW: Try streaming first if enabled and using Cartesia
-      if (STREAMING_CONFIG.enabled && this.ttsProvider === 'cartesia') {
-        console.log('🌊 [TTS] Attempting streaming playback...');
+      // NEW: Try streaming first if enabled and using Cartesia or Deepgram
+      if (STREAMING_CONFIG.enabled && (this.ttsProvider === 'cartesia' || this.ttsProvider === 'deepgram')) {
+        console.log(`🌊 [TTS] Attempting streaming playback (${this.ttsProvider})...`);
 
         try {
-          const success = await this.speakCartesiaStreaming(text, options);
+          const success = this.ttsProvider === 'cartesia'
+            ? await this.speakCartesiaStreaming(text, options)
+            : await this.speakDeepgramStreaming(text, options);
+
           if (success) {
             console.log('✅ [TTS] Streaming playback successful');
             return true;
@@ -237,6 +260,9 @@ class TTSService {
       if (this.ttsProvider === 'openai') {
         console.log(`🎙️ [TTS] Using OpenAI TTS provider`);
         return await this.fetchOpenAIAudioFile(text, options);
+      } else if (this.ttsProvider === 'deepgram') {
+        console.log(`🎙️ [TTS] Using Deepgram TTS provider`);
+        return await this.fetchDeepgramAudioFile(text, options);
       } else {
         console.log(`🎙️ [TTS] Using Cartesia TTS provider`);
         return await this.fetchCartesiaAudioFile(text, options);
@@ -317,6 +343,121 @@ class TTSService {
       console.error('❌ [TTS] OpenAI TTS error:', error);
       return null;
     }
+  }
+
+  // ========================
+  // DEEPGRAM TTS METHODS
+  // ========================
+
+  /**
+   * Fetch audio file from Deepgram API (REST fallback)
+   */
+  private async fetchDeepgramAudioFile(
+    text: string,
+    options?: {
+      emotion?: string;
+      speed?: number;
+      emotionLevel?: string[];
+    }
+  ): Promise<string | null> {
+    try {
+      const API_KEY = process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY;
+
+      if (!API_KEY) {
+        console.error('❌ [TTS] Deepgram API key not configured');
+        return null;
+      }
+
+      console.log(`🎙️ [TTS] Deepgram TTS request...`);
+      console.log(`🎙️ [TTS] Text: "${text.substring(0, 50)}..."`);
+      console.log(`🎙️ [TTS] Voice: ${this.deepgramVoice}`);
+
+      // Deepgram REST API for TTS
+      const response = await fetch(`https://api.deepgram.com/v1/speak?model=${this.deepgramVoice}&encoding=linear16&sample_rate=16000`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: text,
+        }),
+      });
+
+      console.log(`📥 [TTS] Deepgram Response status: ${response.status}`);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ [TTS] Deepgram API Error:`, errorText);
+        return null;
+      }
+
+      // Get audio data (PCM16 linear16)
+      const arrayBuffer = await response.arrayBuffer();
+      console.log(`✅ [TTS] Deepgram Audio received: ${arrayBuffer.byteLength} bytes`);
+
+      // Convert PCM16 to WAV format for playback
+      const wavBuffer = this.pcm16ToWav(arrayBuffer, 16000);
+
+      // Save to file
+      const filename = `deepgram_speech_${Date.now()}.wav`;
+      const filepath = `${FileSystem.cacheDirectory}${filename}`;
+
+      const base64Audio = this.arrayBufferToBase64(wavBuffer);
+      await FileSystem.writeAsStringAsync(filepath, base64Audio, {
+        encoding: 'base64',
+      });
+
+      console.log(`💾 [TTS] Deepgram Audio saved: ${filepath}`);
+      return filepath;
+
+    } catch (error) {
+      console.error('❌ [TTS] Deepgram TTS error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Convert PCM16 data to WAV format
+   */
+  private pcm16ToWav(pcm16Data: ArrayBuffer, sampleRate: number): ArrayBuffer {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+    const blockAlign = numChannels * bitsPerSample / 8;
+    const dataSize = pcm16Data.byteLength;
+    const bufferSize = 44 + dataSize;
+
+    const wavBuffer = new ArrayBuffer(bufferSize);
+    const view = new DataView(wavBuffer);
+
+    // WAV header
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, bufferSize - 8, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true); // Subchunk1Size
+    view.setUint16(20, 1, true); // AudioFormat (PCM)
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    // Copy PCM data
+    const pcmView = new Uint8Array(pcm16Data);
+    const wavView = new Uint8Array(wavBuffer);
+    wavView.set(pcmView, 44);
+
+    return wavBuffer;
   }
 
   // ========================
@@ -529,6 +670,57 @@ class TTSService {
   }
 
   /**
+   * Speak using Deepgram WebSocket streaming
+   *
+   * Uses react-native-audio-api DeepgramStreamingPlayer
+   * TRUE streaming - plays chunks as they arrive
+   */
+  private async speakDeepgramStreaming(
+    text: string,
+    options?: {
+      emotion?: string;
+      speed?: number;
+      emotionLevel?: string[];
+      autoPlay?: boolean;
+    }
+  ): Promise<boolean> {
+    try {
+      console.log('🌊 [TTS Streaming] Starting Deepgram streaming engine (react-native-audio-api)...');
+
+      const DEEPGRAM_API_KEY = process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY;
+      if (!DEEPGRAM_API_KEY) {
+        throw new Error('EXPO_PUBLIC_DEEPGRAM_API_KEY not configured');
+      }
+
+      // Get the Deepgram streaming player
+      const player = getDeepgramStreamingPlayer();
+
+      // Stop any previous playback
+      if (player.isCurrentlyPlaying() || player.isCurrentlyStreaming()) {
+        console.log('🛑 [TTS Streaming] Stopping previous Deepgram stream...');
+        player.stop();
+      }
+
+      console.log('🎙️ [TTS Streaming] Options:', {
+        voiceId: this.deepgramVoice,
+        textLength: text.length
+      });
+
+      // Use Deepgram player (uses Sec-WebSocket-Protocol for authentication)
+      await player.speak(text, {
+        voiceId: this.deepgramVoice,
+      });
+
+      console.log('✅ [TTS Streaming] Deepgram playback complete');
+      return true;
+
+    } catch (error) {
+      console.error('❌ [TTS Streaming] Deepgram streaming error:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Play audio file
    */
   private async playAudioFile(filepath: string, speed?: number): Promise<boolean> {
@@ -581,23 +773,35 @@ class TTSService {
   /**
    * Stop all audio playback (including streaming)
    *
-   * NEW: Also stops streaming playback if active
+   * NEW: Also stops streaming playback if active (Cartesia)
+   * Note: Deepgram uses REST API, not streaming
    */
   async stop(): Promise<void> {
     console.log("⏹️ [TTS] Stopping all audio...");
 
-    // NEW: Stop NEW streaming player
-    const player = getCartesiaStreamingPlayer();
-    if (player.isCurrentlyPlaying() || player.isCurrentlyStreaming()) {
-      console.log("🛑 [TTS] Stopping NEW streaming player...");
+    // Stop Cartesia streaming player
+    const cartesiaPlayer = getCartesiaStreamingPlayer();
+    if (cartesiaPlayer.isCurrentlyPlaying() || cartesiaPlayer.isCurrentlyStreaming()) {
+      console.log("🛑 [TTS] Stopping Cartesia streaming player...");
       try {
-        player.stop();
+        cartesiaPlayer.stop();
       } catch (error) {
-        console.error("❌ [TTS] Error stopping NEW streaming:", error);
+        console.error("❌ [TTS] Error stopping Cartesia streaming:", error);
       }
     }
 
-    // NEW: Stop legacy streaming if active (for fallback)
+    // Stop Deepgram streaming player
+    const deepgramPlayer = getDeepgramStreamingPlayer();
+    if (deepgramPlayer.isCurrentlyPlaying() || deepgramPlayer.isCurrentlyStreaming()) {
+      console.log("🛑 [TTS] Stopping Deepgram streaming player...");
+      try {
+        deepgramPlayer.stop();
+      } catch (error) {
+        console.error("❌ [TTS] Error stopping Deepgram streaming:", error);
+      }
+    }
+
+    // Stop legacy streaming if active (for fallback)
     if (this.isStreaming) {
       console.log("🛑 [TTS] Stopping legacy streaming playback...");
       try {
@@ -608,7 +812,7 @@ class TTSService {
       }
     }
 
-    // Stop regular playback (for OpenAI fallback)
+    // Stop regular playback (for OpenAI and Deepgram fallback)
     for (const sound of this.soundObjects) {
       try {
         await sound.stopAsync();
@@ -647,15 +851,49 @@ class TTSService {
     try {
       console.log(`🎙️ [TTS] Preparing audio: "${text.substring(0, 50)}..."`);
 
-      // NEW: Try streaming if enabled for Cartesia
-      if (STREAMING_CONFIG.enabled && this.ttsProvider === 'cartesia') {
-        console.log('🌊 [TTS] Using NEW streaming engine for prepareAudio...');
+      // NEW: Try streaming if enabled for Cartesia or Deepgram
+      if (STREAMING_CONFIG.enabled && (this.ttsProvider === 'cartesia' || this.ttsProvider === 'deepgram')) {
+        console.log(`🌊 [TTS] Using NEW streaming engine for prepareAudio (${this.ttsProvider})...`);
 
         try {
           let isPlaybackStarted = false;
           let isPlaybackComplete = false;  // Track completion for race condition fix
           let statusCallback: ((status: any) => void) | null = null;
-          const player = getCartesiaStreamingPlayer();
+
+          // Select appropriate player based on provider
+          const isCartesia = this.ttsProvider === 'cartesia';
+          const player = isCartesia ? getCartesiaStreamingPlayer() : getDeepgramStreamingPlayer();
+
+          const playFunction = async () => {
+            if (isCartesia) {
+              const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
+              if (!VOICE_ID) throw new Error('VOICE_ID not configured');
+
+              let speedString: 'slowest' | 'slow' | 'normal' | 'fast' | 'fastest' = 'normal';
+              if (options?.speed) {
+                if (options.speed <= 0.75) speedString = 'slowest';
+                else if (options.speed <= 0.9) speedString = 'slow';
+                else if (options.speed >= 1.25) speedString = 'fastest';
+                else if (options.speed >= 1.1) speedString = 'fast';
+              }
+
+              const emotionLevel = options?.emotionLevel || (options?.emotion ? [options.emotion] : undefined);
+
+              await (player as any).speak(text, {
+                voiceId: VOICE_ID,
+                emotion: emotionLevel,
+                speed: speedString,
+              });
+            } else {
+              // Deepgram streaming
+              const DEEPGRAM_API_KEY = process.env.EXPO_PUBLIC_DEEPGRAM_API_KEY;
+              if (!DEEPGRAM_API_KEY) throw new Error('DEEPGRAM_API_KEY not configured');
+
+              await (player as any).speak(text, {
+                voiceId: this.deepgramVoice,
+              });
+            }
+          };
 
           // Create listener functions for cleanup
           const doneListener = () => {
@@ -695,32 +933,14 @@ class TTSService {
 
           const mockSound = {
             playAsync: async () => {
-              console.log('🎵 [TTS Streaming Mock] playAsync called (NEW engine)');
+              console.log(`🎵 [TTS Streaming Mock] playAsync called (${this.ttsProvider} engine)`);
 
               if (!isPlaybackStarted) {
                 isPlaybackStarted = true;
                 console.log('▶️ [TTS Streaming Mock] Starting playback...');
 
                 try {
-                  const VOICE_ID = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
-                  if (!VOICE_ID) throw new Error('VOICE_ID not configured');
-
-                  // Map speed number to Cartesia speed string
-                  let speedString: 'slowest' | 'slow' | 'normal' | 'fast' | 'fastest' = 'normal';
-                  if (options?.speed) {
-                    if (options.speed <= 0.75) speedString = 'slowest';
-                    else if (options.speed <= 0.9) speedString = 'slow';
-                    else if (options.speed >= 1.25) speedString = 'fastest';
-                    else if (options.speed >= 1.1) speedString = 'fast';
-                  }
-
-                  const emotionLevel = options?.emotionLevel || (options?.emotion ? [options.emotion] : undefined);
-
-                  await player.speak(text, {
-                    voiceId: VOICE_ID,
-                    emotion: emotionLevel,
-                    speed: speedString,
-                  });
+                  await playFunction();
 
                   console.log('✅ [TTS Streaming Mock] Playback complete');
 

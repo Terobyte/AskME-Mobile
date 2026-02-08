@@ -209,21 +209,21 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       emotion?: string;
       speed?: number;
       emotionLevel?: string[];
+      vibe?: VibeConfig;  // 🎭 Add vibe for OpenAI emotion support
     }
   ): Promise<void> => {
+    // ⏱️ TTS TIMING: Start timing
+    const ttsStart = Date.now();
+    console.log(`🔊 [TTS DEBUG] Starting playback for: "${text.substring(0, 30)}..."`);
+    console.log(`🔊 [TTS DEBUG] Text length: ${text.length} characters`);
+
     setIsProcessing(true);
 
     // Notify audio hook to stop recording (prevent echo)
     onAIStart?.();
 
-    // ⏱️ TTS TIMING: Start timing
-    const ttsStart = Date.now();
-    console.log(`🔊 [TTS DEBUG] Starting playback for: "${text.substring(0, 30)}..."`);
-    console.log(`🔊 [TTS DEBUG] Text length: ${text.length} characters`);
-    console.log(`🔊 [TTS DEBUG] Expected duration: ~${Math.ceil(text.length * 100 / 1000)}s (100ms per char)`);
-
     try {
-      console.log("🔄 Sync: Preloading audio for:", text.substring(0, 10) + "...");
+      console.log("🔄 Sync: Setting up event-driven playback...");
 
       // Force speaker mode before TTS playback
       console.log("🔊 Forcing speaker output for TTS...");
@@ -232,70 +232,128 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
       // Small delay to ensure audio mode is applied
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Prepare audio with emotion options
-      const player = await TTSService.prepareAudio(text, options);
-
-      console.log("💥 Sync: BOOM! Playing.");
-
-      // ✅ FIX: Create message object but don't add to state yet (no typewriter)
-      const aiMessage = { id: Date.now().toString() + '_ai', text: text, sender: 'ai' };
+      // Get the appropriate streaming player
+      const player = await TTSService.getStreamingPlayer();
 
       // Append to History Buffer
       historyBuffer.current.push({ role: 'assistant', content: text });
 
-      if (player) {
-        await new Promise<void>((resolve, reject) => {
-          // FIX: Добавляем timeout для предотвращения вечного ожидания
-          const timeout = setTimeout(() => {
-            console.error('⏰ [Sync] Playback timeout (60s) - forcing resolve');
-            player.setOnPlaybackStatusUpdate(null);
-            reject(new Error('Playback timeout'));
-          }, 60000); // 60 секунд максимум
+      // Set up event listeners BEFORE starting playback
+      return new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          console.error('⏰ [Sync] Playback timeout (60s)');
+          reject(new Error('Playback timeout (60s)'));
+        }, 60000);
 
-          player.setOnPlaybackStatusUpdate((status) => {
-            if (status.isLoaded && status.didJustFinish) {
-              clearTimeout(timeout);
-              player.setOnPlaybackStatusUpdate(null);
-              resolve();
-            }
-          });
+        // Listen for 'playing' event → start typewriter
+        const playingListener = () => {
+          console.log('🎵 [Sync] Audio playing - starting typewriter');
 
-          // ✅ FIX: Start typewriter immediately (synchronized with audio start)
+          // NOW add message to trigger typewriter
+          const aiMessage = { id: Date.now().toString() + '_ai', text: text, sender: 'ai' as const };
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           setMessages(prev => [...prev, aiMessage]);
+        };
 
-          // ✅ FIX: Start audio immediately after
-          player.playAsync().catch((error) => {
-            clearTimeout(timeout);
-            console.error('❌ [Sync] playAsync error:', error);
-            reject(error);
-          });
+        // Listen for 'done' event → release microphone
+        const doneListener = () => {
+          clearTimeout(timeout);
+          console.log('✅ [Sync] Audio done - releasing microphone');
+
+          // Cleanup listeners
+          player.off('playing', playingListener);
+          player.off('done', doneListener);
+          player.off('error', errorListener);
+
+          resolve();
+        };
+
+        // Listen for 'error' event → handle gracefully
+        const errorListener = (error: any) => {
+          clearTimeout(timeout);
+          console.error('❌ [Sync] Audio error:', error);
+
+          // Cleanup listeners
+          player.off('playing', playingListener);
+          player.off('done', doneListener);
+          player.off('error', errorListener);
+
+          reject(error);
+        };
+
+        // Attach listeners
+        player.on('playing', playingListener);
+        player.on('done', doneListener);
+        player.on('error', errorListener);
+
+        // Start playback (this triggers the event chain)
+        console.log("💥 Sync: Starting streaming playback...");
+
+        // Build player options
+        const playerOptions: any = {};
+
+        // Map emotions for Cartesia
+        if (options?.emotion || options?.emotionLevel) {
+          playerOptions.emotion = options.emotionLevel || (options.emotion ? [options.emotion] : undefined);
+        }
+
+        // Map speed for all providers
+        if (options?.speed) {
+          if (TTSService.getTtsProvider() === 'cartesia') {
+            // Map speed number to Cartesia speed string
+            if (options.speed <= 0.75) playerOptions.speed = 'slowest';
+            else if (options.speed <= 0.9) playerOptions.speed = 'slow';
+            else if (options.speed >= 1.25) playerOptions.speed = 'fastest';
+            else if (options.speed >= 1.1) playerOptions.speed = 'fast';
+            else playerOptions.speed = 'normal';
+          } else {
+            playerOptions.speed = options.speed;
+          }
+        }
+
+        // Add vibe for OpenAI emotion support
+        if (options?.vibe && TTSService.getTtsProvider() === 'openai') {
+          const { VibeCalculator } = require('../../services/vibe-calculator');
+          const openaiConfig = VibeCalculator.getOpenAIConfig(options.vibe.label);
+          playerOptions.instructions = openaiConfig.instructions;
+          playerOptions.speed = playerOptions.speed ?? openaiConfig.speed;
+        }
+
+        // Add voiceId
+        if (TTSService.getTtsProvider() === 'cartesia') {
+          playerOptions.voiceId = process.env.EXPO_PUBLIC_CARTESIA_VOICE_ID;
+        } else if (TTSService.getTtsProvider() === 'openai') {
+          playerOptions.voiceId = TTSService.getOpenaiVoice();
+        } else if (TTSService.getTtsProvider() === 'deepgram') {
+          playerOptions.voiceId = TTSService.getDeepgramVoice();
+        }
+
+        player.speak(text, playerOptions).catch((error: any) => {
+          clearTimeout(timeout);
+          console.error('❌ [Sync] Speak error:', error);
+
+          // Cleanup listeners
+          player.off('playing', playingListener);
+          player.off('done', doneListener);
+          player.off('error', errorListener);
+
+          reject(error);
         });
-      } else {
-        // Fallback if no player - still show message
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        setMessages(prev => [...prev, aiMessage]);
-      }
-
-      // ⏱️ TTS TIMING: Log completion
-      const ttsEnd = Date.now();
-      const ttsDuration = ttsEnd - ttsStart;
-      console.log(`🔊 [TTS DEBUG] Playback completed in ${ttsDuration}ms (${(ttsDuration / 1000).toFixed(1)}s)`);
-
-      if (ttsDuration > text.length * 120) {
-        console.error(`⚠️ [TTS DEBUG] ABNORMAL: TTS took ${ttsDuration}ms for ${text.length} chars`);
-        console.error(`⚠️ [TTS DEBUG] Expected: ~${text.length * 100}ms (100ms per char)`);
-      }
-
-      console.log('✅ [Sync] Playback completed successfully');
+      });
 
     } catch (e) {
       console.error("❌ Sync Error:", e);
       const ttsEnd = Date.now();
       const ttsDuration = ttsEnd - ttsStart;
       console.error(`❌ [TTS DEBUG] Failed after ${ttsDuration}ms`);
+      throw e;
     } finally {
-      // FIX: ВСЕГДА вызываем onAIEnd в finally для разблокировки микрофона
+      // ⏱️ TTS TIMING: Log completion
+      const ttsEnd = Date.now();
+      const ttsDuration = ttsEnd - ttsStart;
+      console.log(`🔊 [TTS DEBUG] Playback completed in ${ttsDuration}ms (${(ttsDuration / 1000).toFixed(1)}s)`);
+
+      // ALWAYS release microphone and clear processing state
       setIsProcessing(false);
       onAIEnd?.();
       console.log('✅ [Sync] Cleanup complete, onAIEnd called');
@@ -405,11 +463,15 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
               setIsLobbyPhase(false);
               setCurrentTopicIndex(0);
 
-              await playSynchronizedResponse(introMsg);
+              await playSynchronizedResponse(introMsg, {
+                vibe: currentVibe || undefined
+              });
 
             } else {
               console.log("🗣️ [LOBBY] Small Talk - playing unified response");
-              await playSynchronizedResponse(speech);
+              await playSynchronizedResponse(speech, {
+                vibe: currentVibe || undefined
+              });
             }
 
             setIsProcessing(false);
@@ -462,7 +524,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             if (introAnalysis.intent === 'CLARIFICATION') {
               console.log("🤔 [INTRO] Clarification requested - staying on intro");
               console.log("🔊 [STATE SYNC] Playing voice (no state change)");
-              await playSynchronizedResponse(introSpeech);
+              await playSynchronizedResponse(introSpeech, {
+                vibe: currentVibe || undefined
+              });
               setIsProcessing(false);
               return;
             }
@@ -487,7 +551,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             await playSynchronizedResponse(introSpeech, {
               emotion: currentVibe?.cartesiaEmotion,
               speed: currentVibe?.speed,
-              emotionLevel: currentVibe?.emotionLevel
+              emotionLevel: currentVibe?.emotionLevel,
+              vibe: currentVibe || undefined  // 🎭 Add vibe for OpenAI
             });
 
             console.log("✅ [STATE SYNC] Voice playing, now safe to advance state");
@@ -618,7 +683,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             await playSynchronizedResponse(speech, {
               emotion: currentVibe?.cartesiaEmotion,
               speed: currentVibe?.speed,
-              emotionLevel: currentVibe?.emotionLevel
+              emotionLevel: currentVibe?.emotionLevel,
+              vibe: currentVibe || undefined  // 🎭 Add vibe for OpenAI
             });
             setIsProcessing(false);
             return;
@@ -743,7 +809,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             await playSynchronizedResponse(speech, {
               emotion: currentVibe?.cartesiaEmotion,
               speed: currentVibe?.speed,
-              emotionLevel: currentVibe?.emotionLevel
+              emotionLevel: currentVibe?.emotionLevel,
+              vibe: currentVibe || undefined  // 🎭 Add vibe for OpenAI
             });
 
             // ✅ FIX BUG 3: Generate minimal report on early termination
@@ -1115,7 +1182,9 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
       // 4. Play immediate greeting (don't wait for plan)
       const greeting = "Hello, I'm Victoria. I'll be conducting your technical interview today. I have your details in front of me. Whenever you're ready to begin, just let me know.";
-      await playSynchronizedResponse(greeting);
+      await playSynchronizedResponse(greeting, {
+        vibe: currentVibe || undefined
+      });
 
     } catch (error) {
       console.error("❌ [INIT] Initialization failed:", error);

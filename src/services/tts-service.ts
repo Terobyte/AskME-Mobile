@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
-import { TTSProvider, OpenAIVoice, DeepgramVoice, WordTimestamp } from '../types';  // PHASE 2: Added WordTimestamp
+import { TTSProvider, OpenAIVoice, DeepgramVoice, WordTimestamp, VibeConfig } from '../types';  // PHASE 2: Added WordTimestamp, VibeConfig
 import { STREAMING_CONFIG } from '../config/streaming-config';
 import { cartesiaStreamingService } from './cartesia-streaming-service';
 import { chunkedStreamingPlayer } from './streaming-audio-player';
@@ -215,6 +215,7 @@ class TTSService {
       speed?: number;
       emotionLevel?: string[];
       autoPlay?: boolean;
+      vibe?: VibeConfig;  // Vibe for OpenAI emotion support
     }
   ): Promise<boolean> {
     // ПРОВЕРКА MUTE
@@ -699,6 +700,7 @@ class TTSService {
       speed?: number;
       emotionLevel?: string[];
       autoPlay?: boolean;
+      vibe?: VibeConfig;  // Vibe for OpenAI emotion support
     }
   ): Promise<boolean> {
     try {
@@ -718,18 +720,36 @@ class TTSService {
         player.stop();
       }
 
+      // 🎭 EMOTION: Use vibe-based instructions if provided
+      let instructions = this.openaiInstructions; // fallback to static
+      let speed = options?.speed;
+
+      if (options?.vibe) {
+        // Import here to avoid circular dependency
+        const { VibeCalculator } = require('./vibe-calculator');
+        const openaiConfig = VibeCalculator.getOpenAIConfig(options.vibe.label);
+        instructions = openaiConfig.instructions;
+        speed = speed ?? openaiConfig.speed;
+
+        console.log('🎭 [OpenAI Emotion] Using vibe-based config:', {
+          vibe: options.vibe.label,
+          instructions: instructions,
+          speed: speed
+        });
+      }
+
       console.log('🎙️ [TTS Streaming] Options:', {
         voiceId: this.openaiVoice,
         textLength: text.length,
-        speed: options?.speed,
-        instructions: this.openaiInstructions || undefined
+        speed: speed,
+        instructions: instructions || undefined
       });
 
       // Use OpenAI player (fetch API with streaming response)
       await player.speak(text, {
         voiceId: this.openaiVoice,
-        speed: options?.speed,
-        instructions: this.openaiInstructions || undefined,
+        speed: speed,
+        instructions: instructions || undefined,
       });
 
       console.log('✅ [TTS Streaming] OpenAI playback complete');
@@ -865,7 +885,7 @@ class TTSService {
   /**
    * Preload audio and return a player object for manual control
    * This method is used by the interview logic for synchronized playback
-   * 
+   *
    * NEW: Uses streaming if enabled (plays immediately, returns mock Sound)
    */
   async prepareAudio(
@@ -874,6 +894,7 @@ class TTSService {
       emotion?: string;
       speed?: number;
       emotionLevel?: string[];
+      vibe?: VibeConfig;  // Vibe for OpenAI emotion support
     }
   ): Promise<Audio.Sound | null> {
     // ПРОВЕРКА MUTE
@@ -924,9 +945,28 @@ class TTSService {
               const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey as string || process.env.EXPO_PUBLIC_OPENAI_API_KEY;
               if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not configured');
 
+              // 🎭 EMOTION: Use vibe-based instructions if provided
+              let instructions = this.openaiInstructions; // fallback to static
+              let speed = options?.speed;
+
+              if (options?.vibe) {
+                // Import here to avoid circular dependency
+                const { VibeCalculator } = require('./vibe-calculator');
+                const openaiConfig = VibeCalculator.getOpenAIConfig(options.vibe.label);
+                instructions = openaiConfig.instructions;
+                speed = speed ?? openaiConfig.speed;
+
+                console.log('🎭 [OpenAI Emotion] prepareAudio: Using vibe-based config:', {
+                  vibe: options.vibe.label,
+                  instructions: instructions,
+                  speed: speed
+                });
+              }
+
               await (player as any).speak(text, {
                 voiceId: this.openaiVoice,
-                speed: options?.speed,
+                speed: speed,
+                instructions: instructions || undefined,
               });
             } else {
               // Deepgram streaming
@@ -1071,6 +1111,33 @@ class TTSService {
     } catch (error) {
       console.error("❌ [TTS] prepareAudio error:", error);
       return null;
+    }
+  }
+
+  /**
+   * Get the appropriate streaming player based on current provider
+   *
+   * This method returns the singleton streaming player for event-driven playback.
+   * Used by interview logic for synchronized audio-text coordination.
+   *
+   * @returns Streaming player instance (Cartesia, OpenAI, or Deepgram)
+   */
+  async getStreamingPlayer(): Promise<any> {
+    const provider = this.getTtsProvider();
+
+    switch (provider) {
+      case 'openai': {
+        const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey as string || process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+        if (!OPENAI_API_KEY) {
+          throw new Error('EXPO_PUBLIC_OPENAI_API_KEY not configured');
+        }
+        return getOpenAIStreamingPlayer(OPENAI_API_KEY, { sampleRate: 16000 });
+      }
+      case 'deepgram':
+        return getDeepgramStreamingPlayer({ sampleRate: 16000 });
+      case 'cartesia':
+      default:
+        return getCartesiaStreamingPlayer({ sampleRate: 16000 });
     }
   }
 

@@ -325,8 +325,9 @@ export class CartesiaStreamingPlayer {
       });
 
       this.currentGenerator = stream;
-      this.setState(PlayerState.BUFFERING);
       this.emit('connected', { text: text.substring(0, 50) + '...' });
+      this.setState(PlayerState.BUFFERING);
+      this.emit('buffering', { timestamp: Date.now() });
 
       // Start the streaming loop
       await this.streamingLoop(stream, signal);
@@ -978,6 +979,20 @@ export class CartesiaStreamingPlayer {
       this.eventListeners.set(event, new Set());
     }
     this.eventListeners.get(event)!.add(listener);
+  }
+
+  /**
+   * Add event listener that fires only once
+   *
+   * @param event - Event name
+   * @param listener - Callback function
+   */
+  once(event: PlayerEvent, listener: EventListener): void {
+    const onceListener: EventListener = (data: any) => {
+      listener(data);
+      this.off(event, onceListener);
+    };
+    this.on(event, onceListener);
   }
 
   /**

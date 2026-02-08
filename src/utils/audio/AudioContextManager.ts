@@ -79,9 +79,18 @@ export class AudioContextManager {
    * Get singleton instance
    */
   static getInstance(config?: Partial<AudioContextConfig>): AudioContextManager {
+    // Reset singleton if instance exists but is destroyed
+    if (AudioContextManager.instance?.isDestroyed) {
+      console.log('[AudioContextManager] getInstance: Detected destroyed instance, resetting singleton');
+      AudioContextManager.instance = null;
+    }
+
+    // Create new instance if needed
     if (!AudioContextManager.instance) {
+      console.log('[AudioContextManager] getInstance: Creating new instance');
       AudioContextManager.instance = new AudioContextManager(config);
     }
+
     return AudioContextManager.instance;
   }
 
@@ -93,7 +102,8 @@ export class AudioContextManager {
    */
   async initialize(config?: Partial<AudioContextConfig>): Promise<void> {
     if (this.isDestroyed) {
-      throw new Error('AudioContextManager has been destroyed');
+      console.error('[AudioContextManager] initialize: Cannot initialize destroyed instance');
+      throw new Error('AudioContextManager has been destroyed. Call getInstance() to get a new instance.');
     }
 
     if (this.isInitialized && this.context) {
@@ -374,9 +384,24 @@ export class AudioContextManager {
   }
 
   /**
+   * Check if context is valid (not destroyed)
+   */
+  isValid(): boolean {
+    return !this.isDestroyed;
+  }
+
+  /**
    * Dispose of audio resources
    */
   async dispose(): Promise<void> {
+    // Prevent double disposal
+    if (this.isDestroyed) {
+      console.log('[AudioContextManager] dispose: Already destroyed, skipping');
+      return;
+    }
+
+    console.log('[AudioContextManager] dispose: Disposing resources');
+
     this.stopAll();
 
     if (this.context) {
@@ -391,6 +416,12 @@ export class AudioContextManager {
     this.gainNode = null;
     this.isInitialized = false;
     this.isDestroyed = true;
+
+    // Reset singleton to allow fresh instance creation
+    if (AudioContextManager.instance === this) {
+      console.log('[AudioContextManager] dispose: Resetting singleton instance');
+      AudioContextManager.instance = null;
+    }
   }
 
   /**

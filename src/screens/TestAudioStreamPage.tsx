@@ -16,7 +16,7 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Constants } from 'expo-constants';
+import Constants from 'expo-constants';
 
 // Import the new Cartesia Streaming Player
 import {
@@ -119,107 +119,116 @@ export const TestAudioStreamPage: React.FC = () => {
    * Initialize player (re-create when provider changes)
    */
   useEffect(() => {
-    // Stop previous player
+    // Stop previous player (but don't dispose - singleton will handle it)
     if (playerRef.current) {
+      console.log('[TestAudioStreamPage] Stopping previous player');
       playerRef.current.stop();
     }
 
-    // Create new player based on selected provider
-    let player: CartesiaStreamingPlayer | DeepgramStreamingPlayer | OpenAIStreamingPlayer;
+    // Small delay to let previous player cleanup finish
+    const switchTimeout = setTimeout(() => {
+      // Create new player based on selected provider
+      let player: CartesiaStreamingPlayer | DeepgramStreamingPlayer | OpenAIStreamingPlayer;
 
-    if (ttsProvider === 'cartesia') {
-      player = getCartesiaStreamingPlayer({
-        sampleRate: 16000,
-        preBufferThreshold: 500,
-        maxBufferSize: 5,
-        chunkSize: 2048,
-      });
-    } else if (ttsProvider === 'deepgram') {
-      player = getDeepgramStreamingPlayer({
-        sampleRate: 16000,
-        preBufferThreshold: 500,
-        maxBufferSize: 5,
-        chunkSize: 2048,
-      });
-    } else {
-      // OpenAI
-      const openaiApiKey = (Constants?.expoConfig?.extra?.openaiApiKey as string)
-        || process.env.EXPO_PUBLIC_OPENAI_API_KEY
-        || 'your-key-here';
-      player = getOpenAIStreamingPlayer(openaiApiKey, {
-        sampleRate: 16000,
-        preBufferThreshold: 500,
-        maxBufferSize: 5,
-        chunkSize: 2048,
-      });
-    }
+      try {
+        if (ttsProvider === 'cartesia') {
+          player = getCartesiaStreamingPlayer({
+            sampleRate: 16000,
+            preBufferThreshold: 500,
+            maxBufferSize: 5,
+            chunkSize: 2048,
+          });
+        } else if (ttsProvider === 'deepgram') {
+          player = getDeepgramStreamingPlayer({
+            sampleRate: 16000,
+            preBufferThreshold: 500,
+            maxBufferSize: 5,
+            chunkSize: 2048,
+          });
+        } else {
+          // OpenAI
+          const openaiApiKey = (Constants?.expoConfig?.extra?.openaiApiKey as string)
+            || process.env.EXPO_PUBLIC_OPENAI_API_KEY
+            || 'your-key-here';
+          player = getOpenAIStreamingPlayer(openaiApiKey, {
+            sampleRate: 16000,
+            preBufferThreshold: 500,
+            maxBufferSize: 5,
+            chunkSize: 2048,
+          });
+        }
 
-    playerRef.current = player;
+        playerRef.current = player;
 
-    // Reset state
-    setPlayerState('idle');
-    setMetrics(null);
-    setError(null);
+        // Reset state
+        setPlayerState('idle');
+        setMetrics(null);
+        setError(null);
 
-    const providerName = ttsProvider === 'cartesia' ? 'Cartesia'
-      : ttsProvider === 'deepgram' ? 'Deepgram'
-      : 'OpenAI';
-    addLog('UI', `Switched to ${providerName} provider`, 'info');
+        const providerName = ttsProvider === 'cartesia' ? 'Cartesia'
+          : ttsProvider === 'deepgram' ? 'Deepgram'
+          : 'OpenAI';
+        addLog('UI', `Switched to ${providerName} provider`, 'info');
 
-    // Subscribe to events
-    const unsubscribeEvents: Array<() => void> = [];
+        // Subscribe to events
+        const unsubscribeEvents: Array<() => void> = [];
 
-    const setupListener = (event: any, callback: (data: any) => void) => {
-      player.on(event, callback);
-      unsubscribeEvents.push(() => player.off(event, callback));
-    };
+        const setupListener = (event: any, callback: (data: any) => void) => {
+          player.on(event, callback);
+          unsubscribeEvents.push(() => player.off(event, callback));
+        };
 
-    setupListener('connecting', (data) => {
-      setPlayerState('connecting');
-      addLog('Player', `Connecting to ${ttsProvider}...`, 'info');
-    });
+        setupListener('connecting', (data) => {
+          setPlayerState('connecting');
+          addLog('Player', `Connecting to ${ttsProvider}...`, 'info');
+        });
 
-    setupListener('connected', (data) => {
-      setPlayerState('buffering');
-      addLog('Player', `Connected - buffering...`, 'success');
-    });
+        setupListener('connected', (data) => {
+          setPlayerState('buffering');
+          addLog('Player', `Connected - buffering...`, 'success');
+        });
 
-    setupListener('playing', (data) => {
-      setPlayerState('playing');
-      addLog('Player', `Playback started!`, 'success');
-    });
+        setupListener('playing', (data) => {
+          setPlayerState('playing');
+          addLog('Player', `Playback started!`, 'success');
+        });
 
-    setupListener('paused', (data) => {
-      setPlayerState('paused');
-      addLog('Player', `Paused`, 'info');
-    });
+        setupListener('paused', (data) => {
+          setPlayerState('paused');
+          addLog('Player', `Paused`, 'info');
+        });
 
-    setupListener('stopped', (data) => {
-      setPlayerState('stopped');
-      addLog('Player', `Stopped`, 'warning');
-    });
+        setupListener('stopped', (data) => {
+          setPlayerState('stopped');
+          addLog('Player', `Stopped`, 'warning');
+        });
 
-    setupListener('done', (data) => {
-      setPlayerState('done');
-      addLog('Player', `Playback complete!`, 'success');
-    });
+        setupListener('done', (data) => {
+          setPlayerState('done');
+          addLog('Player', `Playback complete!`, 'success');
+        });
 
-    setupListener('underrun', (data) => {
-      addLog('Player', `Buffer underrun detected!`, 'warning');
-    });
+        setupListener('underrun', (data) => {
+          addLog('Player', `Buffer underrun detected!`, 'warning');
+        });
 
-    setupListener('error', (data) => {
-      setPlayerState('error');
-      setError(data.error);
-      addLog('Player', `Error: ${data.error}`, 'error');
-    });
+        setupListener('error', (data) => {
+          setPlayerState('error');
+          setError(data.error);
+          addLog('Player', `Error: ${data.error}`, 'error');
+        });
 
-    setupListener('metrics', (data) => {
-      setMetrics(data);
-    });
+        setupListener('metrics', (data) => {
+          setMetrics(data);
+        });
+      } catch (error) {
+        console.error('[TestAudioStreamPage] Error creating player:', error);
+        addLog('UI', `Error: ${error instanceof Error ? error.message : String(error)}`, 'error');
+      }
+    }, 50); // 50ms delay for cleanup
 
     return () => {
-      unsubscribeEvents.forEach(fn => fn());
+      clearTimeout(switchTimeout);
     };
   }, [ttsProvider, addLog]);
 

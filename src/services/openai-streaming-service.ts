@@ -1,64 +1,81 @@
 /**
- * OpenAI TTS Streaming Service
+ * OpenAI TTS Service
  *
- * Provides streaming text-to-speech using OpenAI's API.
- * Uses fetch API with streaming response for real-time audio generation.
+ * Обычная загрузка (не streaming) для React Native совместимости.
+ * Скачивает весь PCM файл, затем разбивает на chunks для pipeline.
  *
- * Audio format: PCM16 @ 24kHz (requires resampling to 16kHz for our pipeline)
+ * OpenAI PCM format: 24kHz, 16-bit signed, little-endian
  *
- * Updated 2025-02: Now supports gpt-4o-mini-tts with 13 voices and instructions
- *
- * @see https://platform.openai.com/docs/api-reference/audio/createSpeech
+ * Updated 2025-02: Supports gpt-4o-mini-tts with 13 voices and instructions
  */
 
-import { AudioChunk, OpenAIVoice, OpenAITTSModel, OpenAIStreamConfig } from '../types';
+import { AudioChunk } from '../types';
 
-/**
- * Stream options with callbacks
- */
+// ============ TYPES ============
+
+export type OpenAIVoice =
+  | 'alloy'
+  | 'ash'
+  | 'ballad'
+  | 'coral'
+  | 'echo'
+  | 'fable'
+  | 'nova'
+  | 'onyx'
+  | 'sage'
+  | 'shimmer'
+  | 'verse'
+  | 'marin'   // Recommended - best quality
+  | 'cedar';  // Recommended - best quality
+
+export type OpenAITTSModel = 'gpt-4o-mini-tts' | 'tts-1' | 'tts-1-hd';
+
+export interface OpenAIStreamConfig {
+  apiKey: string;
+  model?: OpenAITTSModel;
+  voiceId: OpenAIVoice;
+  speed?: number;
+  instructions?: string; // Only for gpt-4o-mini-tts
+}
+
 export interface OpenAIStreamOptions extends OpenAIStreamConfig {
   text: string;
   onFirstChunk?: (latency: number) => void;
   onChunk?: (chunk: AudioChunk) => void;
 }
 
-/**
- * OpenAI Streaming Service Class
- *
- * Generates streaming audio using OpenAI's TTS API.
- */
+// ============ SERVICE ============
+
 export class OpenAIStreamingService {
   private abortController: AbortController | null = null;
-  private isStreaming: boolean = false;
-  private pendingBytes: Uint8Array = new Uint8Array(0); // 🆕 Byte alignment
+  private isGenerating: boolean = false;
 
   /**
-   * Generate audio stream from OpenAI TTS API
+   * Generate audio from OpenAI TTS API
    *
-   * @param options - Stream options including text, voice, and callbacks
-   * @returns AsyncGenerator of AudioChunk
+   * Downloads full audio as arrayBuffer, then yields in chunks
+   * for consistent pipeline integration.
    */
   async *generateAudioStream(
     options: OpenAIStreamOptions
   ): AsyncGenerator<AudioChunk> {
     const startTime = Date.now();
     this.abortController = new AbortController();
-    this.isStreaming = true;
-    this.pendingBytes = new Uint8Array(0); // Reset
+    this.isGenerating = true;
 
     const {
       apiKey,
       text,
       voiceId,
-      model = 'gpt-4o-mini-tts', // ✅ Updated default
+      model = 'gpt-4o-mini-tts',
       speed = 1.0,
-      instructions, // 🆕
+      instructions,
       onFirstChunk,
       onChunk,
     } = options;
 
     console.log(`╔════════════════════════════════════════╗`);
-    console.log(`║      OpenAI Streaming Service           ║`);
+    console.log(`║         OpenAI TTS Service              ║`);
     console.log(`╠════════════════════════════════════════╣`);
     console.log(`║ Model:              ${String(model).padEnd(24)} ║`);
     console.log(`║ Voice:              ${String(voiceId).padEnd(24)} ║`);
@@ -68,22 +85,24 @@ export class OpenAIStreamingService {
     }
     console.log(`║ Text length:        ${String(text.length + ' chars').padEnd(24)} ║`);
     console.log(`╚════════════════════════════════════════╝`);
-    console.log(`[OpenAI Streaming] Requesting stream for "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+    console.log(`[OpenAI TTS] Requesting: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+
+    // Build request body
+    const requestBody: Record<string, unknown> = {
+      model,
+      input: text,
+      voice: voiceId,
+      response_format: 'pcm',
+      speed,
+    };
+
+    // Add instructions only for gpt-4o-mini-tts
+    if (instructions && model === 'gpt-4o-mini-tts') {
+      requestBody.instructions = instructions;
+    }
 
     try {
-      const requestBody: Record<string, unknown> = {
-        model,
-        input: text,
-        voice: voiceId,
-        response_format: 'pcm',
-        speed,
-      };
-
-      // 🆕 Add instructions only for gpt-4o-mini-tts
-      if (instructions && model === 'gpt-4o-mini-tts') {
-        requestBody.instructions = instructions;
-      }
-
+      // ===== FETCH =====
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
         headers: {
@@ -94,124 +113,146 @@ export class OpenAIStreamingService {
         signal: this.abortController.signal,
       });
 
+      // ===== ERROR HANDLING =====
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
-      }
+        let errorMsg = `OpenAI API error: ${response.status}`;
 
-      if (!response.body) {
-        throw new Error('No response body from OpenAI API');
-      }
+        try {
+          const errorText = await response.text();
+          const errorJson = JSON.parse(errorText);
+          errorMsg = errorJson.error?.message || errorMsg;
 
-      const reader = response.body.getReader();
-      let chunkIndex = 0;
-      let firstChunk = true;
-      let totalBytes = 0;
-
-      console.log('[OpenAI Streaming] Stream connected, reading chunks...');
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          this.isStreaming = false;
-          console.log(`[OpenAI Streaming] Stream complete: ${chunkIndex} chunks, ${totalBytes} bytes total`);
-
-          // 🆕 Handle remaining bytes
-          if (this.pendingBytes.length >= 2) {
-            const remaining = Math.floor(this.pendingBytes.length / 2) * 2;
-            if (remaining > 0) {
-              const pcmData = new Int16Array(
-                this.pendingBytes.buffer,
-                this.pendingBytes.byteOffset,
-                remaining / 2
-              );
-              yield {
-                data: { data: pcmData, format: 'pcm16', sampleRate: 24000 },
-                index: chunkIndex++,
-                timestamp: Date.now(),
-              };
-            }
+          // Specific errors
+          if (response.status === 401) {
+            errorMsg = 'Invalid OpenAI API key';
+          } else if (response.status === 429) {
+            errorMsg = 'Rate limit exceeded. Please wait and try again.';
+          } else if (response.status === 400) {
+            errorMsg = `Bad request: ${errorJson.error?.message || 'Unknown'}`;
           }
+        } catch (e) {
+          // JSON parse failed, use default message
+        }
+
+        throw new Error(errorMsg);
+      }
+
+      // ===== DOWNLOAD FULL AUDIO =====
+      const arrayBuffer = await response.arrayBuffer();
+      const downloadTime = Date.now() - startTime;
+
+      console.log(`[OpenAI TTS] Downloaded ${arrayBuffer.byteLength} bytes in ${downloadTime}ms`);
+
+      // First chunk callback (download complete = first data available)
+      if (onFirstChunk) {
+        onFirstChunk(downloadTime);
+      }
+
+      // ===== CONVERT TO INT16 =====
+      const fullPcmData = new Int16Array(arrayBuffer);
+      const durationSec = fullPcmData.length / 24000;
+
+      console.log(`[OpenAI TTS] Total: ${fullPcmData.length} samples (${durationSec.toFixed(2)}s @ 24kHz)`);
+
+      // ===== CHUNK AND YIELD =====
+      // Chunk size: ~100ms of audio at 24kHz = 2400 samples
+      const CHUNK_SIZE = 2400;
+      let chunkIndex = 0;
+
+      for (let offset = 0; offset < fullPcmData.length; offset += CHUNK_SIZE) {
+        // Check abort
+        if (this.abortController?.signal.aborted || !this.isGenerating) {
+          console.log('[OpenAI TTS] Aborted during chunking');
           break;
         }
 
-        if (value) {
-          // 🆕 Byte alignment handling - combine with pending bytes
-          const combined = new Uint8Array(this.pendingBytes.length + value.length);
-          combined.set(this.pendingBytes);
-          combined.set(value, this.pendingBytes.length);
+        // Extract chunk - direct buffer slice (no intermediate TypedArray)
+        const end = Math.min(offset + CHUNK_SIZE, fullPcmData.length);
+        const byteOffset = offset * 2;  // Int16 = 2 bytes per sample
+        const byteLength = (end - offset) * 2;
 
-          // Only process complete PCM16 samples (2 bytes per sample)
-          const completeBytes = Math.floor(combined.length / 2) * 2;
-          this.pendingBytes = combined.slice(completeBytes);
+        // ⚠️ CRITICAL FIX: Account for TypedArray's byteOffset
+        // If fullPcmData is a view, we need to add its byteOffset to get the correct position
+        const actualByteOffset = fullPcmData.byteOffset + byteOffset;
+        const chunkBuffer = fullPcmData.buffer.slice(actualByteOffset, actualByteOffset + byteLength);
 
-          if (completeBytes > 0) {
-            totalBytes += completeBytes;
+        // Validate chunk (log first 3 + any zero-byte chunks)
+        if (chunkIndex < 3 || chunkBuffer.byteLength === 0) {
+          const samples = chunkBuffer.byteLength / 2;
+          console.log(
+            `[OpenAI TTS] Chunk ${chunkIndex}: ${samples} samples (${chunkBuffer.byteLength} bytes) ` +
+            `[offset ${offset}-${end}, byteOffset=${actualByteOffset}/${fullPcmData.buffer.byteLength}]`
+          );
 
-            const pcmData = new Int16Array(
-              combined.buffer,
-              combined.byteOffset,
-              completeBytes / 2
-            );
-
-            const chunk: AudioChunk = {
-              data: {
-                data: pcmData,
-                format: 'pcm16',
-                sampleRate: 24000,
-              },
-              index: chunkIndex++,
-              timestamp: Date.now(),
-            };
-
-            if (firstChunk && onFirstChunk) {
-              const latency = Date.now() - startTime;
-              onFirstChunk(latency);
-              console.log(`[OpenAI Streaming] First chunk received: ${latency}ms latency`);
-              firstChunk = false;
-            }
-
-            if (onChunk) {
-              onChunk(chunk);
-            }
-
-            yield chunk;
+          // Debug info for first chunk
+          if (chunkIndex === 0) {
+            console.log(`[OpenAI TTS] fullPcmData.byteOffset: ${fullPcmData.byteOffset}`);
+            console.log(`[OpenAI TTS] fullPcmData.buffer.byteLength: ${fullPcmData.buffer.byteLength}`);
+            console.log(`[OpenAI TTS] Calculated byteOffset: ${byteOffset} + ${fullPcmData.byteOffset} = ${actualByteOffset}`);
           }
+
+          if (chunkBuffer.byteLength === 0) {
+            console.error(`[OpenAI TTS] ❌ ZERO-BYTE CHUNK at offset ${offset}!`);
+            console.error(`[OpenAI TTS] Debug: byteOffset=${byteOffset}, byteLength=${byteLength}, actualByteOffset=${actualByteOffset}`);
+          }
+        }
+
+        const chunk: AudioChunk = {
+          data: chunkBuffer,
+          timestamp: Date.now(),
+          sequence: chunkIndex,
+          sizeBytes: chunkBuffer.byteLength,
+        };
+
+        if (onChunk) {
+          onChunk(chunk);
+        }
+
+        yield chunk;
+
+        chunkIndex++;  // ✅ INCREMENT CHUNK INDEX
+
+        // Small delay to prevent blocking UI and simulate streaming
+        // This allows the pipeline to process chunks gradually
+        if (chunkIndex % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 1));
         }
       }
 
-    } catch (error) {
-      this.isStreaming = false;
+      console.log(`[OpenAI TTS] Complete: yielded ${chunkIndex} chunks`);
 
-      if (error instanceof Error && error.name === 'AbortError') {
-        console.log('[OpenAI Streaming] Stream aborted');
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        console.log('[OpenAI TTS] Request aborted');
         return;
       }
 
-      console.error('[OpenAI Streaming] Error:', error);
+      console.error('[OpenAI TTS] Error:', error);
       throw error;
+    } finally {
+      this.isGenerating = false;
     }
   }
 
   /**
-   * Check if currently streaming
-   */
-  isActive(): boolean {
-    return this.isStreaming;
-  }
-
-  /**
-   * Stop the current stream
+   * Stop current generation
    */
   stop(): void {
+    console.log('[OpenAI TTS] Stop called');
+
+    this.isGenerating = false;
+
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
-      this.isStreaming = false;
-      this.pendingBytes = new Uint8Array(0); // Reset
-      console.log('[OpenAI Streaming] Stopped');
     }
+  }
+
+  /**
+   * Check if currently generating
+   */
+  isActive(): boolean {
+    return this.isGenerating;
   }
 
   /**
@@ -222,16 +263,10 @@ export class OpenAIStreamingService {
   }
 }
 
-/**
- * Singleton instance
- */
+// ============ SINGLETON ============
+
 let singletonInstance: OpenAIStreamingService | null = null;
 
-/**
- * Get the singleton OpenAI streaming service instance
- *
- * @returns OpenAIStreamingService instance
- */
 export function getOpenAIStreamingService(): OpenAIStreamingService {
   if (!singletonInstance) {
     singletonInstance = new OpenAIStreamingService();
@@ -239,9 +274,6 @@ export function getOpenAIStreamingService(): OpenAIStreamingService {
   return singletonInstance;
 }
 
-/**
- * Reset the singleton instance (useful for testing)
- */
 export function resetOpenAIStreamingService(): void {
   if (singletonInstance) {
     singletonInstance.reset();

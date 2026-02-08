@@ -155,7 +155,7 @@ const DEFAULT_CONFIG: Required<OpenAIPlayerConfig> = {
  */
 export class OpenAIStreamingPlayer {
   // Components
-  private fifoQueue: FIFOQueue<AudioChunk>;
+  private fifoQueue: FIFOQueue<ArrayBuffer>;  // ⚠️ FIX: Store ArrayBuffer directly
   private jitterBuffer: JitterBuffer;
   private audioContext: AudioContextManager;
   private zeroCrossingAligner: ZeroCrossingAligner;
@@ -221,7 +221,8 @@ export class OpenAIStreamingPlayer {
     console.log(`╚════════════════════════════════════════╝`);
 
     // Initialize components
-    this.fifoQueue = new FIFOQueue<AudioChunk>({
+    // ⚠️ FIX: Store ArrayBuffer directly, not AudioChunk (to avoid double-wrapping)
+    this.fifoQueue = new FIFOQueue<ArrayBuffer>({
       maxSize: this.config.fifoMaxSize,
       maxBytes: 5 * 1024 * 1024, // 5MB
       dropOldest: true,
@@ -245,6 +246,19 @@ export class OpenAIStreamingPlayer {
   }
 
   /**
+   * Ensure AudioContext is valid, recreate if destroyed
+   */
+  private ensureAudioContextValid(): void {
+    if (!this.audioContext.isValid()) {
+      console.log('[OpenAIStreamingPlayer] AudioContext destroyed, recreating...');
+      this.audioContext = AudioContextManager.getInstance({
+        sampleRate: this.config.sampleRate,
+        initialGain: this.config.initialGain,
+      });
+    }
+  }
+
+  /**
    * Speak text with streaming playback
    *
    * @param text - Text to speak
@@ -264,6 +278,9 @@ export class OpenAIStreamingPlayer {
       console.log(`[OpenAIStreamingPlayer] Debouncing restart: waiting ${delayMs}ms`);
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
+
+    // ✅ Validate AudioContext BEFORE stopping
+    this.ensureAudioContextValid();
 
     // Cleanup previous
     this.stop();
@@ -288,10 +305,24 @@ export class OpenAIStreamingPlayer {
       this.setState(PlayerState.CONNECTING);
       this.emit('connecting', { text: text.substring(0, 50) + '...' });
 
+      // ✅ Validate AudioContext again after stop() (defensive)
+      this.ensureAudioContextValid();
+
       // Initialize audio context
-      if (!this.audioContext.isReady()) {
-        await this.audioContext.initialize();
-        console.log('[OpenAIStreamingPlayer] Audio context initialized');
+      try {
+        if (!this.audioContext.isReady()) {
+          await this.audioContext.initialize();
+          console.log('[OpenAIStreamingPlayer] Audio context initialized');
+        }
+      } catch (error) {
+        // If initialization fails with destroyed error, try recreating
+        if (error instanceof Error && error.message.includes('destroyed')) {
+          console.log('[OpenAIStreamingPlayer] Initialization failed, recreating AudioContext');
+          this.ensureAudioContextValid();
+          await this.audioContext.initialize();
+        } else {
+          throw error;
+        }
       }
 
       // Get stream from OpenAI
@@ -344,10 +375,25 @@ export class OpenAIStreamingPlayer {
         if (!receivedFirstChunk) {
           receivedFirstChunk = true;
           console.log('[OpenAIStreamingPlayer] First chunk received');
+
+          // 🔍 DEBUG: Check chunk data when received
+          console.log(`[OpenAIStreamingPlayer] First chunk DEBUG:`);
+          console.log(`  chunk.data type: ${chunk.data?.constructor?.name || 'undefined'}`);
+          console.log(`  chunk.data instanceof ArrayBuffer: ${chunk.data instanceof ArrayBuffer}`);
+          console.log(`  chunk.data byteLength: ${chunk.data?.byteLength || 0}`);
+          console.log(`  chunk.sizeBytes: ${chunk.sizeBytes}`);
+          console.log(`  chunk.sequence: ${chunk.sequence}`);
+          console.log(`  chunk keys:`, Object.keys(chunk));
         }
 
-        // Add to FIFO queue for processing
-        this.fifoQueue.enqueue(chunk);
+        // ⚠️ FIX: Enqueue only the ArrayBuffer, not the whole AudioChunk
+        // This avoids double-wrapping (FIFO creates its own QueueEntry)
+        this.fifoQueue.enqueue(chunk.data);
+
+        // DEBUG: Check FIFO size after enqueue
+        if (!receivedFirstChunk) {
+          console.log(`[OpenAIStreamingPlayer] FIFO size after first enqueue: ${this.fifoQueue.size()}`);
+        }
       }
 
       // Stream complete naturally
@@ -544,17 +590,50 @@ export class OpenAIStreamingPlayer {
       if (!entry) break;
 
       try {
+        // 🔍 DEBUG: Check chunk data before conversion
+        if (drained === 0) {
+          console.log(`[OpenAI fifoToJitterBuffer] Dequeued entry DEBUG:`);
+          console.log(`  entry.data type: ${entry.data?.constructor?.name || 'undefined'}`);
+          console.log(`  entry.data instanceof ArrayBuffer: ${entry.data instanceof ArrayBuffer}`);
+          console.log(`  entry.data byteLength: ${entry.data?.byteLength || 0}`);
+          console.log(`  entry.size: ${entry.size}`);
+          console.log(`  entry.sequence: ${entry.sequence}`);
+        }
+
+        // ✅ entry.data is now directly an ArrayBuffer (no double-wrapping!)
+        const arrayBuffer = entry.data;
+
+        // Validate
+        if (!(arrayBuffer instanceof ArrayBuffer)) {
+          console.error(`[OpenAI fifoToJitterBuffer] Expected ArrayBuffer, got ${arrayBuffer?.constructor?.name}`);
+          continue;
+        }
+
+        if (arrayBuffer.byteLength === 0) {
+          console.warn(`[OpenAI fifoToJitterBuffer] Skipping empty chunk (0 bytes)`);
+          continue;
+        }
+
         // ✅ RESAMPLE: OpenAI 24kHz → 16kHz
-        const inputSamples = entry.data.data as Int16Array;
+        // arrayBuffer is a proper ArrayBuffer, convert to Int16Array
+        const inputSamples = new Int16Array(arrayBuffer);
         const resampled = PCM16Resampler.openaiToPipeline(inputSamples);
 
-        const success = this.jitterBuffer.addChunk(resampled);
+        // ✅ CONVERT: Int16 → Float32 for JitterBuffer
+        // JitterBuffer expects Float32Array, but resampler returns Int16Array
+        const float32Data = new Float32Array(resampled.length);
+        for (let i = 0; i < resampled.length; i++) {
+          float32Data[i] = resampled[i] / 32768.0; // Normalize to [-1.0, 1.0]
+        }
+
+        const success = this.jitterBuffer.addChunk(float32Data);
 
         if (this.chunksPlayed === 0 && drained === 0) {
           console.log(`[OpenAI fifoToJitterBuffer] First chunk conversion:`);
-          console.log(`  Input: ${inputSamples.length} samples @ 24kHz`);
-          console.log(`  Output: ${resampled.length} samples @ 16kHz`);
-          console.log(`  Duration: ${(resampled.length / 16000 * 1000).toFixed(1)}ms`);
+          console.log(`  Input: ${inputSamples.length} samples @ 24kHz (Int16)`);
+          console.log(`  Resampled: ${resampled.length} samples @ 16kHz (Int16)`);
+          console.log(`  Output: ${float32Data.length} samples @ 16kHz (Float32)`);
+          console.log(`  Duration: ${(float32Data.length / 16000 * 1000).toFixed(1)}ms`);
         }
 
         if (!success) {
@@ -894,7 +973,11 @@ export class OpenAIStreamingPlayer {
     console.log('[OpenAIStreamingPlayer] Disposing');
 
     this.stop();
-    await this.audioContext.dispose();
+
+    // Don't dispose shared AudioContext singleton
+    // (Other players might still need it)
+    console.log('[OpenAIStreamingPlayer] Skipping AudioContext disposal (shared singleton)');
+
     this.eventListeners.clear();
     this.scheduledSources.clear();
   }
@@ -909,15 +992,20 @@ export function getOpenAIStreamingPlayer(
   apiKey: string,
   config?: Partial<OpenAIPlayerConfig>
 ): OpenAIStreamingPlayer {
-  // Reset if API key changed
-  if (singletonInstance) {
-    singletonInstance.dispose();
+  // Check if instance exists and has valid AudioContext
+  const needsRecreation = singletonInstance && !singletonInstance['audioContext'].isValid();
+
+  if (needsRecreation) {
+    console.log('[OpenAI Singleton] AudioContext destroyed, recreating player');
+    // Don't dispose - just recreate (disposal would destroy shared AudioContext)
     singletonInstance = null;
   }
 
   if (!singletonInstance) {
+    console.log('[OpenAI Singleton] Creating new player instance');
     singletonInstance = new OpenAIStreamingPlayer(apiKey, config);
   }
+
   return singletonInstance;
 }
 

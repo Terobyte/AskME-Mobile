@@ -592,6 +592,61 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
                                     </View>
                                 </View>
 
+                                {ttsProvider === 'openai' && (
+                                    <View style={styles.openaiVoicesContainer}>
+                                        <Text style={styles.sectionSubtitle}>OpenAI Voice</Text>
+                                        <View style={styles.singleVoiceChip}>
+                                            <Text style={styles.singleVoiceText}>Marin ⭐</Text>
+                                        </View>
+                                    </View>
+                                )}
+
+                                {/* OpenAI Instructions (Voice Style) */}
+                                {ttsProvider === 'openai' && (
+                                    <View style={styles.openaiInstructionsContainer}>
+                                        <Text style={styles.sectionSubtitle}>Voice Style</Text>
+                                        <View style={styles.singleVoiceChip}>
+                                            <Text style={styles.singleVoiceText}>Professional</Text>
+                                        </View>
+                                    </View>
+                                )}
+
+                                {ttsProvider === 'deepgram' && (
+                                    <View style={styles.deepgramVoicesContainer}>
+                                        <Text style={styles.sectionSubtitle}>Deepgram Aura Voice</Text>
+                                        <View style={styles.singleVoiceChip}>
+                                            <Text style={styles.singleVoiceText}>Thalia</Text>
+                                            <Text style={styles.singleVoiceSubtext}>Energetic</Text>
+                                        </View>
+                                    </View>
+                                )}
+                                                <TouchableOpacity
+                                                    key={voice.id}
+                                                    style={[
+                                                        styles.voiceChip,
+                                                        deepgramVoice === voice.id && styles.voiceChipActive
+                                                    ]}
+                                                    onPress={() => handleDeepgramVoiceChange(voice.id)}
+                                                >
+                                                    <View style={{ alignItems: 'center' }}>
+                                                        <Text style={[
+                                                            styles.voiceChipText,
+                                                            deepgramVoice === voice.id && styles.voiceChipTextActive
+                                                        ]}>
+                                                            {voice.label}
+                                                        </Text>
+                                                        <Text style={[
+                                                            styles.voiceChipDescription,
+                                                            deepgramVoice === voice.id && styles.voiceChipTextActive
+                                                        ]}>
+                                                            {voice.description}
+                                                        </Text>
+                                                    </View>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+                                    </View>
+                                )}
 
                                 <Text style={styles.sectionTitle}>1. Setup</Text>
                                 <TouchableOpacity style={styles.glassButton} onPress={pickResume}>
@@ -1061,24 +1116,6 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '600',
         marginLeft: 6,
-    },
-    // NEW: Single voice chip styles (simplified UI)
-    singleVoiceChip: {
-        backgroundColor: '#F0F0F0',
-        borderRadius: 20,
-        paddingVertical: 10,
-        paddingHorizontal: 20,
-        alignSelf: 'flex-start',
-    },
-    singleVoiceText: {
-        fontSize: 15,
-        fontWeight: '600',
-        color: '#000',
-    },
-    singleVoiceSubtext: {
-        fontSize: 12,
-        color: '#666',
-        marginTop: 2,
     },
 });
 

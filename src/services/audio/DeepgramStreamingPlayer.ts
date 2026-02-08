@@ -688,37 +688,32 @@ export class DeepgramStreamingPlayer {
         const fifoEmpty = this.fifoQueue.isEmpty();
         const jitterEmpty = this.jitterBuffer.getBufferHealth().availableSamples === 0;
 
-        // ✅ FIX: Track when audio actually finishes playing (not just buffers empty)
-        const currentTime = this.audioContext.getPlaybackTime();
-        const audioFinished = this.nextScheduledTime > 0 && currentTime >= this.nextScheduledTime;
+        // ✅ FIX: Use activeSources instead of nextScheduledTime
+        // AudioContextManager tracks all playing sources and removes them on 'onEnded'
+        const audioMetrics = this.audioContext.getMetrics();
+        const audioFinished = audioMetrics.activeSources === 0;
 
-        if (fifoEmpty && jitterEmpty) {
-          // ✅ FIX: Wait for audio to actually finish playing through AudioContext
-          if (audioFinished) {
-            clearInterval(drainInterval);
+        if (fifoEmpty && jitterEmpty && audioFinished) {
+          // All buffers empty AND all audio sources finished playing
+          clearInterval(drainInterval);
 
-            if (this.processingTimer) {
-              clearInterval(this.processingTimer);
-              this.processingTimer = null;
-            }
-            if (this.metricsTimer) {
-              clearInterval(this.metricsTimer);
-              this.metricsTimer = null;
-            }
-
-            this.isPlaying = false;
-            console.log('[DeepgramStreamingPlayer] Buffers drained, audio playback finished');
-            resolved = true;
-            resolve();
-          } else {
-            // Buffers empty but audio still playing - keep track
-            if (this.isPlaying) {
-              this.scheduleNextChunk();
-            }
+          if (this.processingTimer) {
+            clearInterval(this.processingTimer);
+            this.processingTimer = null;
           }
+          if (this.metricsTimer) {
+            clearInterval(this.metricsTimer);
+            this.metricsTimer = null;
+          }
+
+          this.isPlaying = false;
+          console.log('[DeepgramStreamingPlayer] Buffers drained, all audio sources finished');
+          resolved = true;
+          resolve();
         }
 
-        if (this.isPlaying) {
+        // Only schedule if we have data in jitter buffer
+        if (this.isPlaying && !jitterEmpty) {
           this.scheduleNextChunk();
         }
       }, 50);

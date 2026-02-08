@@ -260,18 +260,16 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             }
           });
 
-          // ✅ FIX: Start audio first
+          // ✅ FIX: Start typewriter immediately (synchronized with audio start)
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setMessages(prev => [...prev, aiMessage]);
+
+          // ✅ FIX: Start audio immediately after
           player.playAsync().catch((error) => {
             clearTimeout(timeout);
             console.error('❌ [Sync] playAsync error:', error);
             reject(error);
           });
-
-          // ✅ FIX: THEN start typewriter after audio begins (100ms delay for sync)
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          setTimeout(() => {
-            setMessages(prev => [...prev, aiMessage]);
-          }, 100);
         });
       } else {
         // Fallback if no player - still show message

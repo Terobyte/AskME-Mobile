@@ -594,40 +594,10 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
 
                                 {ttsProvider === 'openai' && (
                                     <View style={styles.openaiVoicesContainer}>
-                                        <Text style={styles.sectionSubtitle}>OpenAI Voice (marin/cedar ⭐ best)</Text>
-                                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                                            {[
-                                                { id: 'alloy' as OpenAIVoice, label: 'Alloy' },
-                                                { id: 'ash' as OpenAIVoice, label: 'Ash' },
-                                                { id: 'ballad' as OpenAIVoice, label: 'Ballad' },
-                                                { id: 'coral' as OpenAIVoice, label: 'Coral' },
-                                                { id: 'echo' as OpenAIVoice, label: 'Echo (M)' },
-                                                { id: 'fable' as OpenAIVoice, label: 'Fable (BR)' },
-                                                { id: 'nova' as OpenAIVoice, label: 'Nova (F)' },
-                                                { id: 'onyx' as OpenAIVoice, label: 'Onyx (M)' },
-                                                { id: 'sage' as OpenAIVoice, label: 'Sage' },
-                                                { id: 'shimmer' as OpenAIVoice, label: 'Shimmer (F)' },
-                                                { id: 'verse' as OpenAIVoice, label: 'Verse' },
-                                                { id: 'marin' as OpenAIVoice, label: 'Marin ⭐' },
-                                                { id: 'cedar' as OpenAIVoice, label: 'Cedar ⭐' },
-                                            ].map(voice => (
-                                                <TouchableOpacity
-                                                    key={voice.id}
-                                                    style={[
-                                                        styles.voiceChip,
-                                                        openaiVoice === voice.id && styles.voiceChipActive
-                                                    ]}
-                                                    onPress={() => handleOpenaiVoiceChange(voice.id)}
-                                                >
-                                                    <Text style={[
-                                                        styles.voiceChipText,
-                                                        openaiVoice === voice.id && styles.voiceChipTextActive
-                                                    ]}>
-                                                        {voice.label}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </ScrollView>
+                                        <Text style={styles.sectionSubtitle}>OpenAI Voice</Text>
+                                        <View style={styles.singleVoiceChip}>
+                                            <Text style={styles.singleVoiceText}>Marin ⭐</Text>
+                                        </View>
                                     </View>
                                 )}
 
@@ -635,85 +605,19 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
                                 {ttsProvider === 'openai' && (
                                     <View style={styles.openaiInstructionsContainer}>
                                         <Text style={styles.sectionSubtitle}>Voice Style</Text>
-                                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                                            {[
-                                                { label: 'Default', value: '' },
-                                                { label: 'Cheerful', value: 'Speak in a cheerful and positive tone.' },
-                                                { label: 'Calm', value: 'Speak in a calm, soothing voice.' },
-                                                { label: 'Whisper', value: 'Whisper softly.' },
-                                                { label: 'Excited', value: 'Sound excited and energetic!' },
-                                                { label: 'Professional', value: 'Speak in a professional, business-like tone.' },
-                                                { label: 'Storyteller', value: 'Speak like a storyteller, with dramatic pauses.' },
-                                            ].map((preset) => (
-                                                <TouchableOpacity
-                                                    key={preset.label}
-                                                    style={[
-                                                        styles.voiceChip,
-                                                        openaiInstructions === preset.value && styles.voiceChipActive
-                                                    ]}
-                                                    onPress={() => handleOpenaiInstructionsChange(preset.value)}
-                                                >
-                                                    <Text style={[
-                                                        styles.voiceChipText,
-                                                        openaiInstructions === preset.value && styles.voiceChipTextActive
-                                                    ]}>
-                                                        {preset.label}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </ScrollView>
-
-                                        {/* Custom instructions input when not using preset */}
-                                        {openaiInstructions && !['', 'Speak in a cheerful and positive tone.', 'Speak in a calm, soothing voice.', 'Whisper softly.', 'Sound excited and energetic!', 'Speak in a professional, business-like tone.', 'Speak like a storyteller, with dramatic pauses.'].includes(openaiInstructions) && (
-                                            <TextInput
-                                                style={styles.customInstructionsInput}
-                                                placeholder="Custom instructions..."
-                                                placeholderTextColor="#6B7280"
-                                                value={openaiInstructions}
-                                                onChangeText={handleOpenaiInstructionsChange}
-                                                multiline
-                                            />
-                                        )}
+                                        <View style={styles.singleVoiceChip}>
+                                            <Text style={styles.singleVoiceText}>Professional</Text>
+                                        </View>
                                     </View>
                                 )}
 
                                 {ttsProvider === 'deepgram' && (
                                     <View style={styles.deepgramVoicesContainer}>
                                         <Text style={styles.sectionSubtitle}>Deepgram Aura Voice</Text>
-                                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                                            {[
-                                                { id: 'aura-2-thalia-en' as DeepgramVoice, label: 'Thalia (F)', description: 'Energetic' },
-                                                { id: 'aura-2-athena-en' as DeepgramVoice, label: 'Athena (F)', description: 'Calm' },
-                                                { id: 'aura-2-hermes-en' as DeepgramVoice, label: 'Hermes (M)', description: 'Expressive' },
-                                                { id: 'aura-2-orion-en' as DeepgramVoice, label: 'Orion (M)', description: 'Approachable' },
-                                                { id: 'aura-2-luna-en' as DeepgramVoice, label: 'Luna (F)', description: 'Friendly' },
-                                                { id: 'aura-2-arcas-en' as DeepgramVoice, label: 'Arcas (M)', description: 'Smooth' },
-                                            ].map(voice => (
-                                                <TouchableOpacity
-                                                    key={voice.id}
-                                                    style={[
-                                                        styles.voiceChip,
-                                                        deepgramVoice === voice.id && styles.voiceChipActive
-                                                    ]}
-                                                    onPress={() => handleDeepgramVoiceChange(voice.id)}
-                                                >
-                                                    <View style={{ alignItems: 'center' }}>
-                                                        <Text style={[
-                                                            styles.voiceChipText,
-                                                            deepgramVoice === voice.id && styles.voiceChipTextActive
-                                                        ]}>
-                                                            {voice.label}
-                                                        </Text>
-                                                        <Text style={[
-                                                            styles.voiceChipDescription,
-                                                            deepgramVoice === voice.id && styles.voiceChipTextActive
-                                                        ]}>
-                                                            {voice.description}
-                                                        </Text>
-                                                    </View>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </ScrollView>
+                                        <View style={styles.singleVoiceChip}>
+                                            <Text style={styles.singleVoiceText}>Thalia</Text>
+                                            <Text style={styles.singleVoiceSubtext}>Energetic</Text>
+                                        </View>
                                     </View>
                                 )}
 
@@ -1185,6 +1089,24 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '600',
         marginLeft: 6,
+    },
+    // NEW: Single voice chip styles (simplified UI)
+    singleVoiceChip: {
+        backgroundColor: '#F0F0F0',
+        borderRadius: 20,
+        paddingVertical: 10,
+        paddingHorizontal: 20,
+        alignSelf: 'flex-start',
+    },
+    singleVoiceText: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#000',
+    },
+    singleVoiceSubtext: {
+        fontSize: 12,
+        color: '#666',
+        marginTop: 2,
     },
 });
 

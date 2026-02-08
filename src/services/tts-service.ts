@@ -26,10 +26,10 @@ class TTSService {
 
   // NEW: TTS Provider selection
   private ttsProvider: TTSProvider = 'cartesia';
-  private openaiVoice: OpenAIVoice = 'nova';
+  private openaiVoice: OpenAIVoice = 'marin';  // Best quality voice
   private deepgramVoice: DeepgramVoice = 'aura-2-thalia-en';
   private openaiApiKey?: string;
-  private openaiInstructions: string = '';  // NEW: OpenAI voice style instructions
+  private openaiInstructions: string = 'Speak in a professional, business-like tone.';  // Professional tone
 
   // NEW: Streaming state
   private isStreaming: boolean = false;

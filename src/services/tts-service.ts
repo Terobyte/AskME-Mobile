@@ -29,6 +29,7 @@ class TTSService {
   private openaiVoice: OpenAIVoice = 'nova';
   private deepgramVoice: DeepgramVoice = 'aura-2-thalia-en';
   private openaiApiKey?: string;
+  private openaiInstructions: string = '';  // NEW: OpenAI voice style instructions
 
   // NEW: Streaming state
   private isStreaming: boolean = false;
@@ -141,6 +142,22 @@ class TTSService {
     return this.deepgramVoice;
   }
 
+  /**
+   * Set OpenAI instructions (voice style)
+   */
+  setOpenaiInstructions(instructions: string): void {
+    this.openaiInstructions = instructions;
+    console.log(`🎙️ [TTS] OpenAI instructions: "${instructions}"`);
+    this.saveSettings();
+  }
+
+  /**
+   * Get current OpenAI instructions
+   */
+  getOpenaiInstructions(): string {
+    return this.openaiInstructions;
+  }
+
   // ========================
   // SETTINGS PERSISTENCE
   // ========================
@@ -158,6 +175,7 @@ class TTSService {
         this.ttsProvider = parsed.provider || 'cartesia';
         this.openaiVoice = parsed.openaiVoice || 'nova';
         this.deepgramVoice = parsed.deepgramVoice || 'aura-2-thalia-en';
+        this.openaiInstructions = parsed.openaiInstructions || '';
         console.log(`✅ [TTS] Settings loaded: ${this.ttsProvider}/${this.openaiVoice}/${this.deepgramVoice}`);
       }
     } catch (error) {
@@ -175,6 +193,7 @@ class TTSService {
         provider: this.ttsProvider,
         openaiVoice: this.openaiVoice,
         deepgramVoice: this.deepgramVoice,
+        openaiInstructions: this.openaiInstructions,
       }));
       console.log('✅ [TTS] Settings saved');
     } catch (error) {
@@ -702,13 +721,15 @@ class TTSService {
       console.log('🎙️ [TTS Streaming] Options:', {
         voiceId: this.openaiVoice,
         textLength: text.length,
-        speed: options?.speed
+        speed: options?.speed,
+        instructions: this.openaiInstructions || undefined
       });
 
       // Use OpenAI player (fetch API with streaming response)
       await player.speak(text, {
         voiceId: this.openaiVoice,
         speed: options?.speed,
+        instructions: this.openaiInstructions || undefined,
       });
 
       console.log('✅ [TTS Streaming] OpenAI playback complete');

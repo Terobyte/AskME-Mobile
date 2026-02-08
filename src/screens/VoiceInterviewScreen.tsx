@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, ActivityIndicator, Image, Animated } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, LayoutAnimation, Platform, UIManager, SafeAreaView, Modal, StatusBar, ActivityIndicator, Image, Animated, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
@@ -70,6 +70,7 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
     const [ttsProvider, setTtsProviderState] = useState<TTSProvider>('cartesia');
     const [openaiVoice, setOpenaiVoice] = useState<OpenAIVoice>('nova');
     const [deepgramVoice, setDeepgramVoice] = useState<DeepgramVoice>('aura-2-thalia-en');
+    const [openaiInstructions, setOpenaiInstructionsState] = useState<string>('');  // NEW
 
     // Live Bubble State
     const [liveTranscript, setLiveTranscript] = useState("");
@@ -209,8 +210,10 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
         if (showSettings) {
             const currentProvider = TTSService.getTtsProvider();
             const currentVoice = TTSService.getOpenaiVoice();
+            const currentInstructions = TTSService.getOpenaiInstructions();
             setTtsProviderState(currentProvider);
             setOpenaiVoice(currentVoice);
+            setOpenaiInstructionsState(currentInstructions);
         }
     }, [showSettings]);
 
@@ -246,6 +249,13 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
     const handleOpenaiVoiceChange = async (voice: OpenAIVoice) => {
         setOpenaiVoice(voice);
         TTSService.setOpenaiVoice(voice);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    };
+
+    // Handle OpenAI instructions change
+    const handleOpenaiInstructionsChange = (instructions: string) => {
+        setOpenaiInstructionsState(instructions);
+        TTSService.setOpenaiInstructions(instructions);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     };
 
@@ -584,15 +594,22 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
 
                                 {ttsProvider === 'openai' && (
                                     <View style={styles.openaiVoicesContainer}>
-                                        <Text style={styles.sectionSubtitle}>OpenAI Voice</Text>
+                                        <Text style={styles.sectionSubtitle}>OpenAI Voice (marin/cedar ⭐ best)</Text>
                                         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                                             {[
-                                                { id: 'nova' as OpenAIVoice, label: 'Nova (F)' },
-                                                { id: 'alloy' as OpenAIVoice, label: 'Alloy (M/F)' },
+                                                { id: 'alloy' as OpenAIVoice, label: 'Alloy' },
+                                                { id: 'ash' as OpenAIVoice, label: 'Ash' },
+                                                { id: 'ballad' as OpenAIVoice, label: 'Ballad' },
+                                                { id: 'coral' as OpenAIVoice, label: 'Coral' },
                                                 { id: 'echo' as OpenAIVoice, label: 'Echo (M)' },
-                                                { id: 'fable' as OpenAIVoice, label: 'Fable (M-BR)' },
-                                                { id: 'onyx' as OpenAIVoice, label: 'Onyx (M-D)' },
+                                                { id: 'fable' as OpenAIVoice, label: 'Fable (BR)' },
+                                                { id: 'nova' as OpenAIVoice, label: 'Nova (F)' },
+                                                { id: 'onyx' as OpenAIVoice, label: 'Onyx (M)' },
+                                                { id: 'sage' as OpenAIVoice, label: 'Sage' },
                                                 { id: 'shimmer' as OpenAIVoice, label: 'Shimmer (F)' },
+                                                { id: 'verse' as OpenAIVoice, label: 'Verse' },
+                                                { id: 'marin' as OpenAIVoice, label: 'Marin ⭐' },
+                                                { id: 'cedar' as OpenAIVoice, label: 'Cedar ⭐' },
                                             ].map(voice => (
                                                 <TouchableOpacity
                                                     key={voice.id}
@@ -611,6 +628,52 @@ function VoiceInterviewScreen({ navigation }: { navigation: NavigationProp }) {
                                                 </TouchableOpacity>
                                             ))}
                                         </ScrollView>
+                                    </View>
+                                )}
+
+                                {/* OpenAI Instructions (Voice Style) */}
+                                {ttsProvider === 'openai' && (
+                                    <View style={styles.openaiInstructionsContainer}>
+                                        <Text style={styles.sectionSubtitle}>Voice Style</Text>
+                                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                            {[
+                                                { label: 'Default', value: '' },
+                                                { label: 'Cheerful', value: 'Speak in a cheerful and positive tone.' },
+                                                { label: 'Calm', value: 'Speak in a calm, soothing voice.' },
+                                                { label: 'Whisper', value: 'Whisper softly.' },
+                                                { label: 'Excited', value: 'Sound excited and energetic!' },
+                                                { label: 'Professional', value: 'Speak in a professional, business-like tone.' },
+                                                { label: 'Storyteller', value: 'Speak like a storyteller, with dramatic pauses.' },
+                                            ].map((preset) => (
+                                                <TouchableOpacity
+                                                    key={preset.label}
+                                                    style={[
+                                                        styles.voiceChip,
+                                                        openaiInstructions === preset.value && styles.voiceChipActive
+                                                    ]}
+                                                    onPress={() => handleOpenaiInstructionsChange(preset.value)}
+                                                >
+                                                    <Text style={[
+                                                        styles.voiceChipText,
+                                                        openaiInstructions === preset.value && styles.voiceChipTextActive
+                                                    ]}>
+                                                        {preset.label}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
+
+                                        {/* Custom instructions input when not using preset */}
+                                        {openaiInstructions && !['', 'Speak in a cheerful and positive tone.', 'Speak in a calm, soothing voice.', 'Whisper softly.', 'Sound excited and energetic!', 'Speak in a professional, business-like tone.', 'Speak like a storyteller, with dramatic pauses.'].includes(openaiInstructions) && (
+                                            <TextInput
+                                                style={styles.customInstructionsInput}
+                                                placeholder="Custom instructions..."
+                                                placeholderTextColor="#6B7280"
+                                                value={openaiInstructions}
+                                                onChangeText={handleOpenaiInstructionsChange}
+                                                multiline
+                                            />
+                                        )}
                                     </View>
                                 )}
 
@@ -1058,6 +1121,19 @@ const styles = StyleSheet.create({
     deepgramVoicesContainer: {
         marginTop: 12,
         marginBottom: 20,
+    },
+    openaiInstructionsContainer: {
+        marginTop: 12,
+        marginBottom: 20,
+    },
+    customInstructionsInput: {
+        backgroundColor: '#F5F5F5',
+        borderRadius: 8,
+        padding: 12,
+        marginTop: 10,
+        fontSize: 14,
+        color: '#000',
+        minHeight: 60,
     },
     sectionSubtitle: {
         fontSize: 13,

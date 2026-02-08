@@ -269,6 +269,8 @@ export class OpenAIStreamingPlayer {
     speed?: number;
     instructions?: string; // 🆕 Voice style instructions (gpt-4o-mini-tts only)
   }): Promise<void> {
+    console.log(`[OpenAIStreamingPlayer] speak() called with text: "${text.substring(0, 100)}..."`);
+
     // Debounce: prevent rapid restart issues
     const now = Date.now();
     const timeSinceLastStop = now - this.lastStopTime;
@@ -399,7 +401,18 @@ export class OpenAIStreamingPlayer {
 
       // Stream complete naturally
       console.log('[OpenAIStreamingPlayer] Stream complete, draining buffers...');
+
+      // ✅ CRITICAL FIX: Drain FIFO to JitterBuffer FIRST before checking playback
+      // This is needed for HTTP "fake streaming" where all data arrives at once
+      this.fifoToJitterBuffer();
+
       this.isStreaming = false;
+
+      // ✅ FIX: If still buffering and we have enough data, start playback immediately
+      if (this.state === PlayerState.BUFFERING && this.jitterBuffer.canStartPlayback()) {
+        console.log('[OpenAIStreamingPlayer] Stream ended while buffering - starting playback now');
+        await this.startPlayback();
+      }
 
       // Wait for buffers to drain
       await this.drainBuffers();
@@ -435,10 +448,11 @@ export class OpenAIStreamingPlayer {
       this.processCycle();
     }, this.config.processingInterval);
 
-    // Add buffering timeout protection (3 seconds)
+    // Add buffering timeout protection (5 seconds for fake streaming)
+    // OpenAI downloads entire file before yielding chunks, so need longer timeout
     const bufferingTimeout = setTimeout(() => {
       if (this.state === PlayerState.BUFFERING) {
-        console.error('[OpenAIStreamingPlayer] BUFFERING TIMEOUT (3s)!');
+        console.error('[OpenAIStreamingPlayer] BUFFERING TIMEOUT (5s)!');
 
         const health = this.jitterBuffer.getBufferHealth();
         console.error('[OpenAIStreamingPlayer] Debug info:', {
@@ -466,7 +480,7 @@ export class OpenAIStreamingPlayer {
           });
         }
       }
-    }, 3000);
+    }, 5000); // Increased from 2000ms to account for OpenAI download + buffering time
 
     const clearBufferingTimeout = () => {
       clearTimeout(bufferingTimeout);
@@ -514,6 +528,8 @@ export class OpenAIStreamingPlayer {
     // Phase 2: Check if we can start playback
     if (!this.isPlaying && !this.isPaused && this.jitterBuffer.canStartPlayback()) {
       console.log('[OpenAI ProcessCycle] Threshold reached - starting playback!');
+      console.log(`[OpenAI ProcessCycle] Buffer health: ${afterHealth.currentDuration.toFixed(0)}ms / ${this.config.preBufferThreshold}ms`);
+      console.log(`[OpenAI ProcessCycle] FIFO remaining: ${afterFifo} chunks`);
       this.startPlayback();
     }
 
@@ -568,6 +584,12 @@ export class OpenAIStreamingPlayer {
     const isBuffering = !this.isPlaying && !this.isPaused;
     const currentDuration = this.jitterBuffer.getBufferHealth().currentDuration;
     const threshold = this.config.preBufferThreshold;
+
+    // DEBUG: Log when waiting for data during buffering
+    if (isBuffering && this.fifoQueue.isEmpty() && currentDuration < threshold) {
+      console.log(`[OpenAI fifoToJitterBuffer] Waiting for data... FIFO empty, Buffer=${currentDuration.toFixed(0)}ms`);
+      return;
+    }
 
     let maxBufferMs: number;
     if (isBuffering && currentDuration < threshold) {
@@ -680,6 +702,10 @@ export class OpenAIStreamingPlayer {
 
     this.jitterBuffer.setState(BufferState.PLAYING);
     this.setState(PlayerState.PLAYING);
+
+    // ✅ DEBUG: Log listener count
+    const playingListeners = this.eventListeners.get('playing')?.size || 0;
+    console.log(`[OpenAIStreamingPlayer] Emitting 'playing' event to ${playingListeners} listener(s)`);
     this.emit('playing', this.getMetrics());
   }
 

@@ -12,7 +12,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - React Navigation (Stack Navigator)
 - Google Gemini 2.5 Flash/Pro (interview planning, answer evaluation, voice generation)
 - Cartesia Sonic (streaming TTS with emotional voices)
-- **react-native-audio-api** (NEW streaming audio engine)
+- OpenAI TTS (gpt-4o-mini-tts with 13 voices + instructions)
+- Deepgram TTS (streaming with Aura voices)
+- **react-native-audio-api** (streaming audio engine)
 - Expo Audio (legacy streaming audio player - being phased out)
 
 ## Development Commands
@@ -67,7 +69,9 @@ The interview follows this sequence:
 
 - **`tts-service.ts`** - Text-to-speech orchestration
   - Primary: Cartesia streaming WebSocket with emotions
-  - Fallback: OpenAI TTS (alloy, echo, onyx, nova, shimmer)
+  - Secondary: OpenAI TTS (gpt-4o-mini-tts with 13 voices, default: 'marin' + Professional instructions)
+  - Tertiary: Deepgram TTS (Aura voices, default: 'thalia-energetic')
+  - Voice UI: Minimal (no voice/style selection displayed - matches Cartesia)
 
 - **`streaming-audio-player.ts`** - Custom audio playback engine (Expo Audio - LEGACY)
   - Handles Cartesia WebSocket streaming (PCM16 chunks)
@@ -76,13 +80,23 @@ The interview follows this sequence:
   - Micro-pause (20ms) when no cross-fade to prevent words "sticking"
   - **NOTE**: Being replaced by react-native-audio-api engine
 
-- **`audio/CartesiaStreamingPlayer.ts`** - NEW streaming audio engine (react-native-audio-api)
+- **`audio/CartesiaStreamingPlayer.ts`** - Streaming audio engine (react-native-audio-api)
   - TRUE streaming: plays chunks as they arrive (no accumulation)
   - Architecture: WebSocket → Int16ToFloat32Converter → FIFOQueue → JitterBuffer → ZeroCrossingAligner → AudioContextManager
   - Pre-buffering: 300ms threshold before playback starts
   - Comprehensive metrics: latency, underruns, buffer health, chunks/sec
   - State machine: IDLE → CONNECTING → BUFFERING → PLAYING → DONE/ERROR
   - Event-driven: 'connecting', 'connected', 'playing', 'done', 'underrun', 'error', 'metrics'
+
+- **`audio/OpenAIStreamingPlayer.ts`** - OpenAI TTS streaming player
+  - Fake streaming: downloads entire file then chunks (not true WebSocket)
+  - Same pipeline architecture as CartesiaStreamingPlayer
+  - Uses 'marin' voice with Professional instructions by default
+
+- **`audio/DeepgramStreamingPlayer.ts`** - Deepgram TTS streaming player
+  - WebSocket streaming similar to Cartesia
+  - Uses 'thalia-energetic' voice by default
+  - Same pipeline architecture for consistency
 
 - **`audio/CartesiaAudioAdapter.ts`** - V1 adapter (DEPRECATED - fake streaming)
   - Accumulated all chunks before playing (not true streaming)
@@ -193,6 +207,20 @@ The app uses intelligent cross-fade to eliminate audio artifacts:
 
 See: `AUDIO_CROSSFADE_FIX.md` for full implementation details.
 
+### TTS Provider Configuration
+
+The app supports three TTS providers with different capabilities:
+
+| Provider | Streaming | Voices | Default Voice | Instructions | Emotion |
+|----------|-----------|--------|---------------|--------------|---------|
+| Cartesia | ✅ True WebSocket | 6 emotional | depends on vibe | ✅ Prompt modifier | ✅ Full emotion control |
+| OpenAI | ❌ Fake (download all) | 13 total | marin | Professional tone | ❌ No emotion support |
+| Deepgram | ✅ True WebSocket | Aura series | thalia-energetic | ❌ No instructions | ⚠️ Limited emotion |
+
+**OpenAI Voices:** alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin (default, highest quality)
+
+**Deepgram Aura Voices:** aura-asteria-en, aura-athena-en, aura-hera-en, aura-orion-en, aura-perseus-en, aura-stella-en, aura-zeus-en, thalia-energetic (default), thalia-neutral, thalia-positive
+
 ### Gemini Model Versions
 
 **CRITICAL:** Two different Gemini models are used:
@@ -264,12 +292,13 @@ The app has extensive console logging:
 
 ## Known Issues & Fixes
 
-Documented in markdown files in root:
+Documented in markdown files in `.agent/` folder:
 - `AUDIO_CROSSFADE_FIX.md` - Cross-fade implementation details
 - `CHUNK_SIZE_INCREASE_FIX.md` - Chunk size optimization
 - `FORCE_FLUSH_ARTIFACTS_FIX.md` - Force flush audio issues
 - `HISTORY_FIX.md` - History storage fixes
 - `HISTORY_MICROPHONE_FIX.md` - Microphone permission issues
+- `CARTESIA_PLAYER_BUG_FIX_PATCH.md` - Cartesia player fixes
 
 ## File Structure Highlights
 
@@ -277,16 +306,20 @@ Documented in markdown files in root:
 src/
 ├── screens/
 │   ├── VoiceInterviewScreen.tsx    # Main interview UI (41KB)
-│   └── TestAudioStreamPage.tsx     # Audio engine test page (NEW)
+│   └── TestAudioStreamPage.tsx     # Audio engine test page
 ├── services/
 │   ├── audio/
-│   │   ├── CartesiaStreamingPlayer.ts  # NEW streaming engine (react-native-audio-api)
-│   │   ├── StreamingAudioPlayer.ts      # Alternative implementation
-│   │   └── CartesiaAudioAdapter.ts      # V1 adapter (DEPRECATED)
+│   │   ├── CartesiaStreamingPlayer.ts  # Cartesia streaming engine (react-native-audio-api)
+│   │   ├── OpenAIStreamingPlayer.ts    # OpenAI streaming player (fake streaming)
+│   │   ├── DeepgramStreamingPlayer.ts  # Deepgram streaming player
+│   │   ├── StreamingAudioPlayer.ts     # Alternative implementation
+│   │   └── CartesiaAudioAdapter.ts     # V1 adapter (DEPRECATED)
 │   ├── gemini-agent.ts              # AI interview logic (70KB)
 │   ├── streaming-audio-player.ts    # Audio playback engine (Expo Audio - LEGACY)
 │   ├── tts-service.ts               # TTS orchestration (25KB)
 │   ├── cartesia-streaming-service.ts # WebSocket client (18KB)
+│   ├── openai-streaming-service.ts  # OpenAI streaming service
+│   ├── deepgram-streaming-service.ts # Deepgram streaming service
 │   ├── vibe-calculator.ts           # Emotion calculator (12KB)
 │   ├── interview-planner.ts         # Interview planning (12KB) [root level]
 │   └── history-storage.ts           # Interview persistence (15KB)
@@ -339,8 +372,11 @@ Edit `generateInterviewPlan()` in `interview-planner.ts`:
 
 Edit `tts-service.ts`:
 - Primary TTS: Cartesia (emotion, speed)
-- Fallback TTS: OpenAI (voice selection)
+- Secondary TTS: OpenAI (default: 'marin' voice, Professional instructions)
+- Tertiary TTS: Deepgram (default: 'thalia-energetic' voice)
 - Speed ranges: 0.5 (slow) to 1.5 (fast)
+
+**Note:** Voice selection UI is intentionally minimal - no voice/style chips are displayed to users (matches Cartesia's clean interface).
 
 ### Adjusting Cross-Fade Behavior (Legacy)
 

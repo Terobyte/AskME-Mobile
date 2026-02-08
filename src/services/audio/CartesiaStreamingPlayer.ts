@@ -239,12 +239,28 @@ export class CartesiaStreamingPlayer {
   }
 
   /**
+   * Ensure AudioContext is valid, recreate if destroyed
+   */
+  private ensureAudioContextValid(): void {
+    if (!this.audioContext.isValid()) {
+      console.log('[CartesiaStreamingPlayer] AudioContext destroyed, recreating...');
+      this.audioContext = AudioContextManager.getInstance({
+        sampleRate: this.config.sampleRate,
+        initialGain: this.config.initialGain,
+      });
+    }
+  }
+
+  /**
    * Speak text with streaming playback
    *
    * @param text - Text to speak
    * @param options - Cartesia streaming options
    */
   async speak(text: string, options?: Partial<CartesiaStreamingOptions>): Promise<void> {
+    // ✅ Validate AudioContext BEFORE stopping
+    this.ensureAudioContextValid();
+
     // Cleanup previous
     this.stop();
 
@@ -272,10 +288,24 @@ export class CartesiaStreamingPlayer {
       this.setState(PlayerState.CONNECTING);
       this.emit('connecting', { text: text.substring(0, 50) + '...' });
 
+      // ✅ Validate AudioContext again after stop() (defensive)
+      this.ensureAudioContextValid();
+
       // Initialize audio context
-      if (!this.audioContext.isReady()) {
-        await this.audioContext.initialize();
-        console.log('[CartesiaStreamingPlayer] Audio context initialized');
+      try {
+        if (!this.audioContext.isReady()) {
+          await this.audioContext.initialize();
+          console.log('[CartesiaStreamingPlayer] Audio context initialized');
+        }
+      } catch (error) {
+        // If initialization fails with destroyed error, try recreating
+        if (error instanceof Error && error.message.includes('destroyed')) {
+          console.log('[CartesiaStreamingPlayer] Initialization failed, recreating AudioContext');
+          this.ensureAudioContextValid();
+          await this.audioContext.initialize();
+        } else {
+          throw error;
+        }
       }
 
       // Get stream from Cartesia
@@ -983,7 +1013,11 @@ export class CartesiaStreamingPlayer {
     console.log('[CartesiaStreamingPlayer] Disposing');
 
     this.stop();
-    await this.audioContext.dispose();
+
+    // Don't dispose shared AudioContext singleton
+    // (Other players might still need it)
+    console.log('[CartesiaStreamingPlayer] Skipping AudioContext disposal (shared singleton)');
+
     this.eventListeners.clear();
     this.scheduledSources.clear();
   }
@@ -1009,9 +1043,20 @@ let singletonInstance: CartesiaStreamingPlayer | null = null;
 export function getCartesiaStreamingPlayer(
   config?: Partial<CartesiaPlayerConfig>
 ): CartesiaStreamingPlayer {
+  // Check if instance exists and has valid AudioContext
+  const needsRecreation = singletonInstance && !singletonInstance['audioContext'].isValid();
+
+  if (needsRecreation) {
+    console.log('[Cartesia Singleton] AudioContext destroyed, recreating player');
+    // Don't dispose - just recreate (disposal would destroy shared AudioContext)
+    singletonInstance = null;
+  }
+
   if (!singletonInstance) {
+    console.log('[Cartesia Singleton] Creating new player instance');
     singletonInstance = new CartesiaStreamingPlayer(config);
   }
+
   return singletonInstance;
 }
 

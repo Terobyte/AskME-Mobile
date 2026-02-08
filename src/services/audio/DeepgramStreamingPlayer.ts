@@ -244,12 +244,28 @@ export class DeepgramStreamingPlayer {
   }
 
   /**
+   * Ensure AudioContext is valid, recreate if destroyed
+   */
+  private ensureAudioContextValid(): void {
+    if (!this.audioContext.isValid()) {
+      console.log('[DeepgramStreamingPlayer] AudioContext destroyed, recreating...');
+      this.audioContext = AudioContextManager.getInstance({
+        sampleRate: this.config.sampleRate,
+        initialGain: this.config.initialGain,
+      });
+    }
+  }
+
+  /**
    * Speak text with streaming playback
    *
    * @param text - Text to speak
    * @param options - Deepgram streaming options
    */
   async speak(text: string, options?: { voiceId?: DeepgramVoice }): Promise<void> {
+    // ✅ Validate AudioContext BEFORE stopping
+    this.ensureAudioContextValid();
+
     // Cleanup previous
     this.stop();
 
@@ -277,10 +293,24 @@ export class DeepgramStreamingPlayer {
       this.setState(PlayerState.CONNECTING);
       this.emit('connecting', { text: text.substring(0, 50) + '...' });
 
+      // ✅ Validate AudioContext again after stop() (defensive)
+      this.ensureAudioContextValid();
+
       // Initialize audio context
-      if (!this.audioContext.isReady()) {
-        await this.audioContext.initialize();
-        console.log('[DeepgramStreamingPlayer] Audio context initialized');
+      try {
+        if (!this.audioContext.isReady()) {
+          await this.audioContext.initialize();
+          console.log('[DeepgramStreamingPlayer] Audio context initialized');
+        }
+      } catch (error) {
+        // If initialization fails with destroyed error, try recreating
+        if (error instanceof Error && error.message.includes('destroyed')) {
+          console.log('[DeepgramStreamingPlayer] Initialization failed, recreating AudioContext');
+          this.ensureAudioContextValid();
+          await this.audioContext.initialize();
+        } else {
+          throw error;
+        }
       }
 
       // Get stream from Deepgram
@@ -905,7 +935,11 @@ export class DeepgramStreamingPlayer {
     console.log('[DeepgramStreamingPlayer] Disposing');
 
     this.stop();
-    await this.audioContext.dispose();
+
+    // Don't dispose shared AudioContext singleton
+    // (Other players might still need it)
+    console.log('[DeepgramStreamingPlayer] Skipping AudioContext disposal (shared singleton)');
+
     this.eventListeners.clear();
     this.scheduledSources.clear();
   }
@@ -928,9 +962,20 @@ let singletonInstance: DeepgramStreamingPlayer | null = null;
 export function getDeepgramStreamingPlayer(
   config?: Partial<DeepgramPlayerConfig>
 ): DeepgramStreamingPlayer {
+  // Check if instance exists and has valid AudioContext
+  const needsRecreation = singletonInstance && !singletonInstance['audioContext'].isValid();
+
+  if (needsRecreation) {
+    console.log('[Deepgram Singleton] AudioContext destroyed, recreating player');
+    // Don't dispose - just recreate (disposal would destroy shared AudioContext)
+    singletonInstance = null;
+  }
+
   if (!singletonInstance) {
+    console.log('[Deepgram Singleton] Creating new player instance');
     singletonInstance = new DeepgramStreamingPlayer(config);
   }
+
   return singletonInstance;
 }
 

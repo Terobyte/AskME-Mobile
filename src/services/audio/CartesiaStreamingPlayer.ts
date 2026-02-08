@@ -758,7 +758,15 @@ export class CartesiaStreamingPlayer {
           }
 
           this.isPlaying = false;
-          console.log('[CartesiaStreamingPlayer] Drain timeout, timers stopped');
+
+          // ✅ FIX: Emit 'done' event even on timeout to unlock microphone
+          if (!this.doneEmitted) {
+            this.doneEmitted = true;
+            this.setState(PlayerState.DONE);
+            this.emit('done', this.getMetrics());
+          }
+
+          console.log('[CartesiaStreamingPlayer] Drain timeout, emitted done event');
           resolve();
         }
       }, 5000);
@@ -780,6 +788,10 @@ export class CartesiaStreamingPlayer {
    */
   stop(): void {
     console.log('[CartesiaStreamingPlayer] Stopping');
+
+    // ✅ FIX: Remember if we were playing to emit 'done' for mic unlock
+    const wasPlaying = this.isPlaying;
+    const hadNotEmittedDone = !this.doneEmitted;
 
     // Abort current stream
     this.abortController?.abort();
@@ -812,6 +824,13 @@ export class CartesiaStreamingPlayer {
 
     this.setState(PlayerState.STOPPED);
     this.emit('stopped', this.getMetrics());
+
+    // ✅ FIX: Also emit 'done' event if playback was in progress (to unlock microphone)
+    if (wasPlaying && hadNotEmittedDone) {
+      this.doneEmitted = true;
+      this.emit('done', this.getMetrics());
+      console.log('[CartesiaStreamingPlayer] Emitted done event on stop');
+    }
   }
 
   /**

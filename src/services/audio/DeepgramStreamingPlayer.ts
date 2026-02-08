@@ -689,7 +689,7 @@ export class DeepgramStreamingPlayer {
         const jitterEmpty = this.jitterBuffer.getBufferHealth().availableSamples === 0;
 
         // ✅ FIX: Track when audio actually finishes playing (not just buffers empty)
-        const currentTime = this.audioContext.getContext().currentTime;
+        const currentTime = this.audioContext.getPlaybackTime();
         const audioFinished = this.nextScheduledTime > 0 && currentTime >= this.nextScheduledTime;
 
         if (fifoEmpty && jitterEmpty) {

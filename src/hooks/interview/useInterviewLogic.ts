@@ -237,8 +237,8 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
 
       console.log("💥 Sync: BOOM! Playing.");
 
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setMessages(prev => [...prev, { id: Date.now().toString() + '_ai', text: text, sender: 'ai' }]);
+      // ✅ FIX: Create message object but don't add to state yet (no typewriter)
+      const aiMessage = { id: Date.now().toString() + '_ai', text: text, sender: 'ai' };
 
       // Append to History Buffer
       historyBuffer.current.push({ role: 'assistant', content: text });
@@ -260,12 +260,23 @@ export const useInterviewLogic = (config: UseInterviewLogicConfig = {}): UseInte
             }
           });
 
+          // ✅ FIX: Start audio first
           player.playAsync().catch((error) => {
             clearTimeout(timeout);
             console.error('❌ [Sync] playAsync error:', error);
             reject(error);
           });
+
+          // ✅ FIX: THEN start typewriter after audio begins (100ms delay for sync)
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setTimeout(() => {
+            setMessages(prev => [...prev, aiMessage]);
+          }, 100);
         });
+      } else {
+        // Fallback if no player - still show message
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setMessages(prev => [...prev, aiMessage]);
       }
 
       // ⏱️ TTS TIMING: Log completion

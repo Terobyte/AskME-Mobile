@@ -676,6 +676,7 @@ export class DeepgramStreamingPlayer {
 
   /**
    * Drain remaining buffers after stream completes
+   * ✅ FIX: Now waits for AudioContext to actually finish playing all audio
    */
   private async drainBuffers(): Promise<void> {
     return new Promise<void>((resolve) => {
@@ -687,22 +688,34 @@ export class DeepgramStreamingPlayer {
         const fifoEmpty = this.fifoQueue.isEmpty();
         const jitterEmpty = this.jitterBuffer.getBufferHealth().availableSamples === 0;
 
+        // ✅ FIX: Track when audio actually finishes playing (not just buffers empty)
+        const currentTime = this.audioContext.getContext().currentTime;
+        const audioFinished = this.nextScheduledTime > 0 && currentTime >= this.nextScheduledTime;
+
         if (fifoEmpty && jitterEmpty) {
-          clearInterval(drainInterval);
+          // ✅ FIX: Wait for audio to actually finish playing through AudioContext
+          if (audioFinished) {
+            clearInterval(drainInterval);
 
-          if (this.processingTimer) {
-            clearInterval(this.processingTimer);
-            this.processingTimer = null;
-          }
-          if (this.metricsTimer) {
-            clearInterval(this.metricsTimer);
-            this.metricsTimer = null;
-          }
+            if (this.processingTimer) {
+              clearInterval(this.processingTimer);
+              this.processingTimer = null;
+            }
+            if (this.metricsTimer) {
+              clearInterval(this.metricsTimer);
+              this.metricsTimer = null;
+            }
 
-          this.isPlaying = false;
-          console.log('[DeepgramStreamingPlayer] Buffers drained, timers stopped');
-          resolved = true;
-          resolve();
+            this.isPlaying = false;
+            console.log('[DeepgramStreamingPlayer] Buffers drained, audio playback finished');
+            resolved = true;
+            resolve();
+          } else {
+            // Buffers empty but audio still playing - keep track
+            if (this.isPlaying) {
+              this.scheduleNextChunk();
+            }
+          }
         }
 
         if (this.isPlaying) {
@@ -710,6 +723,7 @@ export class DeepgramStreamingPlayer {
         }
       }, 50);
 
+      // ✅ FIX: Increased timeout to 60 seconds for long audio files
       const drainTimeout = setTimeout(() => {
         if (!resolved) {
           clearInterval(drainInterval);
@@ -735,7 +749,7 @@ export class DeepgramStreamingPlayer {
           console.log('[DeepgramStreamingPlayer] Drain timeout, emitted done event');
           resolve();
         }
-      }, 5000);
+      }, 60000); // ← Increased from 5000 to 60000
 
       const originalResolve = resolve;
       resolve = () => {

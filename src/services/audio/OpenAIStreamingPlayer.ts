@@ -735,6 +735,7 @@ export class OpenAIStreamingPlayer {
 
   /**
    * Drain remaining buffers after stream completes
+   * ✅ FIX: Now waits for AudioContext to actually finish playing all audio
    */
   private async drainBuffers(): Promise<void> {
     return new Promise<void>((resolve) => {
@@ -746,14 +747,25 @@ export class OpenAIStreamingPlayer {
         const fifoEmpty = this.fifoQueue.isEmpty();
         const jitterEmpty = this.jitterBuffer.getBufferHealth().availableSamples === 0;
 
-        if (fifoEmpty && jitterEmpty) {
-          clearInterval(drainInterval);
-          this.stopTimers();
+        // ✅ FIX: Track when audio actually finishes playing (not just buffers empty)
+        const currentTime = this.audioContext.getContext().currentTime;
+        const audioFinished = this.nextScheduledTime > 0 && currentTime >= this.nextScheduledTime;
 
-          this.isPlaying = false;
-          console.log('[OpenAIStreamingPlayer] Buffers drained, timers stopped');
-          resolved = true;
-          resolve();
+        if (fifoEmpty && jitterEmpty) {
+          // ✅ FIX: Wait for audio to actually finish playing through AudioContext
+          if (audioFinished) {
+            clearInterval(drainInterval);
+            this.stopTimers();
+            this.isPlaying = false;
+            console.log('[OpenAIStreamingPlayer] Buffers drained, audio playback finished');
+            resolved = true;
+            resolve();
+          } else {
+            // Buffers empty but audio still playing - keep track
+            if (this.isPlaying) {
+              this.scheduleNextChunk();
+            }
+          }
         }
 
         if (this.isPlaying) {
@@ -761,11 +773,11 @@ export class OpenAIStreamingPlayer {
         }
       }, 50);
 
+      // ✅ FIX: Increased timeout to 60 seconds for long audio files
       const drainTimeout = setTimeout(() => {
         if (!resolved) {
           clearInterval(drainInterval);
           this.stopTimers();
-
           this.isPlaying = false;
 
           // ✅ FIX: Emit 'done' event even on timeout to unlock microphone
@@ -778,7 +790,7 @@ export class OpenAIStreamingPlayer {
           console.log('[OpenAIStreamingPlayer] Drain timeout, emitted done event');
           resolve();
         }
-      }, 5000);
+      }, 60000); // ← Increased from 5000 to 60000 for long audio
 
       const originalResolve = resolve;
       resolve = () => {
